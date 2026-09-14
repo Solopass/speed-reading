@@ -431,3 +431,12 @@ a 150 WPM baseline for every new user, scored unread practice at 0%
 comprehension, and would have snapped a cleared settings field to its minimum.
 It recurred because the coercion was duplicated, so it now lives once in
 `src/lib/num.js` and everything else imports it.
+
+---
+
+## License
+
+**Source-available, noncommercial.** Copyright © 2026 Solopass. Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
+
+- ✅ **Free** for personal use, hobby projects, study and research, and for nonprofits, schools and public institutions.
+- 💼 **Commercial use** (in a business, product or paid service, or for-profit internal use) needs a paid license. See [COMMERCIAL.md](COMMERCIAL.md), or contact [realsolopass@gmail.com](mailto:realsolopass@gmail.com) · <https://polymatica.pages.dev>.
