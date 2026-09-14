@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { Activity, Youtube } from 'lucide-react';
 import { youtubeSpec } from '../lib/ai';
-import { generateJson } from '../lib/gemini';
 import ManualAiPanel from '../components/ManualAiPanel';
 
-function YouTubeSync({ useApi, onStartPassage, addNotification }) {
+function YouTubeSync({ ai, onStartPassage, addNotification }) {
+    // A summary is written from a web search about the video, so only a
+    // provider with search can do it directly. Local models fall back to copy/paste.
+    const useApi = Boolean(ai?.generate) && ai?.canSearch === true;
     const [url, setUrl] = useState('');
     const [thumbnail, setThumbnail] = useState(null);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -33,7 +35,7 @@ function YouTubeSync({ useApi, onStartPassage, addNotification }) {
         setIsAnalyzing(true);
         addNotification("Analyzing YouTube video...");
         try {
-            acceptVideo(await generateJson({ prompt: `${spec.prompt}
+            acceptVideo(await ai.generate({ prompt: `${spec.prompt}
 
 Reply with raw JSON only matching: ${spec.shape}`, tools: spec.tools }));
         } catch (error) {
@@ -54,6 +56,12 @@ Reply with raw JSON only matching: ${spec.shape}`, tools: spec.tools }));
                     Turns a video into a reading passage. Note this is a summary written from what the model can find <em>about</em> the
                     video, not its transcript — treat the detail as approximate, and prefer a real article when accuracy matters.
                 </p>
+                {ai?.mode === 'local' && (
+                    <p className="text-xs text-slate-500 mt-2">
+                        Your local model can’t search the web, so this one uses copy and paste with an assistant that can
+                        (ChatGPT, Gemini or Claude with search on).
+                    </p>
+                )}
             </div>
             <div className="bg-slate-900 border border-slate-800 p-6 md:p-8 rounded-3xl">
                 <input

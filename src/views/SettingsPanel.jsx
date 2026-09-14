@@ -209,7 +209,109 @@ function TargetSpeedPanel({ settings, updateSettings, adaptiveTargetWpm, pushInt
     );
 }
 
-function SettingsPanel({ settings, updateSettings, apiKeyPresent, hasBaseline, adaptiveTargetWpm, pushIntensity, onExport, onImport, onRecalibrate }) {
+const PROVIDER_OPTIONS = [
+    { id: 'local', title: 'Local model (Ollama)', blurb: 'Runs on your own machine. No key, nothing leaves this PC.' },
+    { id: 'gemini', title: 'Gemini API', blurb: 'Needs VITE_GEMINI_API_KEY in a .env file. Only option that can summarise videos directly.' },
+    { id: 'manual', title: 'Copy and paste', blurb: 'Hands you the prompt for any assistant and takes the reply back.' }
+];
+
+function AiPanel({ settings, updateSettings, apiKeyPresent, ai, localAi, onRecheckLocalAi }) {
+    // The address is committed on blur or Enter, not per keystroke, since each
+    // change triggers a fresh connection check.
+    const [urlDraft, setUrlDraft] = useState(settings.ollamaUrl ?? '');
+    const commitUrl = () => {
+        const next = urlDraft.trim();
+        if (next && next !== settings.ollamaUrl) updateSettings({ ollamaUrl: next });
+    };
+
+    const models = localAi?.models ?? [];
+    const statusTone = ai?.generate
+        ? 'border-emerald-900/60 bg-emerald-950/20 text-emerald-300'
+        : 'border-slate-800 bg-slate-950 text-slate-400';
+
+    return (
+        <div className="bg-slate-900 border border-slate-800 p-6 md:p-8 rounded-3xl space-y-4">
+            <h2 className="text-xl font-bold text-white mb-1">AI Features</h2>
+            <p className="text-sm text-slate-400">
+                Who writes passages, speed-push drills and coaching reports. Everything else in the app works without any AI.
+            </p>
+
+            <fieldset className="grid gap-2 sm:grid-cols-3">
+                <legend className="sr-only">AI provider</legend>
+                {PROVIDER_OPTIONS.map(option => {
+                    const selected = settings.aiProvider === option.id;
+                    return (
+                        <label
+                            key={option.id}
+                            className={`cursor-pointer rounded-2xl border p-4 transition-colors ${selected ? 'border-purple-500 bg-purple-950/30' : 'border-slate-800 bg-slate-950 hover:border-slate-700'}`}
+                        >
+                            <input
+                                type="radio" name="ai-provider" value={option.id} checked={selected}
+                                onChange={() => updateSettings({ aiProvider: option.id })}
+                                className="sr-only"
+                            />
+                            <div className="font-bold text-white text-sm">{option.title}</div>
+                            <div className="text-xs text-slate-500 mt-1">{option.blurb}</div>
+                        </label>
+                    );
+                })}
+            </fieldset>
+
+            {settings.aiProvider === 'local' && (
+                <div className="space-y-3 p-4 bg-slate-950 border border-slate-800 rounded-2xl">
+                    <div>
+                        <label htmlFor="ollama-model" className="block text-sm font-bold text-white mb-1">Model</label>
+                        <select
+                            id="ollama-model"
+                            value={settings.ollamaModel && models.includes(settings.ollamaModel) ? settings.ollamaModel : ''}
+                            onChange={(e) => updateSettings({ ollamaModel: e.target.value })}
+                            disabled={models.length === 0}
+                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white text-sm disabled:opacity-50"
+                        >
+                            <option value="">Automatic{ai?.mode === 'local' && !settings.ollamaModel ? ` (${ai.model})` : ''}</option>
+                            {models.map(name => <option key={name} value={name}>{name}</option>)}
+                        </select>
+                        <p className="text-[11px] text-slate-500 mt-1">
+                            Automatic prefers sol-fast / gpt-oss:20b, which tested fastest and most reliable on this app’s prompts.
+                            Big models (70B+) work but can take minutes per passage.
+                        </p>
+                    </div>
+                    <div>
+                        <label htmlFor="ollama-url" className="block text-sm font-bold text-white mb-1">Ollama address</label>
+                        <div className="flex gap-2">
+                            <input
+                                id="ollama-url" type="text" value={urlDraft}
+                                onChange={(e) => setUrlDraft(e.target.value)}
+                                onBlur={commitUrl}
+                                onKeyDown={(e) => e.key === 'Enter' && commitUrl()}
+                                className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white text-sm font-mono"
+                            />
+                            <button
+                                onClick={onRecheckLocalAi}
+                                className="bg-slate-800 hover:bg-slate-700 text-white text-sm font-bold px-4 rounded-xl transition-colors"
+                            >
+                                {localAi?.status === 'checking' ? 'Checking…' : 'Check again'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <Toggle
+                label="Check questions before using them"
+                desc="After generating, asks the model to answer its own questions with no passage in front of it, and drops any it gets right. Those were answerable from general knowledge, and scoring them would inflate your comprehension. One extra call (about a second on a local model); not available with copy and paste."
+                checked={settings.verifyQuestions} onChange={(v) => updateSettings({ verifyQuestions: v })}
+            />
+
+            <div className={`text-xs px-4 py-3 rounded-xl border ${statusTone}`} role="status">
+                {ai?.note}
+                {settings.aiProvider === 'gemini' && !apiKeyPresent && ' Add VITE_GEMINI_API_KEY to a .env file and restart the app.'}
+            </div>
+        </div>
+    );
+}
+
+function SettingsPanel({ settings, updateSettings, apiKeyPresent, ai, localAi, onRecheckLocalAi, hasBaseline, adaptiveTargetWpm, pushIntensity, onExport, onImport, onRecalibrate }) {
     return (
         <div className="max-w-2xl mx-auto space-y-8 animate-in slide-in-from-bottom-4 pb-12">
             <div>
@@ -255,27 +357,10 @@ function SettingsPanel({ settings, updateSettings, apiKeyPresent, hasBaseline, a
 
                 <DataPanel onExport={onExport} onImport={onImport} />
 
-                <div className="bg-slate-900 border border-slate-800 p-6 md:p-8 rounded-3xl space-y-4">
-                    <h2 className="text-xl font-bold text-white mb-4">AI Features</h2>
-                    <Toggle
-                        label="Call the Gemini API directly"
-                        desc="Off, or with no key configured, the AI features stay available through a copy/paste panel: it hands you the prompt for ChatGPT, Claude, or anything else you have open, and takes the reply back as pasted JSON."
-                        checked={settings.useGeminiApi} onChange={(v) => updateSettings({ useGeminiApi: v })}
-                    />
-                    <Toggle
-                        label="Check questions before using them"
-                        desc="After generating, asks the model to answer its own questions with no passage in front of it, and drops any it gets right. Those were answerable from general knowledge, and scoring them would inflate your comprehension. Costs one extra call; needs an API key."
-                        checked={settings.verifyQuestions} onChange={(v) => updateSettings({ verifyQuestions: v })}
-                    />
-
-                    <div className={`text-xs px-4 py-3 rounded-xl border ${apiKeyPresent ? 'border-emerald-900/60 bg-emerald-950/20 text-emerald-300' : 'border-slate-800 bg-slate-950 text-slate-400'}`}>
-                        {apiKeyPresent
-                            ? (settings.useGeminiApi
-                                ? 'API key detected — passages, drills, and diagnostics generate directly.'
-                                : 'API key detected but switched off. Using copy/paste instead.')
-                            : 'No API key configured, so copy/paste is in use regardless of this switch. Add VITE_GEMINI_API_KEY to a .env file to enable direct calls.'}
-                    </div>
-                </div>
+                <AiPanel
+                    settings={settings} updateSettings={updateSettings} apiKeyPresent={apiKeyPresent}
+                    ai={ai} localAi={localAi} onRecheckLocalAi={onRecheckLocalAi}
+                />
 
                 <div className="bg-slate-900 border border-slate-800 p-6 md:p-8 rounded-3xl">
                     <h2 className="text-xl font-bold text-white mb-4">Goal</h2>

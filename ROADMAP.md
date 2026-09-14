@@ -29,8 +29,9 @@ Working and verified:
   that anyone can read, edit or write by hand.
 - **Question checking** — generated quizzes are verified against being
   answerable without reading the passage.
-- **AI optional** — direct Gemini calls, or a copy/paste exchange with any
-  assistant. Fully usable with no API key.
+- **AI optional** — a local model through Ollama (default, no key, nothing leaves
+  the machine), direct Gemini calls, or a copy/paste exchange with any assistant.
+  Fully usable with no AI at all.
 - **Export/import** of the whole profile, plans included, and keyboard control
   of the reader.
 - **Document import** — EPUB, PDF, DOCX, HTML and plain text, all verified
@@ -80,6 +81,11 @@ question.
   a `VITE_` variable is readable by anyone who loads the page. Deploying
   publicly means putting the call behind a server route first.
 - **Video Summary is a summary, not a transcript.** It asks a search-grounded
-  model what it can find about a video. Treat detail as approximate.
+  model what it can find about a video. Treat detail as approximate. Local models
+  can't search, so with the local provider it uses copy/paste. A real fix would be
+  transcribing the video locally (media-api can already do this) and writing the
+  passage from the transcript.
+- **Local generation speed depends on what else is using the GPU.** Measured
+  10-20s per passage with the model loaded, 30-40s including a cold load.
 - **The baseline is a single sample** — one passage, one topic, one day. Two or
   three passages averaged would make "+X% since baseline" mean more.

@@ -3,6 +3,8 @@ import {
     Activity, BarChart2, BookOpen, Brain, Info, Map, Settings, Target, Type, Youtube, Zap
 } from 'lucide-react';
 import { hasApiKey } from './lib/gemini';
+import { listModels } from './lib/ollama';
+import { DEFAULT_AI_SETTINGS, migrateAiSettings, resolveAi } from './lib/aiProvider';
 import {
     DEFAULT_STATS, adaptTarget, clampWpm, createSession, migrateHistory, migrateStats,
     nextStreak, todayKey
@@ -35,7 +37,7 @@ import Plans from './views/Plans';
 const DEFAULT_SETTINGS = {
     reading: DEFAULT_READING,
     goalWpm: 2000,
-    useGeminiApi: true,
+    ...DEFAULT_AI_SETTINGS,
     verifyQuestions: true,
     baseWpm: 300,
     chunkSize: 1,
@@ -57,7 +59,7 @@ export default function App() {
             // Merged over the defaults, not substituted for them: a setting
             // added in a later build would otherwise be undefined for anyone
             // who already has saved settings.
-            return { ...DEFAULT_SETTINGS, ...(saved ? JSON.parse(saved) : {}) };
+            return { ...DEFAULT_SETTINGS, ...(saved ? migrateAiSettings(JSON.parse(saved)) : {}) };
         } catch { return { ...DEFAULT_SETTINGS }; }
     });
 
@@ -124,11 +126,29 @@ export default function App() {
     const reading = normalizeReading(settings.reading);
     const updateReading = (next) => updateSettings({ reading: normalizeReading(next) });
 
-    // Direct calls need both the toggle and an actual key. With either missing
-    // the AI features stay available through the copy/paste panel rather than
-    // being disabled.
+    // Live state of the local Ollama server. Checked when the local provider is
+    // selected or its address changes, and again on demand from Settings.
+    const [localAi, setLocalAi] = useState({ status: 'checking', models: [] });
+    const [localCheck, setLocalCheck] = useState(0);
+    const recheckLocalAi = useCallback(() => setLocalCheck(n => n + 1), []);
+
+    useEffect(() => {
+        if (settings.aiProvider !== 'local') return undefined;
+        const controller = new AbortController();
+        setLocalAi(prev => ({ ...prev, status: 'checking' }));
+        listModels(settings.ollamaUrl, { signal: controller.signal })
+            .then(models => setLocalAi({ status: 'ready', models }))
+            .catch(error => {
+                if (controller.signal.aborted) return;
+                setLocalAi({ status: 'unreachable', models: [], error: error.message });
+            });
+        return () => controller.abort();
+    }, [settings.aiProvider, settings.ollamaUrl, localCheck]);
+
+    // One decision for every AI feature. With nothing direct available the
+    // features stay usable through the copy/paste panel rather than disappearing.
     const apiKeyPresent = hasApiKey();
-    const useApi = settings.useGeminiApi && apiKeyPresent;
+    const ai = resolveAi({ settings, geminiKey: apiKeyPresent, local: localAi });
 
     /**
      * Everything you read gets saved, so a passage can be resumed, replayed, or
@@ -199,7 +219,7 @@ export default function App() {
     /** Replaces the whole profile. The Settings panel confirms before calling this. */
     const importBackup = (parsed) => {
         try {
-            const restored = readBackup(parsed, DEFAULT_SETTINGS);
+            const restored = readBackup({ ...parsed, settings: migrateAiSettings(parsed?.settings) }, DEFAULT_SETTINGS);
             setSettings(restored.settings);
             setUserStats(restored.stats);
             setSessionHistory(restored.history);
@@ -354,15 +374,15 @@ export default function App() {
             <main className="flex-1 h-screen overflow-y-auto relative">
                 <div className="p-6 md:p-10 max-w-7xl mx-auto h-full pb-32">
                     {currentView === 'dashboard' && <Dashboard stats={userStats} history={sessionHistory} settings={settings} recallDue={recallQueue(library)} onStart={() => setCurrentView('library')} onCalibrate={() => startPassage(CALIBRATION_PASSAGE, { save: false })} onRecall={(id) => openSaved(id, { recall: true })} />}
-                    {currentView === 'library' && <Library library={library} useApi={useApi} verifyQuestions={settings.verifyQuestions} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onOpenSaved={openSaved} onDeleteSaved={deleteSaved} addNotification={addNotification} />}
+                    {currentView === 'library' && <Library library={library} ai={ai} verifyQuestions={settings.verifyQuestions} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onOpenSaved={openSaved} onDeleteSaved={deleteSaved} addNotification={addNotification} />}
                     {currentView === 'recall' && <RecallCheck passage={activePassage} onDone={finishRecall} onExit={() => { setActivePassage(null); setIsRecall(false); setCurrentView('dashboard'); }} />}
                     {currentView === 'push' && <SpeedPush reading={reading} passage={activePassage} targetWpm={settings.autoAdaptive ? userStats.targetWpm : settings.baseWpm} intensity={userStats.pushIntensity} settings={settings} onFinish={finishSession} onExit={() => { setActivePassage(null); setCurrentView('library'); }} />}
                     {currentView === 'reader' && <Reader passage={activePassage} settings={settings} reading={reading} initialWpm={settings.autoAdaptive ? userStats.targetWpm : settings.baseWpm} resumeFrom={isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id))} onFinish={finishSession} onLeave={handleReaderLeave} onExit={() => { setActivePassage(null); setCurrentView('library'); }} addNotification={addNotification} />}
                     {currentView === 'tools' && <Tools drills={drills} adaptiveStart={settings.autoAdaptive} onDrillComplete={handleDrillComplete} addNotification={addNotification} />}
                     {currentView === 'analytics' && <Analytics history={sessionHistory} />}
-                    {currentView === 'settings' && <SettingsPanel settings={settings} updateSettings={updateSettings} apiKeyPresent={apiKeyPresent} hasBaseline={userStats.baselineWpm !== null} adaptiveTargetWpm={userStats.targetWpm} pushIntensity={userStats.pushIntensity} onExport={exportBackup} onImport={importBackup} onRecalibrate={() => startPassage(CALIBRATION_PASSAGE, { save: false })} />}
-                    {currentView === 'coach' && <AICoach stats={userStats} history={sessionHistory} useApi={useApi} addNotification={addNotification} />}
-                    {currentView === 'youtube' && <YouTubeSync useApi={useApi} onStartPassage={startPassage} addNotification={addNotification} />}
+                    {currentView === 'settings' && <SettingsPanel settings={settings} updateSettings={updateSettings} apiKeyPresent={apiKeyPresent} ai={ai} localAi={localAi} onRecheckLocalAi={recheckLocalAi} hasBaseline={userStats.baselineWpm !== null} adaptiveTargetWpm={userStats.targetWpm} pushIntensity={userStats.pushIntensity} onExport={exportBackup} onImport={importBackup} onRecalibrate={() => startPassage(CALIBRATION_PASSAGE, { save: false })} />}
+                    {currentView === 'coach' && <AICoach stats={userStats} history={sessionHistory} ai={ai} addNotification={addNotification} />}
+                    {currentView === 'youtube' && <YouTubeSync ai={ai} onStartPassage={startPassage} addNotification={addNotification} />}
                     {currentView === 'plans' && <Plans plans={plans} onSavePlan={savePlan} onDeletePlan={deletePlan} onRunStep={runPlanStep} addNotification={addNotification} />}
                     {currentView === 'reading' && <ReadingEnvironment reading={reading} updateReading={updateReading} />}
                     {currentView === 'guide' && <Guide />}

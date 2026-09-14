@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { Brain, Target } from 'lucide-react';
 import { coachSpec } from '../lib/ai';
-import { generateJson } from '../lib/gemini';
 import { averageComprehension, recentEffectiveWpm, scoredSessions } from '../lib/stats';
 import ManualAiPanel from '../components/ManualAiPanel';
 
-function AICoach({ stats, history, useApi, addNotification }) {
+function AICoach({ stats, history, ai, addNotification }) {
+    const useApi = Boolean(ai?.generate);
     const [analysis, setAnalysis] = useState(null);
     const [loading, setLoading] = useState(false);
 
@@ -29,9 +29,9 @@ function AICoach({ stats, history, useApi, addNotification }) {
 
     const generateInsights = async () => {
         setLoading(true);
-        addNotification("Running deep-learning diagnostic...");
+        addNotification('Analyzing your sessions...');
         try {
-            acceptAnalysis(await generateJson({ prompt: spec.prompt, schema: spec.schema }));
+            acceptAnalysis(await ai.generate({ prompt: spec.prompt, schema: spec.schema }));
         } catch (error) {
             console.error("AI Diagnostic Error:", error);
             addNotification(error.message || "Diagnostic failed.");
@@ -46,7 +46,8 @@ function AICoach({ stats, history, useApi, addNotification }) {
                 <h1 className="text-3xl font-bold text-white flex items-center gap-3">
                     <Target className="text-purple-500 w-8 h-8"/> AI Coach
                 </h1>
-                <p className="text-slate-400 mt-2">Get personalized insights and training prescriptions powered by Gemini.</p>
+                <p className="text-slate-400 mt-2">Get personalized insights and training prescriptions from your session history.</p>
+                <p className="text-xs text-slate-500 mt-2">{ai?.note}</p>
             </div>
 
             {!analysis ? (

@@ -1,7 +1,8 @@
 # Speed AI — Reading Trainer
 
 RSVP speed-reading trainer with adaptive pacing, comprehension quizzes, neuro-drills,
-and Gemini-backed passage generation.
+and AI passage generation that runs on a local model (Ollama), Gemini, or any
+assistant via copy/paste.
 
 ## Running it
 
@@ -23,20 +24,51 @@ npm install
 npm run dev
 ```
 
-## AI features: two paths, no dead ends
+## AI features: three paths, no dead ends
 
-Passage generation, speed-push drills, and the coaching diagnostic can run either
-way, and neither is a degraded mode:
+Passage generation, speed-push drills, question checking and the coaching
+diagnostic can run any of three ways, chosen under **Settings → AI Features**:
 
-1. **Direct API** — set `VITE_GEMINI_API_KEY` in `.env` and leave "Call the Gemini
-   API directly" on in Settings.
-2. **Copy/paste** — with the toggle off, or with no key configured, each feature
-   shows a panel that hands you the exact prompt to paste into ChatGPT, Claude,
-   Gemini, or whatever you already have open, and takes the reply back as pasted
-   JSON.
+1. **Local model (default)** — a model on your own [Ollama](https://ollama.com)
+   server (`http://127.0.0.1:11434`). No key, nothing leaves the machine. The app
+   lists your installed models and picks one automatically (`sol-fast`, then
+   `gpt-oss:20b`, then `gemma4`), or you choose. If Ollama isn't running, the
+   features fall back to copy/paste and say why.
+2. **Gemini API** — set `VITE_GEMINI_API_KEY` in `.env`. The only path that can do
+   the Video Summary directly, since that needs web search.
+3. **Copy/paste** — each feature shows a panel that hands you the exact prompt to
+   paste into ChatGPT, Claude, Gemini, or whatever you already have open, and
+   takes the reply back as pasted JSON.
 
-Both paths share one set of prompt builders and one result handler
-(`src/lib/ai.js`), so validation can never drift between them. The pasted-reply
+All three share one set of prompt builders and one result handler
+(`src/lib/ai.js`), so validation can never drift between them. Which path is in
+force is decided once, in `src/lib/aiProvider.js`.
+
+### Local models: what was measured
+
+Run against this app's real prompts on an RX 9070 XT (2026-09-14,
+`scripts/eval-ollama.mjs`, which you can rerun with any model names):
+
+| Task | sol-fast (gpt-oss 20B) | gemma4:12b |
+|---|---|---|
+| Passage + 5 questions | 11s, 5/5 usable | 12s, 5/5 usable |
+| Question check | 1s, correctly answered none blind | 1s, guessed (returned an out-of-range index) |
+| Speed-push drill | 18s, 5/5 usable | 19s, 5/5 usable |
+| Coach report | 11s | 4s |
+
+A first request after the model has been unloaded adds load time (about 10-25s).
+In the app a full passage including the question check took 36s end to end.
+
+Thinking models need handling, and `src/lib/ollama.js` does it from the model's
+family: gpt-oss gets `think: "low"` (at the default "medium" a push drill took
+111s instead of 20s, and `think: false` breaks its JSON), while other thinking
+models (gemma4, qwen3) get thinking switched off, which made gemma4 5x faster with
+the same quiz quality. Requests use `/api/chat` with the schema passed as
+`format`.
+
+Ollama only accepts browser requests from allowed origins. `localhost` and
+`127.0.0.1` on any port are allowed by default; serving the app from anywhere
+else needs that address in `OLLAMA_ORIGINS`. The pasted-reply
 parser tolerates what assistants actually produce: a preamble, code fences, a
 trailing sign-off, nested objects, and braces or escaped quotes inside strings.
 Failures explain what to fix rather than surfacing a parser error.
@@ -84,7 +116,7 @@ are shuffled client-side so a model that favours a particular answer position
 can't be gamed. Below three usable questions the session is recorded as
 unscored practice rather than a bad signal.
 
-With an API key and **Check questions** enabled, generation runs a second pass:
+With a local model or an API key and **Check questions** enabled, generation runs a second pass:
 the model is shown its own questions with no passage and asked which it can
 answer from general knowledge alone. Any it gets right are dropped, because a
 question answerable without reading inflates your comprehension and pushes your
@@ -199,8 +231,10 @@ src/
     quiz.js            validation, option shuffling, scoring
     protocol.js        speed-push phases, passage splitting
     library.js         saved passages, resume points, recall schedule
-    ai.js              prompt builders, reply parsing (both AI paths)
-    gemini.js          API transport
+    ai.js              prompt builders, reply parsing (every AI path)
+    aiProvider.js      which path is in force: local / gemini / copy-paste
+    ollama.js          local model transport, schema conversion, thinking control
+    gemini.js          Gemini API transport
     calibration.js     built-in baseline passage
     drills.js          built-in speed-push passage
     drillStats.js      drill staircases, thresholds, per-drill direction

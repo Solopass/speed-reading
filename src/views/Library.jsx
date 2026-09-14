@@ -3,7 +3,6 @@ import {
     Activity, BookOpen, Brain, ChevronRight, FileText, Play, Sparkles, Upload, Zap
 } from 'lucide-react';
 import { dropGuessableQuestions, passageSpec, pushSpec, verifySpec } from '../lib/ai';
-import { generateJson } from '../lib/gemini';
 import { normalizeQuestions } from '../lib/quiz';
 import { splitPassage } from '../lib/protocol';
 import { PUSH_DRILL_PASSAGE } from '../lib/drills';
@@ -160,7 +159,8 @@ function SavedPassages({ library, onOpenSaved, onDeleteSaved }) {
     );
 }
 
-function Library({ library, useApi, verifyQuestions, onStartPassage, onStartPushDrill, onOpenSaved, onDeleteSaved, addNotification }) {
+function Library({ library, ai, verifyQuestions, onStartPassage, onStartPushDrill, onOpenSaved, onDeleteSaved, addNotification }) {
+    const useApi = Boolean(ai?.generate);
     const [topic, setTopic] = useState('');
     const [difficulty, setDifficulty] = useState(5);
     const [isGenerating, setIsGenerating] = useState(false);
@@ -203,7 +203,7 @@ function Library({ library, useApi, verifyQuestions, onStartPassage, onStartPush
 
         try {
             const check = verifySpec({ questions });
-            const reply = await generateJson({ prompt: check.prompt, schema: check.schema });
+            const reply = await ai.generate({ prompt: check.prompt, schema: check.schema });
             const { questions: kept, dropped, applied } = dropGuessableQuestions(questions, reply?.answers);
 
             if (!applied) addNotification('Question check inconclusive — keeping all questions.');
@@ -223,7 +223,7 @@ function Library({ library, useApi, verifyQuestions, onStartPassage, onStartPush
         setIsGenerating(true);
         addNotification(outputKind === 'push' ? 'Building speed push drill...' : 'Writing your passage...');
         try {
-            const data = await checkQuestions(await generateJson({ prompt: spec.prompt, schema: spec.schema }));
+            const data = await checkQuestions(await ai.generate({ prompt: spec.prompt, schema: spec.schema }));
             if (outputKind === 'push') acceptPushDrill(data);
             else acceptPassage(data);
         } catch (error) {
@@ -312,9 +312,10 @@ function Library({ library, useApi, verifyQuestions, onStartPassage, onStartPush
                         and that is the read that counts.
                     </p>
                     <p>
-                        <strong className="text-slate-200">The AI is optional.</strong> The built-in drill needs nothing. If you have no
-                        API key, the generator gives you a prompt to paste into ChatGPT, Claude or Gemini and takes their answer back —
-                        same result, twenty seconds more work. Add a key in Settings to skip that.
+                        <strong className="text-slate-200">The AI is optional.</strong> The built-in drill needs nothing. With Ollama
+                        running, passages are written by a model on your own machine — no key, nothing sent anywhere. Without it, the
+                        generator gives you a prompt to paste into ChatGPT, Claude or Gemini and takes their answer back — same result,
+                        twenty seconds more work. Choose in Settings.
                     </p>
                     <p>
                         <strong className="text-slate-200">Your own text always works offline.</strong> Drop in an EPUB, PDF, DOCX, HTML or
@@ -353,11 +354,7 @@ function Library({ library, useApi, verifyQuestions, onStartPassage, onStartPush
                         : 'border-blue-900/50 bg-blue-950/20 text-blue-300'
                 }`}>
                     <Sparkles size={14} className="shrink-0 mt-0.5" />
-                    <span>
-                        {useApi
-                            ? 'Connected to your Gemini key — one click and it writes itself.'
-                            : 'No API key set, so this uses copy and paste with any assistant you already have. It works just as well.'}
-                    </span>
+                    <span>{ai?.note}</span>
                 </div>
 
                 <div className="space-y-5">
@@ -395,7 +392,11 @@ function Library({ library, useApi, verifyQuestions, onStartPassage, onStartPush
                             className="w-full bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 transition-colors"
                         >
                             {isGenerating ? <Activity className="animate-spin" size={19} /> : <Sparkles size={19} />}
-                            {isGenerating ? 'Writing...' : `Generate and start`}
+                            {isGenerating
+                                ? (ai.mode === 'local'
+                                    ? `Writing on ${ai.label}… usually under a minute`
+                                    : 'Writing...')
+                                : 'Generate and start'}
                         </button>
                     ) : (
                         <ManualAiPanel
