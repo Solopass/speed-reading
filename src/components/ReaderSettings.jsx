@@ -132,7 +132,7 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                             <Chips label="Focal letter colour" options={FOCAL_COLORS} value={reading.focalColorId} onChange={(id) => set({ focalColorId: id })} />
                         </div>
                         <Switch label="Centre guide" hint="A faint line through the focal letter." checked={reading.showFocalGuide} onChange={(v) => set({ showFocalGuide: v })} />
-                        <Switch label="Show surrounding words" hint="The sentence around the flash, dimmed, so you keep your place." checked={reading.rsvpContext} onChange={(v) => set({ rsvpContext: v })} />
+                        <Switch label="Show surrounding words" hint="Before and after text above and below the flash, so you keep your place." checked={reading.rsvpContext} onChange={(v) => set({ rsvpContext: v })} />
                         <Switch label="Pause at punctuation" hint="A beat after commas and full stops." checked={settings.punctuationPacing} onChange={(v) => updateSettings({ punctuationPacing: v })} />
                     </Section>
 

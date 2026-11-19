@@ -201,41 +201,23 @@ function Reader({
     // lag behind the visual.
     useEffect(() => {
         if (!settings.audioSyncEnabled || !isAudioReady || mode !== 'rsvp' || !isPlaying) return;
+        const synth = window.speechSynthesis;
+        if (!synth) return;
 
         const chunk = words.slice(currentIndex, currentIndex + settings.chunkSize).join(' ');
         if (!chunk) return;
 
         const utterance = new SpeechSynthesisUtterance(chunk);
         utterance.rate = Math.min(4, Math.max(0.5, effectiveWpm / 180));
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(utterance);
+        synth.cancel();
+        synth.speak(utterance);
     }, [currentIndex, isPlaying, isAudioReady, mode, effectiveWpm, words, settings.audioSyncEnabled, settings.chunkSize]);
 
     useEffect(() => {
-        if (!isPlaying || mode !== 'rsvp') window.speechSynthesis.cancel();
+        if (!isPlaying || mode !== 'rsvp') window.speechSynthesis?.cancel();
     }, [isPlaying, mode]);
 
-    useEffect(() => () => window.speechSynthesis.cancel(), []);
-
-    // --- RSVP advance ------------------------------------------------------
-    useEffect(() => {
-        if (!isPlaying || mode !== 'rsvp' || currentIndex >= words.length) return;
-
-        const currentChunk = words.slice(currentIndex, currentIndex + settings.chunkSize);
-        let delayMs = (60000 / effectiveWpm) * settings.chunkSize;
-
-        if (settings.punctuationPacing && currentChunk.length > 0) {
-            const lastWord = currentChunk[currentChunk.length - 1];
-            if (lastWord.endsWith(',')) delayMs += 150;
-            else if (lastWord.endsWith('.') || lastWord.endsWith('!') || lastWord.endsWith('?')) delayMs += 300;
-        }
-
-        timerRef.current = setTimeout(() => {
-            setCurrentIndex(prev => prev + settings.chunkSize);
-        }, delayMs);
-
-        return () => clearTimeout(timerRef.current);
-    }, [isPlaying, currentIndex, effectiveWpm, mode, words, settings.punctuationPacing, settings.chunkSize]);
+    useEffect(() => () => window.speechSynthesis?.cancel(), []);
 
     /**
      * Measured speed over the words actually read. Clamped because a Natural-mode
@@ -324,10 +306,32 @@ function Reader({
         onFinish({ ...measured, score: null });
     }, [stopClock, wordsRead, questions, onFinish, measuredWpm, elapsedMs, mode, isCalibration]);
 
-    // Completion lives in its own effect so the advance effect doesn't have to
-    // close over a handler it never lists as a dependency.
-    const finishRef = useRef(handleFinishReading);
-    useLayoutEffect(() => { finishRef.current = handleFinishReading; });
+    // --- RSVP advance ------------------------------------------------------
+    useEffect(() => {
+        if (!isPlaying || mode !== 'rsvp' || words.length === 0 || currentIndex >= words.length) return;
+
+        const currentChunk = words.slice(currentIndex, currentIndex + settings.chunkSize);
+        let delayMs = (60000 / effectiveWpm) * settings.chunkSize;
+
+        if (settings.punctuationPacing && currentChunk.length > 0) {
+            const lastWord = currentChunk[currentChunk.length - 1];
+            if (lastWord.endsWith(',')) delayMs += 150;
+            else if (lastWord.endsWith('.') || lastWord.endsWith('!') || lastWord.endsWith('?')) delayMs += 300;
+        }
+
+        timerRef.current = setTimeout(() => {
+            const next = currentIndex + settings.chunkSize;
+            if (next >= words.length) {
+                setCurrentIndex(words.length);
+                setIsPlaying(false);
+                handleFinishReading();
+            } else {
+                setCurrentIndex(next);
+            }
+        }, delayMs);
+
+        return () => clearTimeout(timerRef.current);
+    }, [isPlaying, currentIndex, effectiveWpm, mode, words, settings.punctuationPacing, settings.chunkSize, handleFinishReading]);
 
     // The pacer reports completion from its own animation loop; guard against
     // it firing more than once as the final frames settle.
@@ -338,15 +342,8 @@ function Reader({
         if (pacerDoneRef.current) return;
         pacerDoneRef.current = true;
         setIsPlaying(false);
-        finishRef.current();
-    }, []);
-
-    useEffect(() => {
-        if (isPlaying && mode === 'rsvp' && words.length > 0 && currentIndex >= words.length) {
-            setIsPlaying(false);
-            finishRef.current();
-        }
-    }, [isPlaying, mode, currentIndex, words.length]);
+        handleFinishReading();
+    }, [handleFinishReading]);
 
     // --- Play, pause and the countdown --------------------------------------
     useEffect(() => {
@@ -361,6 +358,7 @@ function Reader({
     const togglePlay = () => {
         if (countdown !== null) { setCountdown(null); return; }
         if (isPlaying) { setIsPlaying(false); return; }
+        if (mode === 'rsvp' && words.length > 0 && currentIndex >= words.length) seekTo(0);
         if (reading.countdown) setCountdown(3);
         else setIsPlaying(true);
     };
@@ -425,20 +423,22 @@ function Reader({
         );
     };
 
-    /** The surrounding words, dimmed, under the flash. */
-    const renderRsvpContext = () => {
-        const from = Math.max(0, currentIndex - 6);
-        const to = Math.min(words.length, currentIndex + settings.chunkSize + 6);
-        return (
-            <p className="mt-4 text-sm text-center max-w-xl px-4 leading-relaxed" style={{ color: 'var(--reading-muted)', fontFamily: 'var(--reading-font)' }}>
-                {words.slice(from, to).map((w, i) => {
-                    const at = from + i;
-                    const on = at >= currentIndex && at < currentIndex + settings.chunkSize;
-                    return <span key={at} style={on ? { color: 'var(--reading-fg)', fontWeight: 700 } : undefined}>{w} </span>;
-                })}
-            </p>
-        );
-    };
+    /** The words immediately before and after the flash, shown above and below it. */
+    const CONTEXT_WORDS = 18;
+    const beforeWords = useMemo(() => {
+        const from = Math.max(0, currentIndex - CONTEXT_WORDS);
+        const slice = words.slice(from, currentIndex).join(' ');
+        if (!slice) return '';
+        return (from > 0 ? '… ' : '') + slice;
+    }, [words, currentIndex]);
+
+    const afterWords = useMemo(() => {
+        const start = Math.min(words.length, currentIndex + settings.chunkSize);
+        const to = Math.min(words.length, start + CONTEXT_WORDS);
+        const slice = words.slice(start, to).join(' ');
+        if (!slice) return '';
+        return slice + (to < words.length ? ' …' : '');
+    }, [words, currentIndex, settings.chunkSize]);
 
     if (!passage) return <div className="text-center mt-20 text-slate-400">No passage loaded.</div>;
 
@@ -579,19 +579,48 @@ function Reader({
 
                 {mode === 'rsvp' ? (
                     <div className="w-full flex flex-col items-center">
-                        <button
-                            type="button"
-                            onClick={togglePlay}
-                            aria-label={isPlaying ? 'Pause reading' : 'Start reading'}
-                            className="h-40 flex items-center justify-center w-full relative overflow-hidden cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 rounded-2xl"
+                        <div
+                            className="w-full rounded-2xl overflow-hidden flex flex-col items-center"
                             style={{ background: 'var(--reading-bg)', color: 'var(--reading-fg)' }}
                         >
-                            {reading.showFocalGuide && (
-                                <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 pointer-events-none" style={{ background: 'var(--reading-muted)', opacity: 0.35 }} />
+                            {reading.rsvpContext && (
+                                <div
+                                    aria-hidden="true"
+                                    className="h-14 md:h-16 w-full max-w-2xl px-6 pt-3 pb-1 flex items-end justify-center overflow-hidden select-none pointer-events-none"
+                                >
+                                    <p
+                                        className="text-sm md:text-base text-center leading-relaxed line-clamp-2"
+                                        style={{ color: 'var(--reading-muted)', fontFamily: 'var(--reading-font)', opacity: 0.8 }}
+                                    >
+                                        {beforeWords}
+                                    </p>
+                                </div>
                             )}
-                            {countdown === null && renderRsvpChunk()}
-                        </button>
-                        {reading.rsvpContext && renderRsvpContext()}
+                            <button
+                                type="button"
+                                onClick={togglePlay}
+                                aria-label={isPlaying ? 'Pause reading' : 'Start reading'}
+                                className="h-36 md:h-40 flex items-center justify-center w-full relative overflow-hidden cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 rounded-2xl"
+                            >
+                                {reading.showFocalGuide && (
+                                    <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 pointer-events-none" style={{ background: 'var(--reading-muted)', opacity: 0.35 }} />
+                                )}
+                                {countdown === null && renderRsvpChunk()}
+                            </button>
+                            {reading.rsvpContext && (
+                                <div
+                                    aria-hidden="true"
+                                    className="h-14 md:h-16 w-full max-w-2xl px-6 pt-1 pb-3 flex items-start justify-center overflow-hidden select-none pointer-events-none"
+                                >
+                                    <p
+                                        className="text-sm md:text-base text-center leading-relaxed line-clamp-2"
+                                        style={{ color: 'var(--reading-muted)', fontFamily: 'var(--reading-font)', opacity: 0.8 }}
+                                    >
+                                        {afterWords}
+                                    </p>
+                                </div>
+                            )}
+                        </div>
 
                         <div className="w-full flex flex-col items-center gap-2 mt-10">
                             <Scrubber index={cursorIndex} total={words.length} onSeek={seekTo} label="Reading position" />

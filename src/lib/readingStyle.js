@@ -84,7 +84,7 @@ export const DEFAULT_READING = {
     // In-reader behaviour, adjustable from the reader's settings drawer.
     pacerStyle: 'band',
     dimRead: true,        // fade words the pacer has passed
-    rsvpContext: false,   // show the surrounding words under the RSVP flash
+    rsvpContext: true,    // show before and after text above and below the RSVP flash
     countdown: true,      // 3-2-1 before playback starts
     speedRamp: false,     // ease in from 70% of the target over the first quarter
     zen: false            // hide the controls while playing

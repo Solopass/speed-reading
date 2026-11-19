@@ -43,6 +43,7 @@ const VideoSummary = lazy(() => import('./views/VideoSummary'));
 const ReadingEnvironment = lazy(() => import('./views/ReadingEnvironment'));
 const SettingsPanel = lazy(() => import('./views/SettingsPanel'));
 const Vocabulary = lazy(() => import('./views/Vocabulary'));
+const Documents = lazy(() => import('./views/Documents'));
 
 const DEFAULT_SETTINGS = {
     reading: DEFAULT_READING,
@@ -100,6 +101,7 @@ export default function App() {
     // Set when a passage is opened purely to re-test retention, so the result
     // is recorded against the spaced schedule rather than as a fresh read.
     const [isRecall, setIsRecall] = useState(false);
+    const [returnView, setReturnView] = useState('library');
 
     // --- Theme ---------------------------------------------------------------
     const [prefersDark, setPrefersDark] = useState(() => prefersDarkQuery()?.matches ?? true);
@@ -157,7 +159,9 @@ export default function App() {
     useEffect(() => {
         if (settings.aiProvider !== 'local') return undefined;
         const controller = new AbortController();
-        setLocalAi(prev => ({ ...prev, status: 'checking' }));
+        queueMicrotask(() => {
+            if (!controller.signal.aborted) setLocalAi(prev => ({ ...prev, status: 'checking' }));
+        });
         listModels(settings.ollamaUrl, { signal: controller.signal })
             .then(models => setLocalAi({ status: 'ready', models }))
             .catch(error => {
@@ -182,10 +186,11 @@ export default function App() {
         return entry;
     };
 
-    const startPassage = (passageData, { source = 'import', save = true, recall = false } = {}) => {
+    const startPassage = (passageData, { source = 'import', save = true, recall = false, returnTo = 'library' } = {}) => {
         const entry = save ? saveToLibrary(passageData, source) : null;
         setActivePassage({ ...passageData, id: entry?.id ?? passageData.id });
         setIsRecall(recall);
+        setReturnView(returnTo);
         setCurrentView('reader');
     };
 
@@ -195,15 +200,16 @@ export default function App() {
      */
     const startBaseline = (index = 0, { fresh = true } = {}) => {
         const passage = CALIBRATION_PASSAGES[Math.min(index, CALIBRATION_PASSAGES.length - 1)];
-        startPassage({ ...passage, baselineFresh: fresh }, { save: false });
+        startPassage({ ...passage, baselineFresh: fresh }, { save: false, returnTo: 'dashboard' });
     };
 
     /** Opens one chapter of a book, at its saved position or at `resumeFrom` (a bookmark). */
-    const openBookChapter = (bookId, chapterIndex, resumeFrom = null) => {
+    const openBookChapter = (bookId, chapterIndex, resumeFrom = null, returnTo = 'library') => {
         const book = findEntry(library, bookId);
         if (!isBook(book) || !book.chapters[chapterIndex]) return;
         setActivePassage(chapterPassage(book, chapterIndex, resumeFrom));
         setIsRecall(false);
+        setReturnView(returnTo);
         setCurrentView('reader');
     };
 
@@ -231,10 +237,11 @@ export default function App() {
         addNotification('Bookmarked.', 'success');
     };
 
-    const startPushDrill = (drillPassage, { source = 'builtin', save = true } = {}) => {
+    const startPushDrill = (drillPassage, { source = 'builtin', save = true, returnTo = 'library' } = {}) => {
         const entry = save ? saveToLibrary(drillPassage, source, 'push') : null;
         setActivePassage({ ...drillPassage, id: entry?.id ?? drillPassage.id });
         setIsRecall(false);
+        setReturnView(returnTo);
         setCurrentView('push');
     };
 
@@ -242,12 +249,13 @@ export default function App() {
      * Reopens a stored passage. A retention re-test goes straight to the
      * questions — re-reading first would measure nothing.
      */
-    const openSaved = (id, { recall = false } = {}) => {
+    const openSaved = (id, { recall = false, returnTo = 'library' } = {}) => {
         const entry = findEntry(library, id);
         if (!entry) return;
-        if (isBook(entry)) { openBookChapter(id, nextChapterIndex(entry)); return; }
+        if (isBook(entry)) { openBookChapter(id, nextChapterIndex(entry), null, returnTo); return; }
         setActivePassage(toPassage(entry));
         setIsRecall(recall);
+        setReturnView(returnTo);
         if (recall) setCurrentView('recall');
         else setCurrentView(entry.kind === 'push' ? 'push' : 'reader');
     };
@@ -481,10 +489,11 @@ export default function App() {
                                 onStart={() => navigate('library')}
                             />
                         )}
-                        {currentView === 'library' && <Library library={library} ai={ai} verifyQuestions={settings.verifyQuestions} readingWpm={activeOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onOpenSaved={openSaved} onDeleteSaved={deleteSaved} onSaveBook={saveBook} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} addNotification={addNotification} />}
+                        {currentView === 'library' && <Library library={library} ai={ai} verifyQuestions={settings.verifyQuestions} readingWpm={activeOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onOpenSaved={openSaved} onDeleteSaved={deleteSaved} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} addNotification={addNotification} />}
+                        {currentView === 'documents' && <Documents library={library} readingWpm={activeOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onOpenSaved={openSaved} onDeleteSaved={deleteSaved} onSaveBook={saveBook} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} addNotification={addNotification} />}
                         {currentView === 'recall' && <RecallCheck passage={activePassage} onDone={finishRecall} onExit={() => exitFocus('dashboard')} />}
-                        {currentView === 'push' && <SpeedPush reading={reading} patchReading={patchReading} updateSettings={updateSettings} passage={activePassage} targetWpm={activeOpeningWpm} intensity={userStats.pushIntensity} settings={settings} onFinish={finishSession} onExit={() => exitFocus('library')} />}
-                        {currentView === 'reader' && <Reader passage={activePassage} settings={settings} reading={reading} patchReading={patchReading} updateSettings={updateSettings} initialWpm={activeOpeningWpm} resumeFrom={activePassage?.bookId ? activePassage.resumeFrom : isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id))} onFinish={finishSession} onLeave={handleReaderLeave} onBookmark={activePassage?.bookId ? bookmarkHere : null} onExit={() => exitFocus(activePassage?.isCalibration ? 'dashboard' : 'library')} addNotification={addNotification} />}
+                        {currentView === 'push' && <SpeedPush reading={reading} patchReading={patchReading} updateSettings={updateSettings} passage={activePassage} targetWpm={activeOpeningWpm} intensity={userStats.pushIntensity} settings={settings} onFinish={finishSession} onExit={() => exitFocus(returnView)} />}
+                        {currentView === 'reader' && <Reader passage={activePassage} settings={settings} reading={reading} patchReading={patchReading} updateSettings={updateSettings} initialWpm={activeOpeningWpm} resumeFrom={activePassage?.bookId ? activePassage.resumeFrom : isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id))} onFinish={finishSession} onLeave={handleReaderLeave} onBookmark={activePassage?.bookId ? bookmarkHere : null} onExit={() => exitFocus(activePassage?.isCalibration ? 'dashboard' : returnView)} addNotification={addNotification} />}
                         {currentView === 'tools' && <Tools drills={drills} adaptiveStart={settings.autoAdaptive} onDrillComplete={handleDrillComplete} addNotification={addNotification} />}
                         {currentView === 'vocab' && <Vocabulary vocab={vocab} setVocab={setVocab} library={library} ai={ai} addNotification={addNotification} />}
                         {currentView === 'analytics' && <Analytics history={sessionHistory} drills={drills} stats={userStats} theme={theme} />}
