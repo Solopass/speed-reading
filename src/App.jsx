@@ -24,6 +24,7 @@ import {
 import { pickNextAction } from './lib/nextAction';
 import { DEFAULT_THEME, applyTheme, resolveTheme } from './lib/theme';
 import usePersistentState from './lib/usePersistentState';
+import { loadLibraryIdb, saveLibraryIdb } from './lib/idbLibrary';
 import { PhoneHeader, PhoneTabBar, Sidebar } from './components/AppNav';
 import Toasts from './components/Toasts';
 import Library from './views/Library';
@@ -96,7 +97,44 @@ export default function App() {
     const [settings, setSettings] = usePersistentState('speedReadSettings', migrateSettings, () => ({ ...DEFAULT_SETTINGS }), onSaveError);
     const [userStats, setUserStats] = usePersistentState('speedReadStats', migrateStats, () => ({ ...DEFAULT_STATS }), onSaveError);
     const [sessionHistory, setSessionHistory] = usePersistentState('speedReadHistory', (raw) => migrateHistory(raw ?? []), [], onSaveError);
-    const [library, setLibrary] = usePersistentState('speedReadLibrary', (raw) => migrateLibrary(raw ?? []), [], onSaveError);
+    const [library, setLibrary] = useState(() => {
+        try {
+            const raw = localStorage.getItem('speedReadLibrary');
+            return raw ? migrateLibrary(JSON.parse(raw)) : [];
+        } catch {
+            return [];
+        }
+    });
+    const libraryReadyRef = useRef(false);
+
+    useEffect(() => {
+        let cancelled = false;
+        loadLibraryIdb().then((stored) => {
+            if (cancelled) return;
+            libraryReadyRef.current = true;
+            if (stored && stored.length > 0) {
+                setLibrary(migrateLibrary(stored));
+            } else {
+                setLibrary(prev => {
+                    if (prev.length > 0) saveLibraryIdb(prev);
+                    return prev;
+                });
+            }
+        });
+        return () => { cancelled = true; };
+    }, []);
+
+    useEffect(() => {
+        if (!libraryReadyRef.current) return;
+        saveLibraryIdb(library);
+        try {
+            const json = JSON.stringify(library);
+            if (json.length * 2 < 3_000_000) localStorage.setItem('speedReadLibrary', json);
+            else localStorage.removeItem('speedReadLibrary');
+        } catch {
+            // IndexedDB is the primary store; ignore localStorage quota overflow.
+        }
+    }, [library]);
     const [plans, setPlans] = usePersistentState('speedReadPlans', (raw) => migratePlans(raw ?? []), [], onSaveError);
     const [drills, setDrills] = usePersistentState('speedReadDrills', (raw) => migrateDrills(raw ?? []), [], onSaveError);
     const [vocab, setVocab] = usePersistentState('speedReadVocab', migrateVocab, [], onSaveError);
@@ -217,18 +255,8 @@ export default function App() {
         setCurrentView('reader');
     };
 
-    /**
-     * Books live in the library's localStorage key, which shares a ~5 MB
-     * browser limit with everything else. A book that would push the library
-     * near it is refused up front: a failed write would stop every later
-     * library save, not just the book's.
-     */
+    /** Books and documents live in IndexedDB so large EPUBs and PDFs are not capped by localStorage. */
     const saveBook = (book) => {
-        const size = JSON.stringify(upsertEntry(library, book)).length * 2; // UTF-16 bytes
-        if (size > 4_000_000) {
-            addNotification(`That book is too big to store with your library (${(size / 1e6).toFixed(1)} MB of about 4). Delete another book first.`);
-            return false;
-        }
         setLibrary(prev => upsertEntry(prev, book));
         addNotification(`Added "${book.title}" as a book: ${book.chapters.length} chapters.`, 'success');
         return true;
@@ -509,7 +537,7 @@ export default function App() {
                         )}
                         {currentView === 'library' && <Library library={library} ai={ai} verifyQuestions={settings.verifyQuestions} readingWpm={activeOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onOpenSaved={openSaved} onDeleteSaved={deleteSaved} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} addNotification={addNotification} />}
                         {currentView === 'documents' && <Documents library={library} readingWpm={readerOpeningWpm} onOpenSaved={(id, opts) => openSaved(id, { ...opts, returnTo: 'documents' })} onDeleteSaved={deleteSaved} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} onOpenUpload={() => navigate('upload')} />}
-                        {currentView === 'upload' && <Upload library={library} readingWpm={readerOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onSaveBook={saveBook} onSavePassage={(p) => saveToLibrary(p, 'import')} onOpenDocuments={() => navigate('documents')} addNotification={addNotification} />}
+                        {currentView === 'upload' && <Upload library={library} readingWpm={readerOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onSaveBook={saveBook} onSavePassage={(p) => saveToLibrary(p, 'import')} onOpenSaved={(id) => openSaved(id, { returnTo: 'documents' })} onDeleteSaved={deleteSaved} onOpenDocuments={() => navigate('documents')} addNotification={addNotification} />}
                         {currentView === 'recall' && <RecallCheck passage={activePassage} onDone={finishRecall} onExit={() => exitFocus('dashboard')} />}
                         {currentView === 'push' && <SpeedPush reading={reading} patchReading={patchReading} updateSettings={updateSettings} passage={activePassage} targetWpm={activeOpeningWpm} intensity={userStats.pushIntensity} settings={settings} onFinish={finishSession} onExit={() => exitFocus(returnView)} />}
                         {currentView === 'reader' && <Reader key={activePassage?.id + ':' + (activePassage?.chapterIndex ?? '')} passage={activePassage} book={activeBook} onSelectChapter={activeBook ? selectBookChapter : null} settings={settings} reading={reading} patchReading={patchReading} updateSettings={updateSettings} initialWpm={readerOpeningWpm} resumeFrom={activePassage?.bookId ? activePassage.resumeFrom : isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id))} onFinish={finishSession} onLeave={handleReaderLeave} onBookmark={activePassage?.bookId ? bookmarkHere : null} onExit={() => exitFocus(activePassage?.isCalibration ? 'dashboard' : returnView)} addNotification={addNotification} />}

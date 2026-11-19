@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-    SUPPORTED_EXTENSIONS, extensionOf, isSupported, normalizeText, stripMarkdown, stripRepeatedHeadersFooters, titleFromFilename
+    SUPPORTED_EXTENSIONS, extensionOf, isSupported, normalizeText, normalizeTextWithStats, orderPdfItems, stripMarkdown, stripRepeatedHeadersFooters, titleFromFilename
 } from './importText';
 
 const NBSP = String.fromCharCode(160);
@@ -111,6 +111,34 @@ describe('stripMarkdown and optional filters', () => {
         const raw = 'See https://example.com/paper for details [1, 2] and more [14].';
         expect(normalizeText(raw, { stripUrls: true, stripCitations: true })).toBe('See for details and more.');
         expect(normalizeText(raw)).toBe(raw);
+    });
+
+    it('reports cleaning stats via normalizeTextWithStats', () => {
+        const raw = 'speed-\nreading\u00AD\nPage 1\nChapter 1 ........ 5';
+        const { text, stats } = normalizeTextWithStats(raw);
+        expect(text).toBe('speedreading\n\nChapter 1 5');
+        expect(stats.rejoinedHyphens).toBe(1);
+        expect(stats.junkChars).toBe(1);
+        expect(stats.pageNumbers).toBe(1);
+        expect(stats.dotLeaders).toBe(1);
+    });
+});
+
+describe('orderPdfItems', () => {
+    it('reads left column top-to-bottom before right column in 2-column PDFs', () => {
+        const item = (str, x, y) => ({ str, width: 40, transform: [1, 0, 0, 1, x, y] });
+        const interleaved = [
+            item('L1', 40, 700), item('R1', 340, 700),
+            item('L2', 40, 680), item('R2', 340, 680),
+            item('L3', 40, 660), item('R3', 340, 660),
+            item('L4', 40, 640), item('R4', 340, 640),
+            item('L5', 40, 620), item('R5', 340, 620),
+            item('L6', 40, 600), item('R6', 340, 600)
+        ];
+        expect(orderPdfItems(interleaved, 600).map(i => i.str)).toEqual([
+            'L1', 'L2', 'L3', 'L4', 'L5', 'L6',
+            'R1', 'R2', 'R3', 'R4', 'R5', 'R6'
+        ]);
     });
 });
 

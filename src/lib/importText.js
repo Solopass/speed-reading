@@ -53,20 +53,20 @@ const URL_RE = /https?:\/\/\S+/gi;
 const CITATION_RE = /\[\d+(?:[\s,\-–]+\d+)*\]/g;
 
 /**
- * Paragraph structure is what the reader renders and what the pacer measures
- * lines from, so blank lines are preserved while runs of whitespace inside a
- * paragraph are collapsed and extraction artifacts are scrubbed.
+ * Scrubs extraction artifacts and returns both the cleaned text and counts of
+ * what was removed so the Upload UI can show a summary and offer undo.
  */
-export function normalizeText(raw, { stripUrls = false, stripCitations = false } = {}) {
+export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations = false } = {}) {
+    const stats = { junkChars: 0, rejoinedHyphens: 0, pageNumbers: 0, dotLeaders: 0 };
     let scrubbed = String(raw)
-        // NFKC folds compatibility characters: non-breaking spaces become ordinary
-        // ones, and PDF typographic ligatures (fi, fl) decompose back into letters.
         .normalize('NFKC')
-        .replace(JUNK_CHARS_RE, '')
-        .replace(ASTRAL_PUA_RE, '')
+        .replace(JUNK_CHARS_RE, () => { stats.junkChars += 1; return ''; })
+        .replace(ASTRAL_PUA_RE, () => { stats.junkChars += 1; return ''; })
         .replace(/\r\n?/g, '\n')
-        // Rejoin words hyphenated across a single wrapped line (common in PDFs).
-        .replace(/([A-Za-z]{2,})-[ \t]*\n[ \t]*([a-z]{2,})/g, '$1$2');
+        .replace(/([A-Za-z]{2,})-[ \t]*\n[ \t]*([a-z]{2,})/g, (_, a, b) => {
+            stats.rejoinedHyphens += 1;
+            return `${a}${b}`;
+        });
 
     if (stripUrls) scrubbed = scrubbed.replace(URL_RE, '');
     if (stripCitations) scrubbed = scrubbed.replace(CITATION_RE, '');
@@ -75,21 +75,35 @@ export function normalizeText(raw, { stripUrls = false, stripCitations = false }
     const rawLines = scrubbed.split('\n');
     const multiLine = rawLines.length > 2;
 
-    return rawLines
+    const text = rawLines
         .map(line => {
             let clean = line
                 .replace(LEADING_BULLET_RE, '')
-                .replace(/\.{4,}/g, ' ')
+                .replace(/\.{4,}/g, () => { stats.dotLeaders += 1; return ' '; })
                 .replace(STRAY_SYMBOL_TOKEN_RE, '$1')
                 .replace(/[ \t]+/g, ' ')
                 .trim();
             if (!clean || DIVIDER_LINE_RE.test(clean)) return '';
-            if (multiLine && (PAGE_NUMBER_RE.test(clean) || /^\d{1,4}$/.test(clean))) return '';
+            if (multiLine && (PAGE_NUMBER_RE.test(clean) || /^\d{1,4}$/.test(clean))) {
+                stats.pageNumbers += 1;
+                return '';
+            }
             return clean;
         })
         .join('\n')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
+
+    return { text, stats };
+}
+
+/**
+ * Paragraph structure is what the reader renders and what the pacer measures
+ * lines from, so blank lines are preserved while runs of whitespace inside a
+ * paragraph are collapsed and extraction artifacts are scrubbed.
+ */
+export function normalizeText(raw, options = {}) {
+    return normalizeTextWithStats(raw, options).text;
 }
 
 const BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, dd, dt, figcaption';
@@ -178,7 +192,7 @@ async function readEpub(file) {
 }
 
 /** DOCX is also a zip; the prose lives in word/document.xml as <w:t> runs. */
-async function readDocx(file) {
+async function readDocx(file, options) {
     const { unzipSync } = await import('fflate');
     const zip = unzipSync(new Uint8Array(await file.arrayBuffer()));
 
@@ -187,12 +201,20 @@ async function readDocx(file) {
 
     const doc = new DOMParser().parseFromString(decode(documentXml), 'application/xml');
     const paragraphs = [...doc.getElementsByTagName('w:p')]
-        .map(p => [...p.getElementsByTagName('w:t')].map(t => t.textContent).join(''))
-        .map(line => line.trim())
+        .map(p => {
+            const text = [...p.getElementsByTagName('w:t')].map(t => t.textContent).join('').trim();
+            if (!text) return '';
+            const style = p.getElementsByTagName('w:pStyle')[0]?.getAttribute('w:val') ?? '';
+            if (/^(Heading1|Title)$/i.test(style)) return `# ${text}`;
+            if (/^Heading[2-3]$/i.test(style)) return `## ${text}`;
+            return text;
+        })
         .filter(Boolean);
 
     if (!paragraphs.length) throw new Error('That .docx appears to contain no text.');
-    return { title: null, text: normalizeText(paragraphs.join('\n\n')) };
+    const rawText = paragraphs.join('\n\n');
+    const { text, stats } = normalizeTextWithStats(rawText, options);
+    return { title: null, text, rawText, stats };
 }
 
 const headerKey = (line) => line.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -232,6 +254,68 @@ export function stripRepeatedHeadersFooters(pages) {
 }
 
 /**
+ * Reorders PDF text items into reading order. When a page uses a two-column
+ * layout, reads the left column top-to-bottom before the right column.
+ */
+export function orderPdfItems(items, pageWidth = 600) {
+    const textItems = items.filter(it => it && 'str' in it && it.str.trim() && Array.isArray(it.transform));
+    if (textItems.length < 8) return items;
+
+    const mid = pageWidth * 0.5;
+    const left = textItems.filter(it => it.transform[4] < mid - 12);
+    const right = textItems.filter(it => it.transform[4] >= mid + 8);
+    const spanning = textItems.filter(it => {
+        const x = it.transform[4];
+        const w = it.width ?? 0;
+        return x < mid - 12 && x + w > mid + 20;
+    });
+
+    const isTwoCol = left.length >= 6 && right.length >= 6 && spanning.length < 3;
+    const byYThenX = (a, b) => {
+        const dy = b.transform[5] - a.transform[5];
+        if (Math.abs(dy) > 3) return dy;
+        return a.transform[4] - b.transform[4];
+    };
+
+    if (!isTwoCol) return [...textItems].sort(byYThenX);
+    return [...left].sort(byYThenX).concat([...right].sort(byYThenX));
+}
+
+async function pdfOutlineChapters(pdf, cleanPages) {
+    try {
+        const outline = await pdf.getOutline();
+        if (!Array.isArray(outline) || outline.length < 2) return null;
+
+        const entries = [];
+        for (const item of outline) {
+            if (!item?.title || !item.dest) continue;
+            const dest = typeof item.dest === 'string'
+                ? await pdf.getDestination(item.dest).catch(() => null)
+                : item.dest;
+            const ref = Array.isArray(dest) ? dest[0] : null;
+            if (!ref) continue;
+            const pageIndex = await pdf.getPageIndex(ref).catch(() => -1);
+            if (pageIndex >= 0 && pageIndex < cleanPages.length) {
+                entries.push({ title: item.title.trim(), pageIndex });
+            }
+        }
+        if (entries.length < 2) return null;
+
+        entries.sort((a, b) => a.pageIndex - b.pageIndex);
+        const chapters = [];
+        for (let i = 0; i < entries.length; i++) {
+            const start = entries[i].pageIndex;
+            const end = i + 1 < entries.length ? entries[i + 1].pageIndex : cleanPages.length;
+            const text = normalizeText(cleanPages.slice(start, Math.max(start + 1, end)).join('\n\n'));
+            if (text) chapters.push({ title: entries[i].title, text });
+        }
+        return chapters.length >= 2 ? chapters : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
  * pdf.js gives positioned text items rather than lines, so this rebuilds
  * paragraphs from vertical gaps: a large jump means a new paragraph, a small
  * one a wrapped line.
@@ -246,11 +330,13 @@ async function readPdf(file, options = {}) {
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
         options.onProgress?.({ page: pageNumber, totalPages: pdf.numPages });
         const page = await pdf.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: 1 });
         const content = await page.getTextContent();
+        const ordered = orderPdfItems(content.items, viewport.width);
 
         let text = '';
         let lastY = null;
-        for (const item of content.items) {
+        for (const item of ordered) {
             if (!('str' in item)) continue;
             const y = item.transform[5];
             if (lastY !== null) {
@@ -265,10 +351,20 @@ async function readPdf(file, options = {}) {
         if (pageNumber % 4 === 0) await new Promise(r => setTimeout(r, 0));
     }
 
-    const text = normalizeText(stripRepeatedHeadersFooters(pages).join('\n\n'), options);
+    const strippedPages = stripRepeatedHeadersFooters(pages);
+    const removedHeaders = pages.reduce((n, p, i) => (p !== strippedPages[i] ? n + 1 : n), 0);
+    const rawText = pages.join('\n\n');
+    const { text, stats } = normalizeTextWithStats(strippedPages.join('\n\n'), options);
     if (!text) throw new Error('No text found in that PDF. Scanned pages need OCR first.');
 
-    return { title: (await pdf.getMetadata().catch(() => null))?.info?.Title?.trim() || null, text };
+    const chapters = await pdfOutlineChapters(pdf, strippedPages);
+    return {
+        title: (await pdf.getMetadata().catch(() => null))?.info?.Title?.trim() || null,
+        text,
+        rawText,
+        chapters,
+        stats: { ...stats, repeatedHeaders: removedHeaders }
+    };
 }
 
 const READERS = {
@@ -291,7 +387,7 @@ export async function extractText(file, options = {}) {
         throw new Error(`Cannot read ${extension || 'that file'}. Supported: ${SUPPORTED_EXTENSIONS.join(', ')}.`);
     }
 
-    const { title, text, chapters = null } = await reader(file, options);
+    const { title, text, chapters = null, rawText = null, stats = null } = await reader(file, options);
     const cleaned = (options.stripUrls || options.stripCitations)
         ? normalizeText(text, options)
         : text;
@@ -299,6 +395,6 @@ export async function extractText(file, options = {}) {
         throw new Error('That file did not contain enough readable text.');
     }
 
-    // `chapters` is null unless the format carries its own (EPUB).
-    return { title: title || titleFromFilename(file.name), text: cleaned, chapters };
+    // `chapters` is null unless the format carries its own (EPUB or PDF outline).
+    return { title: title || titleFromFilename(file.name), text: cleaned, chapters, rawText, stats };
 }

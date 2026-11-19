@@ -1,18 +1,37 @@
 import { useMemo, useRef, useState } from 'react';
-import { Activity, ChevronRight, Eraser, HardDrive, Play, Upload as UploadIcon } from 'lucide-react';
+import {
+    Activity, AlertTriangle, ChevronRight, Eraser, Globe, HardDrive, Play, Undo2, Upload as UploadIcon
+} from 'lucide-react';
 import { splitPassage } from '../lib/protocol';
-import { ACCEPT_ATTRIBUTE, SUPPORTED_EXTENSIONS, extractText, normalizeText } from '../lib/importText';
+import {
+    ACCEPT_ATTRIBUTE, SUPPORTED_EXTENSIONS, extractFromHtml, extractText, normalizeTextWithStats
+} from '../lib/importText';
 import { BOOK_MIN_WORDS, buildChapters, createBook } from '../lib/book';
 
 const nextId = (prefix) => `${prefix}-${Date.now()}`;
-const STORAGE_LIMIT_BYTES = 4_000_000;
+
+function formatCleanSummary(stats) {
+    if (!stats) return '';
+    const parts = [];
+    if (stats.repeatedHeaders) parts.push(`${stats.repeatedHeaders} page header/footer${stats.repeatedHeaders === 1 ? '' : 's'}`);
+    if (stats.pageNumbers) parts.push(`${stats.pageNumbers} page number${stats.pageNumbers === 1 ? '' : 's'}`);
+    if (stats.rejoinedHyphens) parts.push(`${stats.rejoinedHyphens} hyphenated wrap${stats.rejoinedHyphens === 1 ? '' : 's'}`);
+    if (stats.junkChars) parts.push(`${stats.junkChars} stray char${stats.junkChars === 1 ? '' : 's'}`);
+    if (stats.dotLeaders) parts.push(`${stats.dotLeaders} dot leader${stats.dotLeaders === 1 ? '' : 's'}`);
+    return parts.join(' · ');
+}
 
 export default function Upload({
-    library = [], readingWpm = 300, onStartPassage, onStartPushDrill, onSaveBook, onSavePassage, onOpenDocuments, addNotification
+    library = [], readingWpm = 300, onStartPassage, onStartPushDrill, onSaveBook, onSavePassage,
+    onOpenSaved, onDeleteSaved, onOpenDocuments, addNotification
 }) {
     const [customText, setCustomText] = useState('');
+    const [rawBeforeClean, setRawBeforeClean] = useState(null);
+    const [cleanStats, setCleanStats] = useState(null);
     const [title, setTitle] = useState('');
-    // The file's own chapters (EPUB), kept until the text is edited by hand.
+    const [articleUrl, setArticleUrl] = useState('');
+    const [fetchingUrl, setFetchingUrl] = useState(false);
+    // The file's own chapters (EPUB or PDF outline), kept until the text is edited by hand.
     const [importedChapters, setImportedChapters] = useState(null);
     const [importing, setImporting] = useState(false);
     const [pdfProgress, setPdfProgress] = useState(null);
@@ -22,7 +41,12 @@ export default function Upload({
     const fileRef = useRef(null);
 
     const libraryBytes = useMemo(() => JSON.stringify(library).length * 2, [library]);
-    const storagePct = Math.min(100, Math.round((libraryBytes / STORAGE_LIMIT_BYTES) * 100));
+
+    const duplicate = useMemo(() => {
+        const norm = title.trim().toLowerCase();
+        if (!norm) return null;
+        return library.find(item => item.title?.trim().toLowerCase() === norm) ?? null;
+    }, [library, title]);
 
     const importBatch = async (files) => {
         let added = 0;
@@ -70,6 +94,8 @@ export default function Upload({
                 onProgress: (p) => setPdfProgress({ ...p, name: file.name })
             });
             setCustomText(res.text);
+            setRawBeforeClean(res.rawText ?? null);
+            setCleanStats(res.stats ?? null);
             setTitle(res.title);
             setImportedChapters(res.chapters);
             addNotification(`Loaded ${res.text.split(/\s+/).length.toLocaleString()} words from ${file.name}.`);
@@ -81,6 +107,51 @@ export default function Upload({
             setImporting(false);
             setPdfProgress(null);
         }
+    };
+
+    const handleFetchUrl = async (e) => {
+        e.preventDefault();
+        const url = articleUrl.trim();
+        if (!url) return;
+        setFetchingUrl(true);
+        try {
+            const resp = await fetch(`/api/fetch-article?url=${encodeURIComponent(url)}`);
+            if (resp.status === 404) {
+                throw new Error('URL import requires the local dev or preview server.');
+            }
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'Could not fetch that URL.');
+            const extracted = extractFromHtml(data.html);
+            const { text, stats } = normalizeTextWithStats(extracted.text, { stripUrls, stripCitations });
+            if (!text || text.split(/\s+/).length < 10) {
+                throw new Error('That page did not contain enough readable article text.');
+            }
+            setCustomText(text);
+            setRawBeforeClean(extracted.text);
+            setCleanStats(stats);
+            setTitle(extracted.title || extracted.heading || new URL(url).hostname);
+            setImportedChapters(null);
+            addNotification(`Imported ${text.split(/\s+/).length.toLocaleString()} words from ${new URL(url).hostname}.`, 'success');
+        } catch (error) {
+            addNotification(error.message || 'Could not import that URL.');
+        } finally {
+            setFetchingUrl(false);
+        }
+    };
+
+    const handleCleanClick = () => {
+        setRawBeforeClean(customText);
+        const { text, stats } = normalizeTextWithStats(customText, { stripUrls, stripCitations });
+        setCustomText(text);
+        setCleanStats(stats);
+        addNotification('Cleaned formatting and stray characters.');
+    };
+
+    const handleUndoClean = () => {
+        if (rawBeforeClean === null) return;
+        setCustomText(rawBeforeClean);
+        setRawBeforeClean(null);
+        setCleanStats(null);
     };
 
     const handleDrop = (e) => {
@@ -122,17 +193,22 @@ export default function Upload({
         return buildChapters({ text: customText, chapters: importedChapters });
     }, [canBeBook, customText, importedChapters]);
 
-    const handleAddBook = () => {
+    const handleAddBook = (replaceId = null) => {
         if (previewChapters.length < 2) {
             addNotification('Not enough text to split into chapters. Read it as one passage instead.');
             return;
         }
+        if (replaceId) onDeleteSaved?.(replaceId);
         if (onSaveBook(createBook({ title: title.trim() || 'Imported book', chapters: previewChapters })) === false) return;
         setCustomText('');
+        setRawBeforeClean(null);
+        setCleanStats(null);
         setTitle('');
         setImportedChapters(null);
         onOpenDocuments?.();
     };
+
+    const cleanSummary = formatCleanSummary(cleanStats);
 
     return (
         <div className="max-w-4xl mx-auto space-y-6 animate-in slide-in-from-bottom-4 pb-12">
@@ -142,17 +218,13 @@ export default function Upload({
                         <UploadIcon className="text-purple-500 w-7 h-7" /> Upload
                     </h1>
                     <p className="text-slate-400 mt-2 max-w-2xl leading-relaxed">
-                        Import an EPUB, PDF, DOCX, HTML, Markdown, or text file — or drop multiple files at once to save them to your
-                        Documents tab.
+                        Import EPUB, PDF, DOCX, HTML, Markdown, or text files — or paste an article URL or text directly.
                     </p>
                 </div>
-                <div className="bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 min-w-[11rem]">
-                    <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400 mb-1">
-                        <span className="flex items-center gap-1"><HardDrive size={12} /> Library storage</span>
-                        <span className="font-mono">{(libraryBytes / 1e6).toFixed(1)} / 4.0 MB</span>
-                    </div>
-                    <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                        <div className={`h-full ${storagePct > 85 ? 'bg-amber-500' : 'bg-purple-500'}`} style={{ width: `${storagePct}%` }} />
+                <div className="bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2">
+                    <div className="flex items-center gap-2 text-xs text-slate-400">
+                        <HardDrive size={13} className="text-purple-400" />
+                        <span>IndexedDB library: <strong className="font-mono text-slate-200">{(libraryBytes / 1e6).toFixed(2)} MB</strong></span>
                     </div>
                 </div>
             </div>
@@ -189,6 +261,27 @@ export default function Upload({
                         />
                     </div>
 
+                    <form onSubmit={handleFetchUrl} className="flex gap-2 flex-col sm:flex-row">
+                        <div className="relative flex-1">
+                            <Globe size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+                            <input
+                                type="url"
+                                value={articleUrl}
+                                onChange={(e) => setArticleUrl(e.target.value)}
+                                placeholder="https://... paste an article URL to import"
+                                aria-label="Article URL"
+                                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-3.5 py-2 text-sm text-white focus:outline-none focus:border-purple-500 transition-colors"
+                            />
+                        </div>
+                        <button
+                            type="submit"
+                            disabled={fetchingUrl || !articleUrl.trim()}
+                            className="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition-colors shrink-0"
+                        >
+                            {fetchingUrl ? 'Fetching...' : 'Fetch article'}
+                        </button>
+                    </form>
+
                     {pdfProgress && (
                         <div className="space-y-1.5">
                             <div className="flex justify-between text-xs text-slate-400">
@@ -204,7 +297,7 @@ export default function Upload({
                     )}
 
                     <p className="text-[11px] text-slate-600">
-                        Supported: {SUPPORTED_EXTENSIONS.join('   ')} — Markdown formatting, PDF headers/footers, and stray symbols are scrubbed automatically.
+                        Supported: {SUPPORTED_EXTENSIONS.join('   ')} — multi-column PDFs, PDF outlines, Word headings, and Markdown are handled automatically.
                     </p>
 
                     <div>
@@ -219,6 +312,33 @@ export default function Upload({
                         />
                     </div>
 
+                    {duplicate && (
+                        <div className="flex items-center justify-between gap-3 flex-wrap bg-amber-950/25 border border-amber-800/50 rounded-xl px-4 py-2.5 text-xs">
+                            <span className="flex items-center gap-2 text-amber-300">
+                                <AlertTriangle size={14} className="shrink-0" />
+                                Already in your library ({duplicate.words.toLocaleString()} words).
+                            </span>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => onOpenSaved?.(duplicate.id)}
+                                    className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-bold transition-colors"
+                                >
+                                    Open existing
+                                </button>
+                                {canBeBook && (
+                                    <button
+                                        type="button"
+                                        onClick={() => handleAddBook(duplicate.id)}
+                                        className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold transition-colors"
+                                    >
+                                        Replace book
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
                     <textarea
                         value={customText}
                         onChange={(e) => { setCustomText(e.target.value); setImportedChapters(null); }}
@@ -226,6 +346,21 @@ export default function Upload({
                         aria-label="Document text to read"
                         className="w-full min-h-[14rem] bg-slate-950 border border-slate-700 rounded-xl p-4 text-white resize-y focus:outline-none focus:border-purple-500 transition-colors text-sm"
                     />
+
+                    {(cleanSummary || rawBeforeClean !== null) && (
+                        <div className="flex items-center justify-between gap-2 flex-wrap bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-400">
+                            <span>{cleanSummary ? `Cleaned: ${cleanSummary}` : 'Text cleaned.'}</span>
+                            {rawBeforeClean !== null && (
+                                <button
+                                    type="button"
+                                    onClick={handleUndoClean}
+                                    className="inline-flex items-center gap-1 text-purple-400 hover:text-purple-300 font-bold"
+                                >
+                                    <Undo2 size={12} /> Undo clean
+                                </button>
+                            )}
+                        </div>
+                    )}
 
                     <div className="flex items-center justify-between gap-3 flex-wrap">
                         <div className="flex items-center gap-4 flex-wrap text-xs text-slate-400">
@@ -256,10 +391,7 @@ export default function Upload({
                                 </span>
                                 <button
                                     type="button"
-                                    onClick={() => {
-                                        setCustomText(prev => normalizeText(prev, { stripUrls, stripCitations }));
-                                        addNotification('Cleaned formatting and stray characters.');
-                                    }}
+                                    onClick={handleCleanClick}
                                     className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-white border border-slate-800 hover:border-slate-600 px-3 py-1.5 rounded-lg transition-colors"
                                 >
                                     <Eraser size={13} /> Clean text
@@ -291,7 +423,7 @@ export default function Upload({
                     {canBeBook && (
                         <button
                             type="button"
-                            onClick={handleAddBook}
+                            onClick={() => handleAddBook(null)}
                             className="w-full bg-slate-800 hover:bg-slate-700 border border-purple-500/40 text-white font-bold py-3.5 rounded-xl transition-colors"
                         >
                             Add as a book
