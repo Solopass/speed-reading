@@ -166,6 +166,42 @@ async function readDocx(file) {
     return { title: null, text: normalizeText(paragraphs.join('\n\n')) };
 }
 
+const headerKey = (line) => line.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/**
+ * Removes running headers and footers that repeat across many PDF pages
+ * (including odd/even alternating headers or headers with changing page numbers).
+ */
+export function stripRepeatedHeadersFooters(pages) {
+    if (!Array.isArray(pages) || pages.length < 3) return pages ?? [];
+
+    const splitPages = pages.map(p => String(p).split('\n').map(l => l.trim()).filter(Boolean));
+    const counts = new Map();
+
+    for (const lines of splitPages) {
+        if (lines.length === 0) continue;
+        const seenOnPage = new Set();
+        for (const candidate of [lines[0], lines[lines.length - 1]]) {
+            if (!candidate || candidate.length > 100) continue;
+            const key = headerKey(candidate);
+            if (!key || seenOnPage.has(key)) continue;
+            seenOnPage.add(key);
+            counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+    }
+
+    const threshold = Math.max(3, Math.ceil(pages.length * 0.35));
+    const repeated = new Set([...counts.entries()].filter(([, n]) => n >= threshold).map(([k]) => k));
+    if (repeated.size === 0) return pages;
+
+    return splitPages.map(lines => {
+        const next = [...lines];
+        if (next.length && next[0].length <= 100 && repeated.has(headerKey(next[0]))) next.shift();
+        if (next.length && next[next.length - 1].length <= 100 && repeated.has(headerKey(next[next.length - 1]))) next.pop();
+        return next.join('\n\n');
+    });
+}
+
 /**
  * pdf.js gives positioned text items rather than lines, so this rebuilds
  * paragraphs from vertical gaps: a large jump means a new paragraph, a small
@@ -198,7 +234,7 @@ async function readPdf(file) {
         pages.push(text);
     }
 
-    const text = normalizeText(pages.join('\n\n'));
+    const text = normalizeText(stripRepeatedHeadersFooters(pages).join('\n\n'));
     if (!text) throw new Error('No text found in that PDF. Scanned pages need OCR first.');
 
     return { title: (await pdf.getMetadata().catch(() => null))?.info?.Title?.trim() || null, text };

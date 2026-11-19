@@ -37,6 +37,7 @@ export default function PacedText({
     bionicStrength = 0.5,
     pacerStyle = 'band',
     dimRead = true,
+    initialIndex = 0,
     seek = null,          // { index, nonce }: jump the cursor to a word
     onWordClick,
     onProgress,
@@ -59,8 +60,9 @@ export default function PacedText({
     );
 
     const [lines, setLines] = useState([]);
-    const [progress, setProgress] = useState(0); // fractional word index
-    const progressRef = useRef(0);
+    const clampedInitial = Math.max(0, Math.min(totalWords, initialIndex));
+    const [progress, setProgress] = useState(clampedInitial); // fractional word index
+    const progressRef = useRef(clampedInitial);
 
     // Group word spans into visual lines by their vertical position. Reading
     // this from the DOM rather than guessing means the pacer follows real
@@ -108,13 +110,17 @@ export default function PacedText({
 
     useEffect(() => {
         let cancelled = false;
+        const startAt = Math.max(0, Math.min(totalWords, initialIndex));
         queueMicrotask(() => {
             if (cancelled) return;
-            progressRef.current = 0;
-            setProgress(0);
+            progressRef.current = startAt;
+            setProgress(startAt);
+            if (startAt > 0) {
+                wordRefs.current[Math.min(startAt, Math.max(0, totalWords - 1))]?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+            }
         });
         return () => { cancelled = true; };
-    }, [text]);
+    }, [text, initialIndex, totalWords]);
 
     // An external jump (rewind, skip, click on the progress bar). Keyed on a
     // nonce so jumping to the same word twice still moves the cursor.
@@ -126,6 +132,7 @@ export default function PacedText({
             if (cancelled) return;
             progressRef.current = index;
             setProgress(index);
+            wordRefs.current[Math.min(index, Math.max(0, totalWords - 1))]?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
         });
         return () => { cancelled = true; };
     }, [seek, totalWords]);

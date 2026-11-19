@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-    Bookmark, Maximize2, Minimize2, Minus, Pause, Play, Plus, RotateCcw, Settings2, SkipBack, SkipForward, Target, Volume2
+    Bookmark, ChevronLeft, ChevronRight, Maximize2, Minimize2, Minus, Pause, Play, Plus, RotateCcw, Settings2, SkipBack, SkipForward, Target, Volume2
 } from 'lucide-react';
 import { normalizeQuestions } from '../lib/quiz';
 import useHotkeys from '../lib/useHotkeys';
@@ -9,7 +9,7 @@ import PassageText from '../components/PassageText';
 import ReadingSurface from '../components/ReadingSurface';
 import ReaderSettings from '../components/ReaderSettings';
 import { focalColorFor, rampFactor } from '../lib/readingStyle';
-import { clampIndex, clock, jump, startCount, wordsCovered } from '../lib/readerNav';
+import { clampIndex, clock, extractSections, jump, startCount, wordsCovered } from '../lib/readerNav';
 import Quiz from '../components/Quiz';
 
 /** Words skipped by the rewind and skip controls. */
@@ -64,7 +64,7 @@ function Scrubber({ index, total, onSeek, label }) {
 }
 
 function Reader({
-    passage, settings, reading, patchReading, updateSettings, initialWpm, resumeFrom = 0,
+    passage, book = null, onSelectChapter = null, settings, reading, patchReading, updateSettings, initialWpm, resumeFrom = 0,
     onFinish, onLeave, onExit, onBookmark = null, addNotification
 }) {
     // The baseline test measures your natural pace, so it is always read as
@@ -74,7 +74,7 @@ function Reader({
     const [readWpm, setReadWpm] = useState(initialWpm);
     // Skim runs at its own speed, so trying a skim and switching back does not
     // leave the reading speed at 1,000 WPM.
-    const [skimWpm, setSkimWpm] = useState(() => skimStartWpm(initialWpm));
+    const [skimWpm, setSkimWpm] = useState(() => settings.skimWpm ?? skimStartWpm(initialWpm));
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentIndex, setCurrentIndex] = useState(resumeFrom);
     const [mode, setMode] = useState(isCalibration ? 'natural' : (settings.readerMode || 'rsvp'));
@@ -91,8 +91,9 @@ function Reader({
     const [countdown, setCountdown] = useState(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
 
-    const [pacedIndex, setPacedIndex] = useState(0);
+    const [pacedIndex, setPacedIndex] = useState(resumeFrom);
     const [pacedSeek, setPacedSeek] = useState(null);
+    const [pacedInitialIndex, setPacedInitialIndex] = useState(resumeFrom);
 
     const isSkim = mode === 'skim';
     const isPacer = mode === 'paced' || mode === 'skim';
@@ -103,6 +104,8 @@ function Reader({
         if (!passage?.text) return [];
         return passage.text.trim().split(/\s+/).filter(w => w.length > 0);
     }, [passage]);
+
+    const sections = useMemo(() => (book ? [] : extractSections(passage?.text ?? '')), [book, passage?.text]);
 
     // Validated and shuffled once per passage: a model can return a bad answer
     // index or duplicate options, and re-shuffling on every render would move
@@ -238,22 +241,24 @@ function Reader({
         return wordsCovered(countRef.current, cursorIndex);
     }, [mode, cursorIndex, words.length]);
 
-    /**
-     * Switching modes starts the measurement over: each mode counts words on
-     * its own basis, and carrying the elapsed time across a switch would divide
-     * one mode's words by another mode's seconds.
-     */
-    const modeStartedRef = useRef(mode);
-    useEffect(() => {
-        if (modeStartedRef.current === mode) return;
-        modeStartedRef.current = mode;
+    const switchMode = (nextMode) => {
+        if (nextMode === mode) return;
+        pause();
+        setNaturalStarted(false);
+        const at = clampIndex(cursorIndex, words.length);
         accumulatedMsRef.current = 0;
         runningSinceRef.current = null;
         setElapsedSecs(0);
-        countRef.current = startCount(mode === 'rsvp' ? currentIndex : 0);
-        setPacedIndex(0);
-        setPacedSeek(null);
-    }, [mode, currentIndex]);
+        countRef.current = startCount(at);
+        if (nextMode === 'rsvp') setCurrentIndex(at);
+        else if (nextMode === 'paced' || nextMode === 'skim') {
+            setPacedInitialIndex(at);
+            setPacedIndex(at);
+            setPacedSeek(prev => ({ index: at, nonce: (prev?.nonce ?? 0) + 1 }));
+        }
+        setMode(nextMode);
+        updateSettings?.({ readerMode: nextMode });
+    };
 
     // The live position for jumps. Updated on every render and immediately by
     // each jump, so two jumps in quick succession chain instead of both
@@ -373,7 +378,11 @@ function Reader({
     const nudgeWpm = (delta) => {
         const next = Math.min(2000, Math.max(100, wpm + delta));
         setWpm(next);
-        if (!isSkim && !settings.autoAdaptive) updateSettings?.({ baseWpm: next });
+        if (isSkim) {
+            updateSettings?.({ skimWpm: next });
+        } else {
+            updateSettings?.(settings.autoAdaptive ? { readerWpm: next } : { readerWpm: next, baseWpm: next });
+        }
     };
 
     // You read with your eyes fixed on one point, so reaching for the mouse to
@@ -504,6 +513,103 @@ function Reader({
         </div>
     );
 
+    const renderTimeline = () => {
+        if (isCalibration) return null;
+
+        if (book && book.chapters.length > 1 && Number.isInteger(chapterIndex)) {
+            const totalCh = book.chapters.length;
+            const prevDisabled = chapterIndex <= 0;
+            const nextDisabled = chapterIndex >= totalCh - 1;
+            const jumpChapter = (idx) => {
+                pause();
+                leaveRef.current.finished = true;
+                onSelectChapter?.(idx, { progressIndex: cursorRef.current, mode });
+            };
+            return (
+                <div className="w-full max-w-2xl mt-3 pt-3 border-t border-slate-800/70">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                        <button
+                            type="button"
+                            disabled={prevDisabled}
+                            onClick={() => jumpChapter(chapterIndex - 1)}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-slate-400 hover:text-white disabled:opacity-30 disabled:pointer-events-none px-2 py-1 rounded-lg hover:bg-slate-800/60"
+                        >
+                            <ChevronLeft size={14} /> Prev
+                        </button>
+                        <span className="text-xs font-medium text-slate-400 truncate">
+                            Chapter {chapterIndex + 1} of {totalCh} · <span className="text-slate-200">{book.chapters[chapterIndex]?.title}</span>
+                        </span>
+                        <button
+                            type="button"
+                            disabled={nextDisabled}
+                            onClick={() => jumpChapter(chapterIndex + 1)}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-slate-400 hover:text-white disabled:opacity-30 disabled:pointer-events-none px-2 py-1 rounded-lg hover:bg-slate-800/60"
+                        >
+                            Next <ChevronRight size={14} />
+                        </button>
+                    </div>
+                    <div className="flex gap-1.5 overflow-x-auto pb-1" role="navigation" aria-label="Chapter timeline">
+                        {book.chapters.map((ch, i) => {
+                            const active = i === chapterIndex;
+                            const done = Boolean(ch.completedAt);
+                            return (
+                                <button
+                                    key={i}
+                                    type="button"
+                                    onClick={() => jumpChapter(i)}
+                                    title={`${ch.title} (${ch.words.toLocaleString()} words)`}
+                                    aria-current={active ? 'step' : undefined}
+                                    className={`shrink-0 max-w-[11rem] truncate px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors ${
+                                        active
+                                            ? 'border-purple-500 bg-purple-500/20 text-purple-200'
+                                            : done
+                                                ? 'border-emerald-800/60 bg-emerald-950/30 text-emerald-300 hover:border-emerald-600'
+                                                : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:border-slate-600 hover:text-slate-200'
+                                    }`}
+                                >
+                                    {i + 1}. {ch.title}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+            );
+        }
+
+        if (sections.length === 0 || mode === 'natural') return null;
+
+        let activeSectionIdx = 0;
+        for (let i = 0; i < sections.length; i++) {
+            if (cursorIndex >= sections[i].index) activeSectionIdx = i;
+        }
+
+        return (
+            <div className="w-full max-w-2xl mt-3 pt-3 border-t border-slate-800/70">
+                <div className="flex gap-1.5 overflow-x-auto pb-1 justify-start sm:justify-center" role="navigation" aria-label="Document timeline">
+                    {sections.map((sec, i) => {
+                        const active = i === activeSectionIdx;
+                        return (
+                            <button
+                                key={`${sec.index}-${i}`}
+                                type="button"
+                                onClick={() => seekTo(sec.index)}
+                                title={`Jump to ${sec.title} (word ${sec.index + 1})`}
+                                aria-current={active ? 'step' : undefined}
+                                className={`shrink-0 max-w-[11rem] truncate px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors ${
+                                    active
+                                        ? 'border-purple-500 bg-purple-500/20 text-purple-200'
+                                        : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:border-slate-600 hover:text-slate-200'
+                                }`}
+                            >
+                                {sec.title}
+                            </button>
+                        );
+                    })}
+                </div>
+            </div>
+        );
+    };
+
     const status = (
         <p className="text-slate-500 text-sm font-mono text-center">
             {cursorIndex} / {words.length} · {left} left · {clock(elapsedSecs)} read
@@ -535,12 +641,7 @@ function Reader({
                         ].map(([key, label]) => (
                             <button
                                 key={key}
-                                onClick={() => {
-                                    pause();
-                                    setNaturalStarted(false);
-                                    setMode(key);
-                                    updateSettings?.({ readerMode: key });
-                                }}
+                                onClick={() => switchMode(key)}
                                 className={`px-3 md:px-4 py-2 rounded-lg font-bold text-sm transition-colors whitespace-nowrap ${mode === key ? 'bg-purple-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
                             >
                                 {label}
@@ -678,6 +779,7 @@ function Reader({
                         <div className="w-full flex flex-col items-center gap-2 mt-10">
                             <Scrubber index={cursorIndex} total={words.length} onSeek={seekTo} label="Reading position" />
                             {status}
+                            {renderTimeline()}
                             <p className="text-slate-600 text-xs">Target {wpm} WPM · actual pace is measured and recorded</p>
                             {!isCalibration && <KeyboardHint />}
                         </div>
@@ -701,6 +803,7 @@ function Reader({
                             bionicStrength={reading.bionicStrength}
                             pacerStyle={reading.pacerStyle}
                             dimRead={reading.dimRead}
+                            initialIndex={pacedInitialIndex}
                             seek={pacedSeek}
                             onWordClick={seekTo}
                             onProgress={setPacedIndex}
@@ -710,6 +813,7 @@ function Reader({
                         <div className="mt-10 pt-6 border-t border-slate-800 flex flex-col items-center gap-2">
                             <Scrubber index={cursorIndex} total={words.length} onSeek={seekTo} label="Reading position" />
                             {status}
+                            {renderTimeline()}
                             <p className="text-xs text-center" style={{ color: 'var(--reading-muted)' }}>
                                 {isSkim
                                     ? 'Sample, do not read: headings, first lines, names and numbers.'

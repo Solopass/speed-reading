@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-    SUPPORTED_EXTENSIONS, extensionOf, isSupported, normalizeText, titleFromFilename
+    SUPPORTED_EXTENSIONS, extensionOf, isSupported, normalizeText, stripRepeatedHeadersFooters, titleFromFilename
 } from './importText';
 
 const NBSP = String.fromCharCode(160);
@@ -76,6 +76,28 @@ describe('normalizeText', () => {
     it('removes dot leaders, divider lines, standalone page numbers, and stray symbols', () => {
         const dirty = 'Chapter 1 ........ 12\n---\n• First point | ok\nPage 12\n42\n***\nSecond point.';
         expect(normalizeText(dirty)).toBe('Chapter 1 12\n\nFirst point ok\n\nSecond point.');
+    });
+});
+
+describe('stripRepeatedHeadersFooters', () => {
+    it('removes repeated headers and footers across PDF pages while keeping unique lines', () => {
+        const pages = [
+            'The Great Book\nBody paragraph one.\nFooter 1',
+            'The Great Book\nBody paragraph two.\nFooter 2',
+            'The Great Book\nBody paragraph three.\nFooter 3',
+            'The Great Book\nBody paragraph four.\nFooter 4'
+        ];
+        expect(stripRepeatedHeadersFooters(pages)).toEqual([
+            'Body paragraph one.',
+            'Body paragraph two.',
+            'Body paragraph three.',
+            'Body paragraph four.'
+        ]);
+    });
+
+    it('leaves short 1-2 page documents untouched', () => {
+        const pages = ['Title\nPage one.', 'Title\nPage two.'];
+        expect(stripRepeatedHeadersFooters(pages)).toEqual(pages);
     });
 });
 
