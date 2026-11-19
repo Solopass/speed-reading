@@ -77,7 +77,7 @@ function Reader({
     const [skimWpm, setSkimWpm] = useState(() => skimStartWpm(initialWpm));
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentIndex, setCurrentIndex] = useState(resumeFrom);
-    const [mode, setMode] = useState(isCalibration ? 'natural' : 'rsvp');
+    const [mode, setMode] = useState(isCalibration ? 'natural' : (settings.readerMode || 'rsvp'));
     const [isAudioReady, setIsAudioReady] = useState(false);
     const [quizActive, setQuizActive] = useState(false);
     // Measurement is frozen when the quiz opens; the clock must not keep
@@ -370,7 +370,11 @@ function Reader({
 
     const restart = () => { pause(); seekTo(0); };
 
-    const nudgeWpm = (delta) => setWpm(w => Math.min(2000, Math.max(100, w + delta)));
+    const nudgeWpm = (delta) => {
+        const next = Math.min(2000, Math.max(100, wpm + delta));
+        setWpm(next);
+        if (!isSkim && !settings.autoAdaptive) updateSettings?.({ baseWpm: next });
+    };
 
     // You read with your eyes fixed on one point, so reaching for the mouse to
     // pause defeats the exercise.
@@ -531,7 +535,12 @@ function Reader({
                         ].map(([key, label]) => (
                             <button
                                 key={key}
-                                onClick={() => { pause(); setNaturalStarted(false); setMode(key); }}
+                                onClick={() => {
+                                    pause();
+                                    setNaturalStarted(false);
+                                    setMode(key);
+                                    updateSettings?.({ readerMode: key });
+                                }}
                                 className={`px-3 md:px-4 py-2 rounded-lg font-bold text-sm transition-colors whitespace-nowrap ${mode === key ? 'bg-purple-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
                             >
                                 {label}

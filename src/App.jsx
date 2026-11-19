@@ -52,6 +52,7 @@ const DEFAULT_SETTINGS = {
     verifyQuestions: true,
     baseWpm: 300,
     chunkSize: 1,
+    readerMode: 'rsvp',
     font: 'font-sans',
     theme: DEFAULT_THEME,
     autoAdaptive: true,
