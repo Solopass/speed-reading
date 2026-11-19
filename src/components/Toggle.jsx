@@ -7,6 +7,7 @@ function Toggle({ label, desc, checked, onChange }) {
                 <div className="text-xs text-slate-500 mt-1">{desc}</div>
             </div>
             <button
+                role="switch" aria-checked={checked} aria-label={label}
                 onClick={() => onChange(!checked)}
                 className={`w-12 h-6 rounded-full transition-colors relative shrink-0 ${checked ? 'bg-purple-600' : 'bg-slate-700'}`}
             >

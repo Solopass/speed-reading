@@ -153,3 +153,23 @@ describe('estimatedWordsPerLine', () => {
         expect(estimatedWordsPerLine({ maxWidthCh: 0 })).toBeGreaterThanOrEqual(1);
     });
 });
+
+describe('reader preferences', () => {
+    it('defaults and validates the in-reader options', async () => {
+        const { normalizeReading, DEFAULT_READING } = await import('./readingStyle');
+        const r = normalizeReading({ pacerStyle: 'sparkles', countdown: 'yes', zen: true });
+        expect(r.pacerStyle).toBe('band');
+        expect(r.countdown).toBe(DEFAULT_READING.countdown);
+        expect(r.zen).toBe(true);
+        expect(normalizeReading({ pacerStyle: 'word' }).pacerStyle).toBe('word');
+    });
+
+    it('rampFactor eases from 70% to full speed over the first quarter', async () => {
+        const { rampFactor } = await import('./readingStyle');
+        expect(rampFactor(0)).toBeCloseTo(0.7);
+        expect(rampFactor(0.125)).toBeCloseTo(0.85);
+        expect(rampFactor(0.25)).toBe(1);
+        expect(rampFactor(0.9)).toBe(1);
+        expect(rampFactor(0, false)).toBe(1);
+    });
+});

@@ -14,6 +14,11 @@ export default function PacedText({
     wpm,
     isRunning,
     bionicReading = false,
+    bionicStrength = 0.5,
+    pacerStyle = 'band',
+    dimRead = true,
+    seek = null,          // { index, nonce }: jump the cursor to a word
+    onWordClick,
     onProgress,
     onComplete
 }) {
@@ -87,6 +92,15 @@ export default function PacedText({
 
     useEffect(() => { reset(); }, [text, reset]);
 
+    // An external jump (rewind, skip, click on the progress bar). Keyed on a
+    // nonce so jumping to the same word twice still moves the cursor.
+    useEffect(() => {
+        if (!seek) return;
+        const index = Math.max(0, Math.min(totalWords, seek.index));
+        progressRef.current = index;
+        setProgress(index);
+    }, [seek, totalWords]);
+
     // Time-based rather than per-frame increments, so the pace stays honest
     // when the browser throttles frames.
     useEffect(() => {
@@ -145,18 +159,25 @@ export default function PacedText({
 
     return (
         <div ref={containerRef} className="relative mx-auto" style={{ maxWidth: "var(--reading-max-width)" }}>
-            {cursor && (
-                <>
-                    {/* Band over the active line, then the sweeping cursor itself. */}
-                    <div
-                        className="absolute rounded-lg bg-purple-500/10 pointer-events-none transition-[top] duration-150"
-                        style={{ top: cursor.top - 4, left: cursor.left - 8, width: cursor.right - cursor.left + 16, height: cursor.height + 8 }}
-                    />
-                    <div
-                        className="absolute w-0.5 bg-purple-400 pointer-events-none shadow-[0_0_12px_2px_rgba(168,85,247,0.6)]"
-                        style={{ top: cursor.top - 2, left: cursor.x, height: cursor.height + 4 }}
-                    />
-                </>
+            {cursor && (pacerStyle === 'band' || pacerStyle === 'line') && (
+                // Band over the active line; the 'band' style adds the sweeping cursor.
+                <div
+                    className="absolute rounded-lg bg-purple-500/10 pointer-events-none transition-[top] duration-150"
+                    style={{ top: cursor.top - 4, left: cursor.left - 8, width: cursor.right - cursor.left + 16, height: cursor.height + 8 }}
+                />
+            )}
+            {cursor && pacerStyle === 'band' && (
+                <div
+                    className="absolute w-0.5 bg-purple-400 pointer-events-none shadow-[0_0_12px_2px_rgba(168,85,247,0.6)]"
+                    style={{ top: cursor.top - 2, left: cursor.x, height: cursor.height + 4 }}
+                />
+            )}
+            {cursor && pacerStyle === 'underline' && (
+                // A short bar trailing just behind the cursor, under the text.
+                <div
+                    className="absolute h-1 rounded-full bg-purple-500 pointer-events-none"
+                    style={{ top: cursor.top + cursor.height, left: Math.max(cursor.left, cursor.x - 90), width: Math.max(4, Math.min(90, cursor.x - cursor.left)) }}
+                />
             )}
 
             <div className="relative space-y-6">
@@ -164,13 +185,18 @@ export default function PacedText({
                     <p key={p} style={{ fontFamily: "var(--reading-font)", fontSize: "var(--reading-prose-size)", lineHeight: "var(--reading-line-height)", letterSpacing: "var(--reading-letter-spacing)", wordSpacing: "var(--reading-word-spacing)", textAlign: "var(--reading-align)", marginBottom: "var(--reading-paragraph-gap)" }}>
                         {para.map(({ word, index }) => {
                             const isRead = index < readIndex;
-                            const mid = Math.ceil(word.length / 2);
+                            const isCurrent = pacerStyle === 'word' && index === readIndex;
+                            const mid = Math.max(1, Math.round(word.length * bionicStrength));
                             return (
+                                // Clicking a word is a mouse shortcut for jumping there; the
+                                // keyboard path is [ and ] in the reader.
+                                // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
                                 <span
                                     key={index}
                                     ref={(el) => { wordRefs.current[index] = el; }}
-                                    className="transition-opacity duration-300"
-                                    style={{ color: "var(--reading-fg)", opacity: isRead ? 0.45 : 1 }}
+                                    onClick={onWordClick ? () => onWordClick(index) : undefined}
+                                    className={`transition-opacity duration-300 rounded ${isCurrent ? 'bg-purple-500/25' : ''} ${onWordClick ? 'cursor-pointer' : ''}`}
+                                    style={{ color: "var(--reading-fg)", opacity: isRead && dimRead ? 0.45 : 1 }}
                                 >
                                     {bionicReading && word.length > 1 ? (
                                         <><strong style={{ color: "var(--reading-fg)" }}>{word.slice(0, mid)}</strong>{word.slice(mid)}</>

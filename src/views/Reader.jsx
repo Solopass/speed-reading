@@ -1,33 +1,71 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Minus, Pause, Play, Plus, Target, Volume2 } from 'lucide-react';
+import {
+    Maximize2, Minimize2, Minus, Pause, Play, Plus, RotateCcw, Settings2, SkipBack, SkipForward, Target, Volume2
+} from 'lucide-react';
 import { normalizeQuestions } from '../lib/quiz';
 import useHotkeys from '../lib/useHotkeys';
 import PacedText from '../components/PacedText';
 import PassageText from '../components/PassageText';
 import ReadingSurface from '../components/ReadingSurface';
-import { focalColorFor } from '../lib/readingStyle';
+import ReaderSettings from '../components/ReaderSettings';
+import { focalColorFor, rampFactor } from '../lib/readingStyle';
+import { clampIndex, clock, jump, startCount, wordsCovered } from '../lib/readerNav';
 import Quiz from '../components/Quiz';
+
+/** Words skipped by the rewind and skip controls. */
+const SKIP_WORDS = 10;
+
+const Kbd = ({ children }) => <kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-400 font-mono">{children}</kbd>;
 
 function KeyboardHint() {
     return (
-        <p className="text-[11px] text-slate-600 mt-2 flex items-center justify-center gap-3 flex-wrap">
-            <span><kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-400 font-mono">space</kbd> play/pause</span>
-            <span><kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-400 font-mono">↑↓</kbd> speed</span>
-            <span><kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-400 font-mono">esc</kbd> exit</span>
+        <p className="text-[11px] text-slate-600 mt-2 flex items-center justify-center gap-x-3 gap-y-1 flex-wrap">
+            <span><Kbd>space</Kbd> play/pause</span>
+            <span><Kbd>↑↓</Kbd> speed</span>
+            <span><Kbd>[ ]</Kbd> back/skip {SKIP_WORDS}</span>
+            <span><Kbd>R</Kbd> restart</span>
+            <span><Kbd>S</Kbd> settings</span>
+            <span><Kbd>F</Kbd> full screen</span>
+            <span><Kbd>esc</Kbd> exit</span>
         </p>
     );
-}
-
-/** "1:05 left" for the words remaining at the given speed. */
-function timeLeft(wordsLeft, wpm) {
-    const secs = Math.max(0, Math.round((wordsLeft / Math.max(1, wpm)) * 60));
-    return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')} left`;
 }
 
 /** Skimming starts well past reading speed: below ~700 WPM it is just fast reading. */
 export const skimStartWpm = (targetWpm) => Math.min(2000, Math.max(700, Math.round((targetWpm * 2.5) / 50) * 50));
 
-function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFinish, onLeave, onExit, addNotification }) {
+/**
+ * Clickable progress bar. Clicking or using the arrow keys on it jumps the
+ * reading position; the word count stays honest because the Reader banks what
+ * was covered before every jump.
+ */
+function Scrubber({ index, total, onSeek, label }) {
+    const pct = total ? (index / total) * 100 : 0;
+    const seekFromPointer = (e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        onSeek(((e.clientX - rect.left) / rect.width) * total);
+    };
+    return (
+        <div
+            role="slider" tabIndex={0} aria-label={label} aria-valuemin={0} aria-valuemax={total} aria-valuenow={index}
+            onClick={seekFromPointer}
+            onKeyDown={(e) => {
+                if (e.key === 'ArrowLeft') { e.preventDefault(); e.stopPropagation(); onSeek(index - SKIP_WORDS); }
+                if (e.key === 'ArrowRight') { e.preventDefault(); e.stopPropagation(); onSeek(index + SKIP_WORDS); }
+            }}
+            className="group w-full max-w-lg py-2 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 rounded"
+        >
+            <div className="h-2 group-hover:h-3 transition-all bg-slate-800 rounded-full overflow-hidden">
+                <div className="h-full bg-purple-600 transition-[width] duration-200" style={{ width: `${pct}%` }} />
+            </div>
+        </div>
+    );
+}
+
+function Reader({
+    passage, settings, reading, patchReading, updateSettings, initialWpm, resumeFrom = 0,
+    onFinish, onLeave, onExit, addNotification
+}) {
     // The baseline test measures your natural pace, so it is always read as
     // ordinary text with no pacing and no speed control.
     const isCalibration = passage?.isCalibration === true;
@@ -48,10 +86,15 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
     // would run while you read the instructions — understating your speed, and
     // for the baseline test miscalibrating every target that follows.
     const [naturalStarted, setNaturalStarted] = useState(false);
+    const [settingsOpen, setSettingsOpen] = useState(false);
+    const [countdown, setCountdown] = useState(null);
+    const [isFullscreen, setIsFullscreen] = useState(false);
 
     const [pacedIndex, setPacedIndex] = useState(0);
+    const [pacedSeek, setPacedSeek] = useState(null);
 
     const isSkim = mode === 'skim';
+    const isPacer = mode === 'paced' || mode === 'skim';
     const wpm = isSkim ? skimWpm : readWpm;
     const setWpm = isSkim ? setSkimWpm : setReadWpm;
 
@@ -69,6 +112,14 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
     // skim, so those sessions are still kept out of the reading averages.
     const gistQuestions = useMemo(() => normalizeQuestions(passage?.gistQuestions), [passage]);
     const questions = isSkim && gistQuestions.length > 0 ? gistQuestions : detailQuestions;
+
+    // Where the reader is now, in whichever mode is running.
+    const cursorIndex = mode === 'rsvp' ? Math.min(currentIndex, words.length) : Math.min(pacedIndex, words.length);
+
+    // The warm-up ramp eases the speed in over the first quarter. Quantised to
+    // 5% steps so the pacer is not re-timed on every single word.
+    const ramp = Math.round(rampFactor(words.length ? cursorIndex / words.length : 1, reading.speedRamp && !isCalibration) * 20) / 20;
+    const effectiveWpm = Math.round(wpm * ramp);
 
     const timerRef = useRef(null);
 
@@ -102,26 +153,51 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
         const onVisibilityChange = () => {
             const hidden = document.visibilityState === 'hidden';
             setIsHidden(hidden);
-            if (hidden) setIsPlaying(false);
+            // Cancel a pending countdown too, or it would start playback in the background.
+            if (hidden) { setIsPlaying(false); setCountdown(null); }
         };
         document.addEventListener('visibilitychange', onVisibilityChange);
         return () => document.removeEventListener('visibilitychange', onVisibilityChange);
     }, []);
 
-    // RSVP and Paced run the clock while playing; Natural runs it the whole
-    // time the text is on screen, which is the only way to measure it there.
-    // Either way a hidden tab stops it.
+    // RSVP and the pacers run the clock while playing; Natural runs it the
+    // whole time the text is on screen. Either way a hidden tab stops it.
     useEffect(() => {
-        if (!isHidden && ((mode === 'natural' && naturalStarted) || isPlaying)) startClock();
+        // Time spent in the settings drawer is not reading time, in any mode.
+        if (!isHidden && !settingsOpen && ((mode === 'natural' && naturalStarted) || isPlaying)) startClock();
         else stopClock();
-    }, [mode, naturalStarted, isPlaying, isHidden, startClock, stopClock]);
+    }, [mode, naturalStarted, isPlaying, isHidden, settingsOpen, startClock, stopClock]);
 
     useEffect(() => stopClock, [stopClock]);
 
+    // Time read so far, for the status line. Sampled once a second while the
+    // clock runs, rather than read off the clock during render.
+    const [elapsedSecs, setElapsedSecs] = useState(0);
+    const clockRunning = !isHidden && !settingsOpen && ((mode === 'natural' && naturalStarted) || isPlaying);
+    useEffect(() => {
+        if (!clockRunning) return undefined;
+        const id = setInterval(() => setElapsedSecs(Math.round(elapsedMs() / 1000)), 1000);
+        return () => clearInterval(id);
+    }, [clockRunning, elapsedMs]);
+
+    // --- Full screen ---------------------------------------------------------
+    useEffect(() => {
+        const onChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
+        document.addEventListener('fullscreenchange', onChange);
+        return () => document.removeEventListener('fullscreenchange', onChange);
+    }, []);
+
+    const toggleFullscreen = useCallback(() => {
+        if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+        else document.documentElement.requestFullscreen?.().catch(() => addNotification?.('Full screen is not available here.'));
+    }, [addNotification]);
+
+    // Leaving the reader leaves full screen too.
+    useEffect(() => () => { if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {}); }, []);
+
     // --- Audio sync --------------------------------------------------------
     // One utterance per flash, cancelling the previous one, so speech can never
-    // lag behind the visual. Speaking the whole remaining passage as a single
-    // utterance (as this once did) drifts apart within a few words.
+    // lag behind the visual.
     useEffect(() => {
         if (!settings.audioSyncEnabled || !isAudioReady || mode !== 'rsvp' || !isPlaying) return;
 
@@ -129,10 +205,10 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
         if (!chunk) return;
 
         const utterance = new SpeechSynthesisUtterance(chunk);
-        utterance.rate = Math.min(4, Math.max(0.5, wpm / 180));
+        utterance.rate = Math.min(4, Math.max(0.5, effectiveWpm / 180));
         window.speechSynthesis.cancel();
         window.speechSynthesis.speak(utterance);
-    }, [currentIndex, isPlaying, isAudioReady, mode, wpm, words, settings.audioSyncEnabled, settings.chunkSize]);
+    }, [currentIndex, isPlaying, isAudioReady, mode, effectiveWpm, words, settings.audioSyncEnabled, settings.chunkSize]);
 
     useEffect(() => {
         if (!isPlaying || mode !== 'rsvp') window.speechSynthesis.cancel();
@@ -145,7 +221,7 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
         if (!isPlaying || mode !== 'rsvp' || currentIndex >= words.length) return;
 
         const currentChunk = words.slice(currentIndex, currentIndex + settings.chunkSize);
-        let delayMs = (60000 / wpm) * settings.chunkSize;
+        let delayMs = (60000 / effectiveWpm) * settings.chunkSize;
 
         if (settings.punctuationPacing && currentChunk.length > 0) {
             const lastWord = currentChunk[currentChunk.length - 1];
@@ -158,7 +234,7 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
         }, delayMs);
 
         return () => clearTimeout(timerRef.current);
-    }, [isPlaying, currentIndex, wpm, mode, words, settings.punctuationPacing, settings.chunkSize]);
+    }, [isPlaying, currentIndex, effectiveWpm, mode, words, settings.punctuationPacing, settings.chunkSize]);
 
     /**
      * Measured speed over the words actually read. Clamped because a Natural-mode
@@ -170,26 +246,19 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
         return Math.min(2000, Math.max(50, Math.round(wordsRead / (ms / 60000))));
     }, [elapsedMs, wpm]);
 
-    // Words covered *this sitting*. Resuming at word 200 must not count those
-    // 200 towards a speed the clock only measured the remainder of. Natural
-    // mode has no cursor to read from, so the whole passage counts.
-    const resumedAt = useRef(resumeFrom);
+    // Words covered *this sitting*, banked across every rewind and skip (see
+    // readerNav.js). Resuming at word 200 counts from 200; Natural mode has no
+    // cursor, so the whole passage counts.
+    const countRef = useRef(startCount(resumeFrom));
     const wordsRead = useCallback(() => {
-        if (mode === 'rsvp') return Math.max(0, Math.min(currentIndex, words.length) - resumedAt.current);
-        if (mode === 'paced' || mode === 'skim') return Math.min(pacedIndex, words.length);
-        return words.length;
-    }, [mode, currentIndex, pacedIndex, words.length]);
+        if (mode === 'natural') return words.length;
+        return wordsCovered(countRef.current, cursorIndex);
+    }, [mode, cursorIndex, words.length]);
 
     /**
-     * Switching modes starts the measurement over.
-     *
-     * The clock runs for the whole sitting, but each mode counts words on its
-     * own basis: Paced and Natural both begin at the first word again, and RSVP
-     * counts from wherever its cursor is. Carrying the elapsed time across a
-     * switch therefore divides one mode's words by another mode's seconds —
-     * try RSVP for half a minute, decide you prefer Paced, and the session is
-     * recorded well below the speed you actually read at, which then drags the
-     * adaptive target down with it.
+     * Switching modes starts the measurement over: each mode counts words on
+     * its own basis, and carrying the elapsed time across a switch would divide
+     * one mode's words by another mode's seconds.
      */
     const modeStartedRef = useRef(mode);
     useEffect(() => {
@@ -197,9 +266,32 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
         modeStartedRef.current = mode;
         accumulatedMsRef.current = 0;
         runningSinceRef.current = null;
-        resumedAt.current = mode === 'rsvp' ? currentIndex : 0;
+        setElapsedSecs(0);
+        countRef.current = startCount(mode === 'rsvp' ? currentIndex : 0);
         setPacedIndex(0);
+        setPacedSeek(null);
     }, [mode, currentIndex]);
+
+    // The live position for jumps. Updated on every render and immediately by
+    // each jump, so two jumps in quick succession chain instead of both
+    // starting from the same stale position (which would over-credit words).
+    const cursorRef = useRef(cursorIndex);
+    useLayoutEffect(() => { cursorRef.current = cursorIndex; });
+
+    /** Jump to a word, in RSVP or the pacers. */
+    const seekTo = useCallback((target) => {
+        if (mode === 'natural' || words.length === 0) return;
+        const to = clampIndex(target, words.length);
+        countRef.current = jump(countRef.current, cursorRef.current, to);
+        cursorRef.current = to;
+        if (mode === 'rsvp') setCurrentIndex(to);
+        else {
+            setPacedIndex(to);
+            setPacedSeek(prev => ({ index: to, nonce: (prev?.nonce ?? 0) + 1 }));
+        }
+    }, [mode, words.length]);
+
+    const seekBy = useCallback((delta) => seekTo(cursorRef.current + delta), [seekTo]);
 
     // Position within the whole passage, for the library's resume point.
     const absoluteIndex = mode === 'rsvp' ? currentIndex : pacedIndex;
@@ -238,7 +330,7 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
     // The pacer reports completion from its own animation loop; guard against
     // it firing more than once as the final frames settle.
     const pacerDoneRef = useRef(false);
-    useEffect(() => { pacerDoneRef.current = false; }, [passage, mode]);
+    useEffect(() => { pacerDoneRef.current = false; }, [passage, mode, pacedSeek]);
 
     const handlePacerComplete = useCallback(() => {
         if (pacerDoneRef.current) return;
@@ -254,7 +346,29 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
         }
     }, [isPlaying, mode, currentIndex, words.length]);
 
-    const togglePlay = () => setIsPlaying(!isPlaying);
+    // --- Play, pause and the countdown --------------------------------------
+    useEffect(() => {
+        if (countdown === null) return undefined;
+        const t = setTimeout(() => {
+            if (countdown <= 1) { setCountdown(null); setIsPlaying(true); }
+            else setCountdown(countdown - 1);
+        }, 600);
+        return () => clearTimeout(t);
+    }, [countdown]);
+
+    const togglePlay = () => {
+        if (countdown !== null) { setCountdown(null); return; }
+        if (isPlaying) { setIsPlaying(false); return; }
+        if (reading.countdown) setCountdown(3);
+        else setIsPlaying(true);
+    };
+
+    const pause = () => { setIsPlaying(false); setCountdown(null); };
+
+    const openSettings = () => { pause(); setSettingsOpen(true); };
+    const closeSettings = useCallback(() => setSettingsOpen(false), []);
+
+    const restart = () => { pause(); seekTo(0); };
 
     const nudgeWpm = (delta) => setWpm(w => Math.min(2000, Math.max(100, w + delta)));
 
@@ -266,8 +380,13 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
         ArrowRight: () => nudgeWpm(25),
         ArrowDown: () => nudgeWpm(-25),
         ArrowLeft: () => nudgeWpm(-25),
+        '[': () => seekBy(-SKIP_WORDS),
+        ']': () => seekBy(SKIP_WORDS),
+        r: () => { if (mode !== 'natural') restart(); },
+        s: () => openSettings(),
+        f: () => toggleFullscreen(),
         Escape: () => onExit?.()
-    }, !quizActive && !isCalibration);
+    }, !quizActive && !settingsOpen && !isCalibration);
 
     const renderRsvpChunk = () => {
         if (settings.chunkSize === 1) {
@@ -287,21 +406,35 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
                     style={{ fontSize: 'var(--reading-rsvp-size)', fontFamily: 'var(--reading-font)', lineHeight: 1.1 }}
                 >
                     <span className="flex-1 text-right whitespace-pre" style={{ opacity: 0.8 }}>{start}</span>
-                    <span className="shrink-0 font-bold" style={{ color: focalColorFor(reading) }}>{center}</span>
+                    <span className="shrink-0 font-bold" style={{ color: focalColorFor(reading) ?? 'inherit' }}>{center}</span>
                     <span className="flex-1 text-left whitespace-pre" style={{ opacity: 0.8 }}>{end}</span>
                 </div>
             );
-        } else {
-            const chunk = words.slice(currentIndex, currentIndex + settings.chunkSize).join(' ');
-            return (
-                <div
-                    className="w-full text-center select-none font-bold leading-tight px-4"
-                    style={{ fontSize: 'calc(var(--reading-rsvp-size) * 0.7)', fontFamily: 'var(--reading-font)' }}
-                >
-                    {chunk}
-                </div>
-            );
         }
+        const chunk = words.slice(currentIndex, currentIndex + settings.chunkSize).join(' ');
+        return (
+            <div
+                className="w-full text-center select-none font-bold leading-tight px-4"
+                style={{ fontSize: 'calc(var(--reading-rsvp-size) * 0.7)', fontFamily: 'var(--reading-font)' }}
+            >
+                {chunk}
+            </div>
+        );
+    };
+
+    /** The surrounding words, dimmed, under the flash. */
+    const renderRsvpContext = () => {
+        const from = Math.max(0, currentIndex - 6);
+        const to = Math.min(words.length, currentIndex + settings.chunkSize + 6);
+        return (
+            <p className="mt-4 text-sm text-center max-w-xl px-4 leading-relaxed" style={{ color: 'var(--reading-muted)', fontFamily: 'var(--reading-font)' }}>
+                {words.slice(from, to).map((w, i) => {
+                    const at = from + i;
+                    const on = at >= currentIndex && at < currentIndex + settings.chunkSize;
+                    return <span key={at} style={on ? { color: 'var(--reading-fg)', fontWeight: 700 } : undefined}>{w} </span>;
+                })}
+            </p>
+        );
     };
 
     if (!passage) return <div className="text-center mt-20 text-slate-400">No passage loaded.</div>;
@@ -331,20 +464,56 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
         );
     }
 
+    const zenHidden = reading.zen && isPlaying;
+    const left = clock(((words.length - cursorIndex) / Math.max(1, effectiveWpm)) * 60);
+
+    const transport = mode !== 'natural' && !isCalibration && (
+        <div className="flex items-center justify-center gap-3 md:gap-5">
+            <button onClick={restart} aria-label="Restart from the beginning" title="Restart (R)" className="p-3 rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition-colors">
+                <RotateCcw size={20} />
+            </button>
+            <button onClick={() => seekBy(-SKIP_WORDS)} aria-label={`Back ${SKIP_WORDS} words`} title="Back ([)" className="p-3 rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition-colors">
+                <SkipBack size={22} />
+            </button>
+            <button
+                onClick={togglePlay}
+                aria-label={isPlaying ? 'Pause' : 'Play'}
+                className={`w-20 h-20 rounded-full flex items-center justify-center shadow-lg transition-transform hover:scale-105 active:scale-95 ${isPlaying ? 'bg-slate-800 text-slate-300' : 'bg-purple-600 text-white shadow-purple-900/30'}`}
+            >
+                {isPlaying ? <Pause size={32} /> : <Play size={32} className="ml-2" />}
+            </button>
+            <button onClick={() => seekBy(SKIP_WORDS)} aria-label={`Skip ${SKIP_WORDS} words`} title="Skip (])" className="p-3 rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition-colors">
+                <SkipForward size={22} />
+            </button>
+            <button onClick={toggleFullscreen} aria-label={isFullscreen ? 'Leave full screen' : 'Full screen'} title="Full screen (F)" className="p-3 rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition-colors">
+                {isFullscreen ? <Minimize2 size={20} /> : <Maximize2 size={20} />}
+            </button>
+        </div>
+    );
+
+    const status = (
+        <p className="text-slate-500 text-sm font-mono text-center">
+            {cursorIndex} / {words.length} · {left} left · {clock(elapsedSecs)} read
+            {ramp < 1 && <span className="text-amber-400"> · warming up {Math.round(ramp * 100)}%</span>}
+        </p>
+    );
+
     return (
-        <ReadingSurface reading={reading} paint={false} className="h-full flex flex-col relative animate-in fade-in pb-12">
-            <header className="flex items-center justify-between bg-slate-900 border border-slate-800 p-4 rounded-2xl mb-8 flex-wrap gap-4">
-                <button onClick={() => onExit?.()} className="text-slate-400 hover:text-white font-medium text-sm mr-2">← Exit</button>
+        <ReadingSurface reading={reading} paint={false} className="h-full flex flex-col relative animate-in fade-in pb-6">
+            <header
+                className={`flex items-center justify-between bg-slate-900 border border-slate-800 p-3 md:p-4 rounded-2xl mb-6 flex-wrap gap-3 transition-opacity duration-300 ${zenHidden ? 'opacity-0 hover:opacity-100 focus-within:opacity-100' : ''}`}
+            >
+                <button onClick={() => onExit?.()} className="text-slate-400 hover:text-white font-medium text-sm mr-1">← Exit</button>
                 {isCalibration ? (
                     <div className="flex items-center gap-3">
                         <div className="p-2 bg-purple-500/20 rounded-lg text-purple-400"><Target size={18} /></div>
                         <div>
-                            <div className="font-bold text-white text-sm">Baseline Test</div>
+                            <div className="font-bold text-white text-sm">{passage.title}</div>
                             <div className="text-xs text-slate-400">Read at your normal pace — no pacing, no speed control. Then answer {questions.length} questions.</div>
                         </div>
                     </div>
                 ) : (
-                    <div className="flex gap-2">
+                    <div className="flex gap-1 overflow-x-auto">
                         {[
                             ['rsvp', 'RSVP'],
                             ['paced', 'Paced'],
@@ -353,8 +522,8 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
                         ].map(([key, label]) => (
                             <button
                                 key={key}
-                                onClick={() => { setIsPlaying(false); setNaturalStarted(false); setMode(key); }}
-                                className={`px-4 py-2 rounded-lg font-bold text-sm transition-colors ${mode === key ? 'bg-purple-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
+                                onClick={() => { pause(); setNaturalStarted(false); setMode(key); }}
+                                className={`px-3 md:px-4 py-2 rounded-lg font-bold text-sm transition-colors whitespace-nowrap ${mode === key ? 'bg-purple-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
                             >
                                 {label}
                             </button>
@@ -362,27 +531,41 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
                     </div>
                 )}
 
-                {mode !== 'natural' && !isCalibration && (
-                    <div className="flex items-center gap-4 ml-auto">
-                        {settings.audioSyncEnabled && mode === 'rsvp' && (
-                            <button
-                                onClick={() => { addNotification("Audio Sync Ready"); setIsAudioReady(true); }}
-                                className={`hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-bold transition-colors ${isAudioReady ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
-                            >
-                                <Volume2 size={16} className={isAudioReady && isPlaying ? "animate-pulse" : ""} />
-                                {isAudioReady ? 'Audio Linked' : 'Link Audio'}
-                            </button>
-                        )}
-                        <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl overflow-hidden">
-                            <button onClick={() => setWpm(w => Math.max(100, w - 25))} className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Minus size={16}/></button>
-                            <div className="px-4 font-mono font-bold text-purple-400 min-w-[80px] text-center">{wpm} WPM</div>
-                            <button onClick={() => setWpm(w => Math.min(2000, w + 25))} className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Plus size={16}/></button>
-                        </div>
-                    </div>
-                )}
+                <div className="flex items-center gap-2 md:gap-3 ml-auto">
+                    {mode !== 'natural' && !isCalibration && (
+                        <>
+                            {settings.audioSyncEnabled && mode === 'rsvp' && (
+                                <button
+                                    onClick={() => { addNotification('Audio sync ready.'); setIsAudioReady(true); }}
+                                    className={`hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-bold transition-colors ${isAudioReady ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+                                >
+                                    <Volume2 size={16} className={isAudioReady && isPlaying ? 'animate-pulse' : ''} />
+                                    {isAudioReady ? 'Audio linked' : 'Link audio'}
+                                </button>
+                            )}
+                            <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl overflow-hidden">
+                                <button onClick={() => nudgeWpm(-25)} aria-label="Slower" className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Minus size={16} /></button>
+                                <div className="px-2 md:px-3 font-mono font-bold text-purple-400 min-w-[76px] text-center text-sm">{wpm} WPM</div>
+                                <button onClick={() => nudgeWpm(25)} aria-label="Faster" className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Plus size={16} /></button>
+                            </div>
+                        </>
+                    )}
+                    <button
+                        onClick={openSettings} aria-label="Reading settings" title="Reading settings (S)"
+                        className="p-2.5 rounded-xl border border-slate-800 text-slate-300 hover:text-white hover:border-slate-600 transition-colors"
+                    >
+                        <Settings2 size={18} />
+                    </button>
+                </div>
             </header>
 
-            <div className="flex-1 flex flex-col justify-center items-center">
+            <div className="flex-1 flex flex-col justify-center items-center relative">
+                {countdown !== null && (
+                    <div className="absolute inset-0 z-10 grid place-items-center pointer-events-none" aria-live="assertive">
+                        <span key={countdown} className="text-7xl font-black text-white/90 animate-in zoom-in-50 fade-in duration-300">{countdown}</span>
+                    </div>
+                )}
+
                 {mode === 'rsvp' ? (
                     <div className="w-full flex flex-col items-center">
                         <button
@@ -393,20 +576,21 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
                             style={{ background: 'var(--reading-bg)', color: 'var(--reading-fg)' }}
                         >
                             {reading.showFocalGuide && (
-                                <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 pointer-events-none" style={{ background: "var(--reading-muted)", opacity: 0.35 }} />
+                                <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 pointer-events-none" style={{ background: 'var(--reading-muted)', opacity: 0.35 }} />
                             )}
-                            {renderRsvpChunk()}
+                            {countdown === null && renderRsvpChunk()}
                         </button>
+                        {reading.rsvpContext && renderRsvpContext()}
 
-                        <div className="w-full max-w-lg mt-12 bg-slate-900 h-2 rounded-full overflow-hidden">
-                            <div className="h-full bg-purple-600 transition-all duration-200" style={{ width: `${words.length ? (currentIndex / words.length) * 100 : 0}%` }}></div>
+                        <div className="w-full flex flex-col items-center gap-2 mt-10">
+                            <Scrubber index={cursorIndex} total={words.length} onSeek={seekTo} label="Reading position" />
+                            {status}
+                            <p className="text-slate-600 text-xs">Target {wpm} WPM · actual pace is measured and recorded</p>
+                            {!isCalibration && <KeyboardHint />}
                         </div>
-                        <p className="text-slate-500 text-sm mt-4 font-mono">{currentIndex} / {words.length} · {timeLeft(words.length - currentIndex, wpm)}</p>
-                        <p className="text-slate-600 text-xs mt-1">Target {wpm} WPM · actual pace is measured and recorded</p>
-                        {!isCalibration && <KeyboardHint />}
                     </div>
-                ) : mode === 'paced' || mode === 'skim' ? (
-                    <div className="w-full h-full border border-slate-800/40 rounded-3xl p-8 md:p-12 overflow-y-auto" style={{ background: 'var(--reading-bg)', color: 'var(--reading-fg)' }}>
+                ) : isPacer ? (
+                    <div className="w-full h-full border border-slate-800/40 rounded-3xl p-6 md:p-12 overflow-y-auto" style={{ background: 'var(--reading-bg)', color: 'var(--reading-fg)' }}>
                         <h2 className="text-2xl font-bold mb-6 border-b pb-4" style={{ color: 'var(--reading-fg)', borderColor: 'var(--reading-muted)', opacity: 0.95 }}>{passage.title}</h2>
                         {isSkim && (
                             <p className="text-sm mb-6 -mt-2" style={{ color: 'var(--reading-muted)' }}>
@@ -418,28 +602,31 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
                         <PacedText
                             key={mode}
                             text={passage.text}
-                            wpm={wpm}
+                            wpm={effectiveWpm}
                             isRunning={isPlaying}
                             bionicReading={settings.bionicReading}
+                            bionicStrength={reading.bionicStrength}
+                            pacerStyle={reading.pacerStyle}
+                            dimRead={reading.dimRead}
+                            seek={pacedSeek}
+                            onWordClick={seekTo}
                             onProgress={setPacedIndex}
                             onComplete={handlePacerComplete}
                         />
 
-                        <div className="mt-10 pt-6 border-t border-slate-800 flex flex-col items-center gap-3">
-                            <div className="w-full max-w-lg bg-slate-950 h-2 rounded-full overflow-hidden">
-                                <div className="h-full bg-purple-600" style={{ width: `${words.length ? (pacedIndex / words.length) * 100 : 0}%` }} />
-                            </div>
-                            <p className="text-slate-500 text-sm font-mono">{pacedIndex} / {words.length} · {wpm} WPM · {timeLeft(words.length - pacedIndex, wpm)}</p>
-                            <p className="text-xs" style={{ color: 'var(--reading-muted)' }}>
+                        <div className="mt-10 pt-6 border-t border-slate-800 flex flex-col items-center gap-2">
+                            <Scrubber index={cursorIndex} total={words.length} onSeek={seekTo} label="Reading position" />
+                            {status}
+                            <p className="text-xs text-center" style={{ color: 'var(--reading-muted)' }}>
                                 {isSkim
                                     ? 'Sample, do not read: headings, first lines, names and numbers.'
-                                    : 'Keep pace with the cursor. Do not go back — that is the habit this drill is breaking.'}
+                                    : 'Keep pace with the cursor. Do not go back — that is the habit this drill is breaking. Click a word to jump there.'}
                             </p>
                             {!isCalibration && <KeyboardHint />}
                         </div>
                     </div>
                 ) : (
-                    <div className="w-full h-full border border-slate-800/40 rounded-3xl p-8 md:p-12 overflow-y-auto" style={{ background: 'var(--reading-bg)', color: 'var(--reading-fg)' }}>
+                    <div className="w-full h-full border border-slate-800/40 rounded-3xl p-6 md:p-12 overflow-y-auto" style={{ background: 'var(--reading-bg)', color: 'var(--reading-fg)' }}>
                         {!naturalStarted ? (
                             <div className="max-w-md mx-auto text-center py-12">
                                 <div className="inline-flex p-3 bg-purple-500/20 rounded-2xl text-purple-400 mb-6"><Target size={28} /></div>
@@ -459,32 +646,33 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
                                 <p className="text-xs mt-4" style={{ color: 'var(--reading-muted)' }}>The clock starts when you press this.</p>
                             </div>
                         ) : (
-                        <>
-                        <h2 className="text-2xl font-bold mb-6 border-b pb-4" style={{ color: 'var(--reading-fg)', borderColor: 'var(--reading-muted)', opacity: 0.95 }}>{passage.title}</h2>
-                        <PassageText text={passage.text} bionicReading={settings.bionicReading} reading={reading} />
+                            <>
+                                <h2 className="text-2xl font-bold mb-6 border-b pb-4" style={{ color: 'var(--reading-fg)', borderColor: 'var(--reading-muted)', opacity: 0.95 }}>{passage.title}</h2>
+                                <PassageText text={passage.text} bionicReading={settings.bionicReading} reading={reading} />
 
-                        <div className="mt-12 pt-8 border-t border-slate-800 flex flex-col items-center gap-3">
-                            <button onClick={handleFinishReading} className="bg-purple-600 hover:bg-purple-500 text-white px-8 py-4 rounded-xl font-bold transition-all">
-                                Finished Reading
-                            </button>
-                            <p className="text-xs" style={{ color: 'var(--reading-muted)' }}>{words.length} words</p>
-                        </div>
-                        </>
+                                <div className="mt-12 pt-8 border-t border-slate-800 flex flex-col items-center gap-3">
+                                    <button onClick={handleFinishReading} className="bg-purple-600 hover:bg-purple-500 text-white px-8 py-4 rounded-xl font-bold transition-all">
+                                        Finished Reading
+                                    </button>
+                                    <p className="text-xs" style={{ color: 'var(--reading-muted)' }}>{words.length} words</p>
+                                </div>
+                            </>
                         )}
                     </div>
                 )}
             </div>
 
-            {mode !== 'natural' && (
-                <div className="py-8 flex justify-center mt-auto">
-                    <button
-                        onClick={togglePlay}
-                        className={`w-20 h-20 rounded-full flex items-center justify-center shadow-lg transition-transform hover:scale-105 active:scale-95 ${isPlaying ? 'bg-slate-800 text-slate-300' : 'bg-purple-600 text-white shadow-purple-900/30'}`}
-                    >
-                        {isPlaying ? <Pause size={32} /> : <Play size={32} className="ml-2" />}
-                    </button>
+            {transport && (
+                <div className={`pt-6 mt-auto transition-opacity duration-300 ${zenHidden ? 'opacity-30 hover:opacity-100' : ''}`}>
+                    {transport}
                 </div>
             )}
+
+            <ReaderSettings
+                open={settingsOpen} onClose={closeSettings} mode={mode}
+                reading={reading} patchReading={patchReading}
+                settings={settings} updateSettings={updateSettings}
+            />
         </ReadingSurface>
     );
 }

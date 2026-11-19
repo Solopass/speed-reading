@@ -59,6 +59,14 @@ export const FOCAL_COLORS = [
     { id: 'none', label: 'None', value: null }
 ];
 
+/** How the Paced and Skim modes mark your place. */
+export const PACER_STYLES = [
+    { id: 'band', label: 'Line + cursor', note: 'Highlights the line and sweeps a cursor along it' },
+    { id: 'word', label: 'Word', note: 'Highlights the word you should be on' },
+    { id: 'underline', label: 'Underline', note: 'A bar under the current stretch of text' },
+    { id: 'line', label: 'Line only', note: 'Just the line, no cursor; the lightest guide' }
+];
+
 export const DEFAULT_READING = {
     fontId: 'sans',
     themeId: 'dark',
@@ -72,8 +80,28 @@ export const DEFAULT_READING = {
     paragraphGapEm: 1.2,
     focalColorId: 'red',
     showFocalGuide: true,
-    bionicStrength: 0.5   // fraction of each word emboldened
+    bionicStrength: 0.5,  // fraction of each word emboldened
+    // In-reader behaviour, adjustable from the reader's settings drawer.
+    pacerStyle: 'band',
+    dimRead: true,        // fade words the pacer has passed
+    rsvpContext: false,   // show the surrounding words under the RSVP flash
+    countdown: true,      // 3-2-1 before playback starts
+    speedRamp: false,     // ease in from 70% of the target over the first quarter
+    zen: false            // hide the controls while playing
 };
+
+const BOOLEAN_PREFS = ['dimRead', 'rsvpContext', 'countdown', 'speedRamp', 'zen'];
+
+/**
+ * Speed multiplier for the warm-up ramp: 70% at the first word, rising to full
+ * speed a quarter of the way through. Starting cold at full target speed costs
+ * comprehension in the first paragraph; this eases into it.
+ */
+export function rampFactor(fraction, enabled = true) {
+    if (!enabled) return 1;
+    const f = Math.min(1, Math.max(0, fraction) / 0.25);
+    return 0.7 + 0.3 * f;
+}
 
 // Ranges are deliberately generous — the point is to let someone find their own
 // optimum, not to enforce mine.
@@ -108,6 +136,10 @@ export function normalizeReading(raw) {
     result.focalColorId = byId(FOCAL_COLORS, source.focalColorId, 'red').id;
     result.justify = source.justify === true;
     result.showFocalGuide = source.showFocalGuide !== false;
+    result.pacerStyle = byId(PACER_STYLES, source.pacerStyle, 'band').id;
+    for (const key of BOOLEAN_PREFS) {
+        result[key] = typeof source[key] === 'boolean' ? source[key] : DEFAULT_READING[key];
+    }
     return result;
 }
 

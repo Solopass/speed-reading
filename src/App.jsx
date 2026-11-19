@@ -136,6 +136,9 @@ export default function App() {
     // out of range degrades to something usable rather than blanking the page.
     const reading = normalizeReading(settings.reading);
     const updateReading = (next) => updateSettings({ reading: normalizeReading(next) });
+    // Merges into the latest stored value, so several quick changes (the
+    // reader's settings drawer) cannot overwrite one another.
+    const patchReading = (patch) => setSettings(prev => ({ ...prev, reading: normalizeReading({ ...prev.reading, ...patch }) }));
 
     const navigate = (view) => {
         setCurrentView(view);
@@ -424,7 +427,7 @@ export default function App() {
                         {currentView === 'library' && <Library library={library} ai={ai} verifyQuestions={settings.verifyQuestions} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onOpenSaved={openSaved} onDeleteSaved={deleteSaved} addNotification={addNotification} />}
                         {currentView === 'recall' && <RecallCheck passage={activePassage} onDone={finishRecall} onExit={() => exitFocus('dashboard')} />}
                         {currentView === 'push' && <SpeedPush reading={reading} passage={activePassage} targetWpm={activeOpeningWpm} intensity={userStats.pushIntensity} settings={settings} onFinish={finishSession} onExit={() => exitFocus('library')} />}
-                        {currentView === 'reader' && <Reader passage={activePassage} settings={settings} reading={reading} initialWpm={activeOpeningWpm} resumeFrom={isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id))} onFinish={finishSession} onLeave={handleReaderLeave} onExit={() => exitFocus(activePassage?.isCalibration ? 'dashboard' : 'library')} addNotification={addNotification} />}
+                        {currentView === 'reader' && <Reader passage={activePassage} settings={settings} reading={reading} patchReading={patchReading} updateSettings={updateSettings} initialWpm={activeOpeningWpm} resumeFrom={isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id))} onFinish={finishSession} onLeave={handleReaderLeave} onExit={() => exitFocus(activePassage?.isCalibration ? 'dashboard' : 'library')} addNotification={addNotification} />}
                         {currentView === 'tools' && <Tools drills={drills} adaptiveStart={settings.autoAdaptive} onDrillComplete={handleDrillComplete} addNotification={addNotification} />}
                         {currentView === 'vocab' && <Vocabulary vocab={vocab} setVocab={setVocab} library={library} ai={ai} addNotification={addNotification} />}
                         {currentView === 'analytics' && <Analytics history={sessionHistory} drills={drills} stats={userStats} theme={theme} />}
