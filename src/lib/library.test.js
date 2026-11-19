@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     RECALL_INTERVALS,
+    addPassageBookmark,
     createEntry,
     findEntry,
     isPartiallyRead,
@@ -8,6 +9,7 @@ import {
     migrateLibrary,
     nextRecallOn,
     recallQueue,
+    removePassageBookmark,
     recordAttempt,
     recordProgress,
     removeEntry,
@@ -249,5 +251,18 @@ describe('library cap and books', () => {
         const out = migrateLibrary([{ id: 'b', kind: 'book', title: 'B', chapters: [{ title: 'c', text: 'hello there' }] }, { id: 'bad', kind: 'book', chapters: [] }]);
         expect(out.map(i => i.id)).toEqual(['b']);
         expect(out[0].chapters[0].words).toBe(2);
+    });
+
+    it('adds, migrates, and removes passage bookmarks with notes', () => {
+        const item = createEntry({ id: 'd1', title: 'Doc', source: 'import', text: 'one two three four five six' });
+        const withBm = addPassageBookmark([item], 'd1', { index: 2, snippet: 'three four five', note: 'Key point' });
+        expect(withBm[0].bookmarks).toHaveLength(1);
+        expect(withBm[0].bookmarks[0].note).toBe('Key point');
+
+        const migrated = migrateLibrary(JSON.parse(JSON.stringify(withBm)));
+        expect(migrated[0].bookmarks[0].note).toBe('Key point');
+
+        const removed = removePassageBookmark(migrated, 'd1', migrated[0].bookmarks[0].id);
+        expect(removed[0].bookmarks).toHaveLength(0);
     });
 });

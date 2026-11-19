@@ -202,11 +202,18 @@ export function completeChapter(items, id, index, { wpm = null } = {}) {
 /** The chapter to continue with. */
 export const nextChapterIndex = (book) => Math.min(Math.max(0, book.currentChapter ?? 0), book.chapters.length - 1);
 
-export function addBookmark(items, id, { chapter, index, snippet }) {
+export function addBookmark(items, id, { chapter, index, snippet, note = '' }) {
     return updateBook(items, id, book => ({
         ...book,
         bookmarks: [
-            { id: `bm-${Date.now()}`, chapter, index, snippet: String(snippet ?? '').slice(0, 120), createdAt: todayKey() },
+            {
+                id: `bm-${Date.now()}`,
+                chapter,
+                index,
+                snippet: String(snippet ?? '').slice(0, 120),
+                note: String(note ?? '').trim().slice(0, 280),
+                createdAt: todayKey()
+            },
             ...book.bookmarks.filter(b => !(b.chapter === chapter && Math.abs(b.index - index) < 5))
         ].slice(0, MAX_BOOKMARKS)
     }));
@@ -256,6 +263,7 @@ export function migrateBook(raw) {
                         chapter,
                         index: Math.min(Math.max(0, b.index), Math.max(0, chapters[chapter].words - 1)),
                         snippet: String(b.snippet ?? '').slice(0, 120),
+                        note: typeof b.note === 'string' ? b.note.slice(0, 280) : '',
                         createdAt: typeof b.createdAt === 'string' ? b.createdAt : todayKey()
                     };
                 })

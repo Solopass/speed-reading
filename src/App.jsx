@@ -14,8 +14,8 @@ import { createBackup, downloadBackup, readBackup } from './lib/backup';
 import { DEFAULT_READING, normalizeReading } from './lib/readingStyle';
 import { STEP_KINDS, migratePlans, removePlan, upsertPlan } from './lib/plans';
 import {
-    createEntry, findEntry, migrateLibrary, recallQueue, recordAttempt,
-    recordProgress, removeEntry, resumePoint, toPassage, upsertEntry
+    addPassageBookmark, createEntry, findEntry, migrateLibrary, recallQueue, recordAttempt,
+    recordProgress, removeEntry, removePassageBookmark, resumePoint, toPassage, upsertEntry
 } from './lib/library';
 import { dueItems, migrateVocab } from './lib/vocab';
 import {
@@ -262,11 +262,19 @@ export default function App() {
         return true;
     };
 
-    const bookmarkHere = ({ index }) => {
+    const bookmarkHere = ({ index, note = '' }) => {
         const p = activePassage;
-        if (!p?.bookId) return;
-        setLibrary(prev => addBookmark(prev, p.bookId, { chapter: p.chapterIndex, index, snippet: snippetAt(p.text, index) }));
-        addNotification('Bookmarked.', 'success');
+        if (!p || p.isCalibration) return;
+        const snippet = snippetAt(p.text ?? '', index);
+        if (p.bookId) {
+            setLibrary(prev => addBookmark(prev, p.bookId, { chapter: p.chapterIndex, index, snippet, note }));
+            addNotification(note.trim() ? 'Bookmark & note saved.' : 'Bookmarked.', 'success');
+            return;
+        }
+        if (p.id) {
+            setLibrary(prev => addPassageBookmark(prev, p.id, { index, snippet, note }));
+            addNotification(note.trim() ? 'Bookmark & note saved.' : 'Bookmarked.', 'success');
+        }
     };
 
     const startPushDrill = (drillPassage, { source = 'builtin', save = true, returnTo = 'library' } = {}) => {
@@ -281,11 +289,12 @@ export default function App() {
      * Reopens a stored passage. A retention re-test goes straight to the
      * questions — re-reading first would measure nothing.
      */
-    const openSaved = (id, { recall = false, returnTo = 'library' } = {}) => {
+    const openSaved = (id, { recall = false, returnTo = 'library', resumeAt = null } = {}) => {
         const entry = findEntry(library, id);
         if (!entry) return;
-        if (isBook(entry)) { openBookChapter(id, nextChapterIndex(entry), null, returnTo); return; }
-        setActivePassage(toPassage(entry));
+        if (isBook(entry)) { openBookChapter(id, nextChapterIndex(entry), resumeAt, returnTo); return; }
+        const passage = toPassage(entry);
+        setActivePassage(resumeAt !== null ? { ...passage, resumeFrom: resumeAt } : passage);
         setIsRecall(recall);
         setReturnView(returnTo);
         if (recall) setCurrentView('recall');
@@ -536,11 +545,11 @@ export default function App() {
                             />
                         )}
                         {currentView === 'library' && <Library library={library} ai={ai} verifyQuestions={settings.verifyQuestions} readingWpm={activeOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onOpenSaved={openSaved} onDeleteSaved={deleteSaved} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} addNotification={addNotification} />}
-                        {currentView === 'documents' && <Documents library={library} readingWpm={readerOpeningWpm} onOpenSaved={(id, opts) => openSaved(id, { ...opts, returnTo: 'documents' })} onDeleteSaved={deleteSaved} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} onOpenUpload={() => navigate('upload')} />}
+                        {currentView === 'documents' && <Documents library={library} readingWpm={readerOpeningWpm} onOpenSaved={(id, opts) => openSaved(id, { ...opts, returnTo: 'documents' })} onDeleteSaved={deleteSaved} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} onRemovePassageBookmark={(id, bmId) => setLibrary(prev => removePassageBookmark(prev, id, bmId))} onOpenUpload={() => navigate('upload')} />}
                         {currentView === 'upload' && <Upload library={library} readingWpm={readerOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onSaveBook={saveBook} onSavePassage={(p) => saveToLibrary(p, 'import')} onOpenSaved={(id) => openSaved(id, { returnTo: 'documents' })} onDeleteSaved={deleteSaved} onOpenDocuments={() => navigate('documents')} addNotification={addNotification} />}
                         {currentView === 'recall' && <RecallCheck passage={activePassage} onDone={finishRecall} onExit={() => exitFocus('dashboard')} />}
                         {currentView === 'push' && <SpeedPush reading={reading} patchReading={patchReading} updateSettings={updateSettings} passage={activePassage} targetWpm={activeOpeningWpm} intensity={userStats.pushIntensity} settings={settings} onFinish={finishSession} onExit={() => exitFocus(returnView)} />}
-                        {currentView === 'reader' && <Reader key={activePassage?.id + ':' + (activePassage?.chapterIndex ?? '')} passage={activePassage} book={activeBook} onSelectChapter={activeBook ? selectBookChapter : null} settings={settings} reading={reading} patchReading={patchReading} updateSettings={updateSettings} initialWpm={readerOpeningWpm} resumeFrom={activePassage?.bookId ? activePassage.resumeFrom : isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id))} onFinish={finishSession} onLeave={handleReaderLeave} onBookmark={activePassage?.bookId ? bookmarkHere : null} onExit={() => exitFocus(activePassage?.isCalibration ? 'dashboard' : returnView)} addNotification={addNotification} />}
+                        {currentView === 'reader' && <Reader key={activePassage?.id + ':' + (activePassage?.chapterIndex ?? '')} passage={activePassage} book={activeBook} onSelectChapter={activeBook ? selectBookChapter : null} settings={settings} reading={reading} patchReading={patchReading} updateSettings={updateSettings} initialWpm={readerOpeningWpm} resumeFrom={activePassage?.resumeFrom ?? (isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id)))} onFinish={finishSession} onLeave={handleReaderLeave} onBookmark={!activePassage?.isCalibration ? bookmarkHere : null} onExit={() => exitFocus(activePassage?.isCalibration ? 'dashboard' : returnView)} addNotification={addNotification} />}
                         {currentView === 'tools' && <Tools drills={drills} adaptiveStart={settings.autoAdaptive} onDrillComplete={handleDrillComplete} addNotification={addNotification} />}
                         {currentView === 'vocab' && <Vocabulary vocab={vocab} setVocab={setVocab} library={library} ai={ai} addNotification={addNotification} />}
                         {currentView === 'analytics' && <Analytics history={sessionHistory} drills={drills} stats={userStats} theme={theme} />}

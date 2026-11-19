@@ -85,6 +85,7 @@ function BookCard({ book, wpm, onOpenChapter, onRemoveBookmark, onDelete }) {
                                     <span className="min-w-0">
                                         <span className="block text-xs text-slate-400">{book.chapters[bm.chapter]?.title} · {bm.createdAt}</span>
                                         <span className="block text-sm text-slate-200 truncate">{bm.snippet}</span>
+                                        {bm.note && <span className="block text-xs text-amber-300/90 mt-0.5">{bm.note}</span>}
                                     </span>
                                 </button>
                                 <button onClick={() => onRemoveBookmark(book.id, bm.id)} aria-label="Remove bookmark" className="p-1.5 text-slate-600 hover:text-red-400">

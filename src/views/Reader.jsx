@@ -100,6 +100,9 @@ function Reader({
     const [pacedSeek, setPacedSeek] = useState(null);
     const [pacedInitialIndex, setPacedInitialIndex] = useState(safeResume);
     const [wpmMenuOpen, setWpmMenuOpen] = useState(false);
+    const [bookmarkOpen, setBookmarkOpen] = useState(false);
+    const [bookmarkNote, setBookmarkNote] = useState('');
+    const bookmarkInputRef = useRef(null);
     const wpmMenuRef = useRef(null);
     const touchStartRef = useRef(null);
     const lastNonScrollModeRef = useRef(mode === 'scroll' ? 'rsvp' : mode);
@@ -112,6 +115,10 @@ function Reader({
         window.addEventListener('pointerdown', onPointerDown);
         return () => window.removeEventListener('pointerdown', onPointerDown);
     }, [wpmMenuOpen]);
+
+    useEffect(() => {
+        if (bookmarkOpen) bookmarkInputRef.current?.focus();
+    }, [bookmarkOpen]);
 
     const isSkim = mode === 'skim';
     const isScroll = mode === 'scroll';
@@ -460,10 +467,10 @@ function Reader({
         r: () => { if (mode !== 'natural') restart(); },
         z: () => patchReading({ zen: !reading.zen }),
         s: () => openSettings(),
-        b: () => { if (mode !== 'natural') onBookmark?.({ index: cursorRef.current }); },
+        b: () => { if (mode !== 'natural' && onBookmark) { pause(); setBookmarkNote(''); setBookmarkOpen(true); } },
         f: () => toggleFullscreen(),
-        Escape: () => { if (wpmMenuOpen) setWpmMenuOpen(false); else onExit?.(); }
-    }, !quizActive && !settingsOpen && !isCalibration);
+        Escape: () => { if (bookmarkOpen) setBookmarkOpen(false); else if (wpmMenuOpen) setWpmMenuOpen(false); else onExit?.(); }
+    }, !quizActive && !settingsOpen && !bookmarkOpen && !isCalibration);
 
     const renderRsvpChunk = () => {
         const chunkWords = words.slice(currentIndex, currentIndex + settings.chunkSize);
@@ -777,7 +784,7 @@ function Reader({
                     )}
                     {onBookmark && mode !== 'natural' && (
                         <button
-                            onClick={() => onBookmark({ index: cursorRef.current })} aria-label="Bookmark this spot" title="Bookmark (B)"
+                            onClick={() => { pause(); setBookmarkNote(''); setBookmarkOpen(true); }} aria-label="Bookmark this spot" title="Bookmark & note (B)"
                             className="p-2.5 rounded-xl border border-slate-800 text-slate-300 hover:text-white hover:border-slate-600 transition-colors"
                         >
                             <Bookmark size={18} />
@@ -1023,6 +1030,58 @@ function Reader({
                 reading={reading} patchReading={patchReading}
                 settings={settings} updateSettings={updateSettings}
             />
+
+            {bookmarkOpen && (
+                <div className="fixed inset-0 z-[60] grid place-items-center p-4">
+                    <button aria-label="Close bookmark dialog" className="absolute inset-0 bg-black/50" onClick={() => setBookmarkOpen(false)} />
+                    <form
+                        role="dialog"
+                        aria-label="Add bookmark and note"
+                        onSubmit={(e) => {
+                            e.preventDefault();
+                            onBookmark?.({ index: cursorRef.current, note: bookmarkNote });
+                            setBookmarkOpen(false);
+                            setBookmarkNote('');
+                        }}
+                        className="relative w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl p-5 shadow-2xl space-y-4"
+                    >
+                        <div className="flex items-center gap-2 text-white font-bold">
+                            <Bookmark size={17} className="text-amber-400" />
+                            <span>Save bookmark &amp; note</span>
+                        </div>
+                        <p className="text-xs text-slate-400 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 line-clamp-2">
+                            &ldquo;{words.slice(cursorIndex, cursorIndex + 14).join(' ')}&rdquo;
+                        </p>
+                        <div>
+                            <label htmlFor="bm-note" className="block text-xs font-bold text-slate-400 mb-1.5">Note (optional)</label>
+                            <input
+                                ref={bookmarkInputRef}
+                                id="bm-note"
+                                type="text"
+                                value={bookmarkNote}
+                                onChange={(e) => setBookmarkNote(e.target.value)}
+                                placeholder="Key takeaway, question, or reminder..."
+                                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-purple-500"
+                            />
+                        </div>
+                        <div className="flex justify-end gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setBookmarkOpen(false)}
+                                className="px-4 py-2 rounded-xl text-sm font-medium text-slate-400 hover:text-white"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="submit"
+                                className="px-4 py-2 rounded-xl text-sm font-bold bg-purple-600 hover:bg-purple-500 text-white"
+                            >
+                                Save bookmark
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            )}
         </ReadingSurface>
     );
 }

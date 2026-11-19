@@ -28,6 +28,7 @@ export function createEntry({ id, title, source, kind = 'read', text, sectionA, 
         lastReadAt: null,
         progressIndex: 0,
         completedAt: null,
+        bookmarks: [],
         attempts: []                  // { date, wpm, score, kind: 'read' | 'recall' }
     };
 }
@@ -129,6 +130,28 @@ export function isRecallDue(item, today = todayKey()) {
 export const recallQueue = (items, today = todayKey()) =>
     items.filter(i => isRecallDue(i, today)).sort((a, b) => (nextRecallOn(a) < nextRecallOn(b) ? -1 : 1));
 
+export function addPassageBookmark(items, id, { index, snippet, note = '' }) {
+    return items.map(item => (item.id === id && !isBook(item) ? {
+        ...item,
+        bookmarks: [
+            {
+                id: `bm-${Date.now()}`,
+                index: Math.max(0, index),
+                snippet: String(snippet ?? '').slice(0, 120),
+                note: String(note ?? '').trim().slice(0, 280),
+                createdAt: todayKey()
+            },
+            ...(item.bookmarks ?? []).filter(b => Math.abs(b.index - index) >= 5)
+        ].slice(0, 50)
+    } : item));
+}
+
+export function removePassageBookmark(items, id, bookmarkId) {
+    return items.map(item => (item.id === id && !isBook(item)
+        ? { ...item, bookmarks: (item.bookmarks ?? []).filter(b => b.id !== bookmarkId) }
+        : item));
+}
+
 /** Turns a stored entry back into something the reader or drill can run. */
 export function toPassage(item) {
     return item.kind === 'push'
@@ -151,6 +174,18 @@ export function migrateLibrary(raw) {
             lastReadAt: typeof i.lastReadAt === 'string' ? i.lastReadAt : null,
             completedAt: typeof i.completedAt === 'string' ? i.completedAt : null,
             progressIndex: Number.isInteger(i.progressIndex) ? i.progressIndex : 0,
+            bookmarks: Array.isArray(i.bookmarks)
+                ? i.bookmarks
+                    .filter(b => b && Number.isInteger(b.index))
+                    .map(b => ({
+                        id: typeof b.id === 'string' ? b.id : `bm-${b.index}`,
+                        index: Math.max(0, b.index),
+                        snippet: String(b.snippet ?? '').slice(0, 120),
+                        note: typeof b.note === 'string' ? b.note.slice(0, 280) : '',
+                        createdAt: typeof b.createdAt === 'string' ? b.createdAt : todayKey()
+                    }))
+                    .slice(0, 50)
+                : [],
             attempts: Array.isArray(i.attempts) ? i.attempts.filter(a => a && typeof a.date === 'string') : []
         }))
         .filter(Boolean);
