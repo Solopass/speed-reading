@@ -171,9 +171,38 @@ function Library({ library, ai, verifyQuestions, onStartPassage, onStartPushDril
     const fileRef = useRef(null);
     const [isDragging, setIsDragging] = useState(false);
 
+    // Copy/paste replies wait here for the optional blind check. The API path
+    // runs that check automatically; pasting needs a second round trip, so it
+    // is offered rather than forced.
+    const [pendingCheck, setPendingCheck] = useState(null);
+
+    const holdForCheck = (data, kind) => {
+        const questions = normalizeQuestions(data.questions);
+        if (useApi || !verifyQuestions || questions.length === 0) return false;
+        // Normalised (validated and shuffled) once here, so the indices in the
+        // check prompt match the ones that will be scored.
+        setPendingCheck({ data: { ...data, questions }, kind, questions });
+        return true;
+    };
+
+    const finishCheck = (blind) => {
+        const { data, kind, questions } = pendingCheck;
+        let next = data;
+        if (blind) {
+            const { questions: kept, dropped, applied } = dropGuessableQuestions(questions, blind.answers);
+            if (!applied) addNotification('Question check inconclusive — keeping all questions.');
+            else if (dropped > 0) addNotification(`Dropped ${dropped} question${dropped === 1 ? '' : 's'} answerable without reading.`);
+            else addNotification('All questions passed the check.');
+            next = { ...data, questions: kept };
+        }
+        setPendingCheck(null);
+        if (kind === 'push') onStartPushDrill({ ...next, id: `push-${Date.now()}` }, { source: 'ai' });
+        else startAiPassage(next);
+    };
+
     // Both AI paths — the API call and the copy/paste exchange — converge on
     // these handlers, so validation can never differ between them.
-    const acceptPassage = (data) => {
+    const startAiPassage = (data) => {
         if (!data?.text) throw new Error('That reply has no passage text in it.');
         const passageData = { ...data, id: `ai-${Date.now()}` };
         addNotification(normalizeQuestions(passageData.questions).length === 0
@@ -182,9 +211,14 @@ function Library({ library, ai, verifyQuestions, onStartPassage, onStartPushDril
         onStartPassage(passageData, { source: 'ai' });
     };
 
+    const acceptPassage = (data) => {
+        if (!data?.text) throw new Error('That reply has no passage text in it.');
+        if (!holdForCheck(data, 'passage')) startAiPassage(data);
+    };
+
     const acceptPushDrill = (data) => {
         if (!data?.sectionA || !data?.sectionB) throw new Error('That reply is missing one of the two sections.');
-        onStartPushDrill({ ...data, id: `push-${Date.now()}` }, { source: 'ai' });
+        if (!holdForCheck(data, 'push')) onStartPushDrill({ ...data, id: `push-${Date.now()}` }, { source: 'ai' });
     };
 
     const spec = outputKind === 'push'
@@ -398,6 +432,32 @@ function Library({ library, ai, verifyQuestions, onStartPassage, onStartPushDril
                                     : 'Writing...')
                                 : 'Generate and start'}
                         </button>
+                    ) : pendingCheck ? (
+                        <div className="space-y-3">
+                            <div className="border border-emerald-900/60 bg-emerald-950/20 rounded-2xl p-4">
+                                <div className="text-sm font-bold text-emerald-300">
+                                    Got it: {pendingCheck.data.title || 'your passage'} with {pendingCheck.questions.length} questions.
+                                </div>
+                                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                                    Optional extra step: paste one more prompt and the assistant answers the questions <em>without</em> the passage.
+                                    Any it gets right were answerable from general knowledge and get dropped, so they cannot inflate your score.
+                                </p>
+                                <button
+                                    onClick={() => finishCheck(null)}
+                                    className="mt-3 bg-purple-600 hover:bg-purple-500 text-white text-sm font-bold px-4 py-2.5 rounded-lg transition-colors"
+                                >
+                                    Skip the check and start
+                                </button>
+                            </div>
+                            <ManualAiPanel
+                                spec={verifySpec({ questions: pendingCheck.questions })}
+                                addNotification={addNotification}
+                                onResult={(reply) => {
+                                    if (!Array.isArray(reply?.answers)) throw new Error('That reply has no "answers" list in it.');
+                                    finishCheck(reply);
+                                }}
+                            />
+                        </div>
                     ) : (
                         <ManualAiPanel
                             spec={spec}

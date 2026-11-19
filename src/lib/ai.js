@@ -21,18 +21,35 @@ const QUESTION_SCHEMA = {
 
 const QUESTIONS_SHAPE = '"questions": [{"q": string, "options": [string, string, string, string], "answer": number}]';
 
+export const GIST_QUESTION_COUNT = 3;
+
+const GIST_SCHEMA = {
+    type: 'ARRAY',
+    description: `${GIST_QUESTION_COUNT} gist questions for someone who skimmed the passage, each with 4 options.`,
+    items: QUESTION_SCHEMA.items
+};
+
+const GIST_SHAPE = '"gistQuestions": [{"q": string, "options": [string, string, string, string], "answer": number}]';
+
+// Skim mode needs questions a skimmer can fairly be held to: the point, the
+// shape of the argument, the big claims. Detail questions would score every
+// skim as a failure, which is the wrong signal for a sampling skill.
+const GIST_INSTRUCTIONS = `Separately, write exactly ${GIST_QUESTION_COUNT} "gistQuestions" for a reader who only skimmed the passage at high speed. Ask about its central point, how it is organised, or its main claims and conclusion. They must still require having seen this passage: not answerable from the title or general knowledge. Same rules for the options as above.`;
+
 export function passageSpec({ topic, difficulty }) {
     return {
         label: 'reading passage',
         prompt: `Write a self-contained reading passage about "${topic}" at difficulty ${difficulty}/10, between 200 and 300 words. Include concrete specifics — numbers, names, dates, causes — so that comprehension can actually be tested.
 
-${QUIZ_INSTRUCTIONS}`,
+${QUIZ_INSTRUCTIONS}
+
+${GIST_INSTRUCTIONS}`,
         schema: {
             type: 'OBJECT',
-            properties: { title: { type: 'STRING' }, text: { type: 'STRING' }, questions: QUESTION_SCHEMA },
+            properties: { title: { type: 'STRING' }, text: { type: 'STRING' }, questions: QUESTION_SCHEMA, gistQuestions: GIST_SCHEMA },
             required: ['title', 'text', 'questions']
         },
-        shape: `{"title": string, "text": string, ${QUESTIONS_SHAPE}}`
+        shape: `{"title": string, "text": string, ${QUESTIONS_SHAPE}, ${GIST_SHAPE}}`
     };
 }
 

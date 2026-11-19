@@ -2,6 +2,7 @@ import { migrateHistory, migrateStats, todayKey } from './stats';
 import { migrateLibrary } from './library';
 import { migrateDrills } from './drillStats';
 import { migratePlans } from './plans';
+import { migrateVocab } from './vocab';
 
 // Everything lives in localStorage for one browser profile, which means a
 // cleared cache, a new machine, or a different browser loses the lot. These
@@ -9,7 +10,7 @@ import { migratePlans } from './plans';
 
 export const BACKUP_VERSION = 1;
 
-export function createBackup({ settings, stats, history, library, drills, plans = [] }) {
+export function createBackup({ settings, stats, history, library, drills, plans = [], vocab = [] }) {
     return {
         app: 'speed-ai-reading-trainer',
         version: BACKUP_VERSION,
@@ -19,7 +20,8 @@ export function createBackup({ settings, stats, history, library, drills, plans 
         history,
         library,
         drills,
-        plans
+        plans,
+        vocab
     };
 }
 
@@ -48,6 +50,7 @@ export function describeBackup(parsed) {
         passages: migrateLibrary(parsed.library).length,
         drills: migrateDrills(parsed.drills).length,
         plans: migratePlans(parsed.plans).length,
+        vocab: migrateVocab(parsed.vocab).length,
         baselineWpm: stats.baselineWpm,
         targetWpm: stats.targetWpm
     };
@@ -67,7 +70,9 @@ export function readBackup(parsed, defaultSettings) {
         library: migrateLibrary(parsed.library),
         drills: migrateDrills(parsed.drills),
         // Absent in v1 backups, which predate plans — an empty list, not a loss.
-        plans: migratePlans(parsed.plans)
+        plans: migratePlans(parsed.plans),
+        // Absent in backups from before the vocabulary trainer.
+        vocab: migrateVocab(parsed.vocab)
     };
 }
 

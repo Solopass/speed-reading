@@ -92,10 +92,11 @@ Three numbers, deliberately kept separate (they were previously conflated):
 | **Raw WPM** | measurement — words divided by time actually spent reading | recorded per session |
 | **Effective WPM** | measurement — raw x comprehension | derived from history, never stored as a stat |
 
-Your **baseline** is set once, by a built-in 244-word passage read at your
-natural pace with no pacing aids, followed by a five-question quiz. It needs no
-API key. The measured speed becomes your starting target, and every later
-number is reported relative to it.
+Your **baseline** comes from built-in 244-word passages read at your natural
+pace with no pacing aids, each followed by a five-question quiz. One passage is
+enough to start; up to three are averaged so a single distracted read does not
+set the zero point. It needs no API key. The baseline becomes your starting
+target, and every later number is reported relative to it.
 
 Settings offers a straight choice for who moves the target: **let the app set
 it**, which adapts on your quiz scores, or **set it yourself**, which locks the
@@ -199,6 +200,9 @@ divides on the most balanced paragraph boundary, falling back to sentences.
   where most training time should go. Line positions are measured from the DOM,
   so the cursor follows real wrapping at any width or font size.
 - **Natural** applies no pacing and just times you. Used by the baseline test.
+- **Skim** runs the paced cursor at 2.5x your target (at least 700 WPM) and is
+  checked with gist questions when the passage has them. Skims are kept apart:
+  they never move the target or feed the comprehension and eWPM averages.
 
 Switching the tab pauses the session: a hidden tab stops animation frames and
 throttles timers while wall-clock time keeps running, which would otherwise
@@ -235,19 +239,23 @@ src/
     aiProvider.js      which path is in force: local / gemini / copy-paste
     ollama.js          local model transport, schema conversion, thinking control
     gemini.js          Gemini API transport
-    calibration.js     built-in baseline passage
+    calibration.js     built-in baseline passages (up to three averaged)
     drills.js          built-in speed-push passage
     drillStats.js      drill staircases, thresholds, per-drill direction
     readingStyle.js    typography, themes, CSS variables
     num.js             shared numeric coercion (see below)
     backup.js          export/import of the whole profile
     useHotkeys.js      window-level keyboard shortcuts
+    vocab.js           vocabulary candidates, review schedule, flash drill
+    nextAction.js      the dashboard's "do this next" pick
+    theme.js           app theme (dark / light / system), chart colours
+    usePersistentState.js  one localStorage key per piece of state
   components/          PacedText, Quiz, SpeedPush, ManualAiPanel, ReadingSurface,
-                       PassageText, StatCard, NavItem, Toggle
+                       PassageText, Toggle, AppNav, Toasts
     drills/            SchulteDrill, ChunkFlashDrill
   views/               Dashboard, Library, Reader, Tools, Analytics, AICoach,
                        VideoSummary, SettingsPanel, ReadingEnvironment, Guide,
-                       RecallCheck
+                       RecallCheck, Vocabulary
 ```
 
 ## Scripts

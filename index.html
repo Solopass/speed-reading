@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Speed AI — Reading Trainer</title>
+    <script>
+      // Apply the saved theme before first paint, so light mode never flashes dark.
+      try {
+        var t = (JSON.parse(localStorage.getItem('speedReadSettings') || '{}') || {}).theme;
+        if (t === 'system') t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        if (t === 'light') document.documentElement.className = 'light';
+      } catch (e) { /* storage unavailable: stay dark */ }
+    </script>
   </head>
   <body>
     <div id="root"></div>

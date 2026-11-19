@@ -5,3 +5,95 @@
 html, body, #root {
   height: 100%;
 }
+
+:root {
+  color-scheme: dark;
+}
+
+/*
+ * Light theme.
+ *
+ * The components are written against the dark palette (slate-950 page,
+ * slate-900 cards, white text). Rather than duplicating every class with a
+ * light variant, the light theme re-points the palette variables Tailwind's
+ * utilities read: the slate scale is mirrored, "white" becomes ink, accent
+ * text shades darken for contrast on a pale page, and the deep accent tints
+ * used for highlighted panels become pale washes.
+ */
+:root.light {
+  color-scheme: light;
+
+  --color-white: #0f172a;
+  --color-slate-50: #020617;
+  --color-slate-100: #0f172a;
+  --color-slate-200: #1e293b;
+  --color-slate-300: #334155;
+  --color-slate-400: #475569;
+  --color-slate-500: #64748b;
+  --color-slate-600: #8392a7;
+  --color-slate-700: #cbd5e1;
+  --color-slate-800: #e2e8f0;
+  --color-slate-900: #ffffff;
+  --color-slate-950: #f1f5f9;
+
+  --color-purple-300: #7e22ce;
+  --color-purple-400: #9333ea;
+  --color-purple-800: #e9d5ff;
+  --color-purple-900: #f3e8ff;
+  --color-purple-950: #faf5ff;
+
+  --color-emerald-300: #047857;
+  --color-emerald-400: #059669;
+  --color-emerald-900: #d1fae5;
+  --color-emerald-950: #ecfdf5;
+
+  --color-amber-300: #b45309;
+  --color-amber-400: #d97706;
+  --color-amber-800: #fde68a;
+  --color-amber-950: #fffbeb;
+
+  --color-blue-300: #1d4ed8;
+  --color-blue-400: #2563eb;
+  --color-blue-900: #dbeafe;
+  --color-blue-950: #eff6ff;
+
+  --color-cyan-400: #0891b2;
+  --color-cyan-950: #ecfeff;
+
+  --color-red-400: #dc2626;
+  --color-red-900: #fee2e2;
+  --color-red-950: #fef2f2;
+
+  --color-orange-400: #ea580c;
+}
+
+/*
+ * Solid accent buttons and badges keep real white text in the light theme.
+ * Custom properties inherit, so restoring --color-white on the element fixes
+ * its icon and label children too. `~=` matches whole class tokens only, so
+ * translucent tints like bg-purple-500/20 are left alone.
+ */
+:root.light :is(
+  [class~="bg-purple-500"], [class~="bg-purple-600"], [class~="bg-purple-700"],
+  [class~="bg-emerald-500"], [class~="bg-emerald-600"],
+  [class~="bg-blue-500"], [class~="bg-blue-600"],
+  [class~="bg-cyan-500"], [class~="bg-cyan-600"],
+  [class~="bg-amber-500"], [class~="bg-amber-600"],
+  [class~="bg-red-500"], [class~="bg-red-600"],
+  [class~="bg-gradient-to-r"], [class~="bg-white"]
+) {
+  --color-white: #ffffff;
+}
+
+/* Thin, theme-aware scrollbars instead of the platform default. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-slate-700) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

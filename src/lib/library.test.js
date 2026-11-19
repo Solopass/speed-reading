@@ -152,7 +152,7 @@ describe('recall scheduling', () => {
 
 describe('toPassage', () => {
     it('unwraps a reading passage', () => {
-        expect(toPassage(entry())).toEqual({ id: 'p1', title: 'Test passage', text: 'one two three four five', questions: quiz });
+        expect(toPassage(entry())).toEqual({ id: 'p1', title: 'Test passage', text: 'one two three four five', questions: quiz, gistQuestions: [] });
     });
 
     it('unwraps a push drill with both sections', () => {
@@ -219,5 +219,18 @@ describe('resumePoint', () => {
         const saved = recordProgress([item], 'p1', 5);
         expect(saved[0].progressIndex).toBe(5);
         expect(resumePoint(migrateLibrary(JSON.parse(JSON.stringify(saved)))[0])).toBe(0);
+    });
+});
+
+describe('skim attempts', () => {
+    it('do not complete a passage or move its retention schedule', () => {
+        const item = createEntry({ id: 's1', title: 'S', source: 'ai', text: 'one two three', questions: [{ q: 'x' }] });
+        const skimmed = recordAttempt([item], 's1', { wpm: 900, score: 100, kind: 'skim' })[0];
+        expect(skimmed.completedAt).toBeNull();
+        expect(skimmed.attempts).toHaveLength(1);
+
+        const read = { ...item, completedAt: '2026-01-01', attempts: [{ date: '2026-01-01', kind: 'read' }] };
+        const later = { ...read, attempts: [...read.attempts, { date: '2026-01-05', kind: 'skim' }] };
+        expect(nextRecallOn(later)).toBe(nextRecallOn(read));
     });
 });

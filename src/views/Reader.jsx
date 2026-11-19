@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Pause, Play, Plus, Target, Volume2 } from 'lucide-react';
 import { normalizeQuestions } from '../lib/quiz';
 import useHotkeys from '../lib/useHotkeys';
@@ -18,12 +18,24 @@ function KeyboardHint() {
     );
 }
 
+/** "1:05 left" for the words remaining at the given speed. */
+function timeLeft(wordsLeft, wpm) {
+    const secs = Math.max(0, Math.round((wordsLeft / Math.max(1, wpm)) * 60));
+    return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')} left`;
+}
+
+/** Skimming starts well past reading speed: below ~700 WPM it is just fast reading. */
+export const skimStartWpm = (targetWpm) => Math.min(2000, Math.max(700, Math.round((targetWpm * 2.5) / 50) * 50));
+
 function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFinish, onLeave, onExit, addNotification }) {
     // The baseline test measures your natural pace, so it is always read as
     // ordinary text with no pacing and no speed control.
     const isCalibration = passage?.isCalibration === true;
 
-    const [wpm, setWpm] = useState(initialWpm);
+    const [readWpm, setReadWpm] = useState(initialWpm);
+    // Skim runs at its own speed, so trying a skim and switching back does not
+    // leave the reading speed at 1,000 WPM.
+    const [skimWpm, setSkimWpm] = useState(() => skimStartWpm(initialWpm));
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentIndex, setCurrentIndex] = useState(resumeFrom);
     const [mode, setMode] = useState(isCalibration ? 'natural' : 'rsvp');
@@ -39,6 +51,10 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
 
     const [pacedIndex, setPacedIndex] = useState(0);
 
+    const isSkim = mode === 'skim';
+    const wpm = isSkim ? skimWpm : readWpm;
+    const setWpm = isSkim ? setSkimWpm : setReadWpm;
+
     const words = useMemo(() => {
         if (!passage?.text) return [];
         return passage.text.trim().split(/\s+/).filter(w => w.length > 0);
@@ -47,7 +63,12 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
     // Validated and shuffled once per passage: a model can return a bad answer
     // index or duplicate options, and re-shuffling on every render would move
     // the options under the reader's cursor.
-    const questions = useMemo(() => normalizeQuestions(passage?.questions), [passage]);
+    const detailQuestions = useMemo(() => normalizeQuestions(passage?.questions), [passage]);
+    // A skim is checked on gist when the passage came with gist questions.
+    // Otherwise it falls back to the detail questions, which is harsh on a
+    // skim, so those sessions are still kept out of the reading averages.
+    const gistQuestions = useMemo(() => normalizeQuestions(passage?.gistQuestions), [passage]);
+    const questions = isSkim && gistQuestions.length > 0 ? gistQuestions : detailQuestions;
 
     const timerRef = useRef(null);
 
@@ -155,7 +176,7 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
     const resumedAt = useRef(resumeFrom);
     const wordsRead = useCallback(() => {
         if (mode === 'rsvp') return Math.max(0, Math.min(currentIndex, words.length) - resumedAt.current);
-        if (mode === 'paced') return Math.min(pacedIndex, words.length);
+        if (mode === 'paced' || mode === 'skim') return Math.min(pacedIndex, words.length);
         return words.length;
     }, [mode, currentIndex, pacedIndex, words.length]);
 
@@ -183,7 +204,9 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
     // Position within the whole passage, for the library's resume point.
     const absoluteIndex = mode === 'rsvp' ? currentIndex : pacedIndex;
     const leaveRef = useRef({ onLeave, passageId: passage?.id, absoluteIndex, finished: false });
-    leaveRef.current = { ...leaveRef.current, onLeave, passageId: passage?.id, absoluteIndex };
+    useLayoutEffect(() => {
+        leaveRef.current = { ...leaveRef.current, onLeave, passageId: passage?.id, absoluteIndex };
+    });
 
     // Navigating away mid-passage saves where you got to; finishing does not,
     // since completing already resets the resume point.
@@ -194,7 +217,10 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
 
     const handleFinishReading = useCallback(() => {
         stopClock();
-        const measured = { wpm: measuredWpm(wordsRead()), words: wordsRead(), elapsedMs: elapsedMs() };
+        const measured = {
+            wpm: measuredWpm(wordsRead()), words: wordsRead(), elapsedMs: elapsedMs(),
+            mode: isCalibration ? 'natural' : mode
+        };
         if (questions.length > 0) {
             setPending(measured);
             setQuizActive(true);
@@ -202,12 +228,12 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
         }
         leaveRef.current.finished = true;
         onFinish({ ...measured, score: null });
-    }, [stopClock, wordsRead, questions, onFinish, measuredWpm, elapsedMs]);
+    }, [stopClock, wordsRead, questions, onFinish, measuredWpm, elapsedMs, mode, isCalibration]);
 
     // Completion lives in its own effect so the advance effect doesn't have to
     // close over a handler it never lists as a dependency.
     const finishRef = useRef(handleFinishReading);
-    finishRef.current = handleFinishReading;
+    useLayoutEffect(() => { finishRef.current = handleFinishReading; });
 
     // The pacer reports completion from its own animation loop; guard against
     // it firing more than once as the final frames settle.
@@ -285,10 +311,15 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
         return (
             <Quiz
                 questions={questions}
-                ctaLabel={isCalibration ? 'Save Baseline' : 'Log Session'}
+                ctaLabel={isCalibration ? 'Save Baseline' : isSkim ? 'Log Skim' : 'Log Session'}
                 resultSubtitle={() => `read at ${pending.wpm} WPM`}
                 resultNote={(score) => {
                     if (isCalibration) return 'This sets your baseline and starting target speed.';
+                    if (isSkim) {
+                        return gistQuestions.length > 0
+                            ? 'Skims are tracked separately and never move your reading target.'
+                            : 'These were detail questions, which a skim is not meant to catch. Tracked separately; your reading target is untouched.';
+                    }
                     return score >= 90
                         ? 'Comfortable at this speed — your target moves up.'
                         : score >= 70
@@ -303,9 +334,7 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
     return (
         <ReadingSurface reading={reading} paint={false} className="h-full flex flex-col relative animate-in fade-in pb-12">
             <header className="flex items-center justify-between bg-slate-900 border border-slate-800 p-4 rounded-2xl mb-8 flex-wrap gap-4">
-                {!isCalibration && (
-                    <button onClick={() => onExit?.()} className="text-slate-400 hover:text-white font-medium text-sm mr-2">← Exit</button>
-                )}
+                <button onClick={() => onExit?.()} className="text-slate-400 hover:text-white font-medium text-sm mr-2">← Exit</button>
                 {isCalibration ? (
                     <div className="flex items-center gap-3">
                         <div className="p-2 bg-purple-500/20 rounded-lg text-purple-400"><Target size={18} /></div>
@@ -319,7 +348,8 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
                         {[
                             ['rsvp', 'RSVP'],
                             ['paced', 'Paced'],
-                            ['natural', 'Natural']
+                            ['natural', 'Natural'],
+                            ['skim', 'Skim']
                         ].map(([key, label]) => (
                             <button
                                 key={key}
@@ -371,15 +401,22 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
                         <div className="w-full max-w-lg mt-12 bg-slate-900 h-2 rounded-full overflow-hidden">
                             <div className="h-full bg-purple-600 transition-all duration-200" style={{ width: `${words.length ? (currentIndex / words.length) * 100 : 0}%` }}></div>
                         </div>
-                        <p className="text-slate-500 text-sm mt-4 font-mono">{currentIndex} / {words.length}</p>
+                        <p className="text-slate-500 text-sm mt-4 font-mono">{currentIndex} / {words.length} · {timeLeft(words.length - currentIndex, wpm)}</p>
                         <p className="text-slate-600 text-xs mt-1">Target {wpm} WPM · actual pace is measured and recorded</p>
                         {!isCalibration && <KeyboardHint />}
                     </div>
-                ) : mode === 'paced' ? (
+                ) : mode === 'paced' || mode === 'skim' ? (
                     <div className="w-full h-full border border-slate-800/40 rounded-3xl p-8 md:p-12 overflow-y-auto" style={{ background: 'var(--reading-bg)', color: 'var(--reading-fg)' }}>
                         <h2 className="text-2xl font-bold mb-6 border-b pb-4" style={{ color: 'var(--reading-fg)', borderColor: 'var(--reading-muted)', opacity: 0.95 }}>{passage.title}</h2>
+                        {isSkim && (
+                            <p className="text-sm mb-6 -mt-2" style={{ color: 'var(--reading-muted)' }}>
+                                Skimming: let your eyes ride the cursor and pick up the shape of the argument, not every word.
+                                {gistQuestions.length > 0 ? ' You will be asked about the gist.' : ' This passage has no gist questions, so the check uses its detail questions.'}
+                            </p>
+                        )}
 
                         <PacedText
+                            key={mode}
                             text={passage.text}
                             wpm={wpm}
                             isRunning={isPlaying}
@@ -392,8 +429,12 @@ function Reader({ passage, settings, reading, initialWpm, resumeFrom = 0, onFini
                             <div className="w-full max-w-lg bg-slate-950 h-2 rounded-full overflow-hidden">
                                 <div className="h-full bg-purple-600" style={{ width: `${words.length ? (pacedIndex / words.length) * 100 : 0}%` }} />
                             </div>
-                            <p className="text-slate-500 text-sm font-mono">{pacedIndex} / {words.length} · {wpm} WPM</p>
-                            <p className="text-xs" style={{ color: 'var(--reading-muted)' }}>Keep pace with the cursor. Do not go back — that is the habit this drill is breaking.</p>
+                            <p className="text-slate-500 text-sm font-mono">{pacedIndex} / {words.length} · {wpm} WPM · {timeLeft(words.length - pacedIndex, wpm)}</p>
+                            <p className="text-xs" style={{ color: 'var(--reading-muted)' }}>
+                                {isSkim
+                                    ? 'Sample, do not read: headings, first lines, names and numbers.'
+                                    : 'Keep pace with the cursor. Do not go back — that is the habit this drill is breaking.'}
+                            </p>
                             {!isCalibration && <KeyboardHint />}
                         </div>
                     </div>

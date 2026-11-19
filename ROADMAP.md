@@ -36,46 +36,43 @@ Working and verified:
   of the reader.
 - **Document import** — EPUB, PDF, DOCX, HTML and plain text, all verified
   against real files.
-- **292 tests, zero lint errors.**
+- **Skim mode** — a fourth reading mode at 2.5x your target (at least 700 WPM),
+  checked with gist questions when the passage has them. Skims are logged and
+  charted on their own and never move the reading target or the averages.
+- **Averaged baseline** — up to three calibration passages, averaged. Adding one
+  later leaves a target that training has already moved alone.
+- **Vocabulary trainer** — uncommon words pulled from passages you have read,
+  saved with their sentence, reviewed on a spaced schedule, plus a flash
+  recognition drill. Definitions from the AI provider when one is available.
+- **Question checking on the copy/paste path** — offered as an optional second
+  paste before the passage starts.
+- **Backup reminder** on the dashboard after unexported sessions, with a snooze.
+- **Dashboard and analytics** — a "do this next" card, training heatmap,
+  sparklines; eWPM trend line, frontier by recency, per-mode table, weekly
+  minutes and drill thresholds. History keeps 1,000 sessions.
+- **App theme** — dark (default), light or system, and a phone layout with a
+  bottom tab bar. Reading, pushes and retention checks run full-screen.
+- **364 tests, zero lint errors.**
 
 ## Next
 
-### 1. Question checking on the copy/paste path
-
-The API path now verifies questions by answering them blind and dropping any it
-gets right. The copy/paste path does not, because it would mean a second paste
-round mid-flow. Worth adding as an optional extra step for people training
-without a key.
-
-### 2. Skim mode as a first-class thing
-
-The honest route to numbers like 2,000 WPM. Reading every word tops out around
-500-600; past roughly 700 you are sampling text, not reading it. That is a real
-and useful skill, but it needs its own mode with its own comprehension
-expectations — gist questions rather than detail questions — so that a skim
-session is not scored as though it were a careful read, and eWPM stays
-meaningful in both.
-
-### 3. Article URLs
+### 1. Article URLs
 
 File import now covers EPUB, PDF, DOCX, HTML and plain text. The gap left is
 pasting a URL and having the article fetched and stripped of furniture, which
 needs either a CORS proxy or a small server route — the browser cannot fetch
 arbitrary origins directly.
 
-### 4. A real vocabulary trainer
+### 2. A bundled word-frequency list
 
-The glossary moved into the Guide, where it belonged, and the standalone view is
-gone. A genuine replacement would pull uncommon words from passages *you* have
-read, let you flag the ones that slowed you down, and drill them — unfamiliar
-words force fixations, so this is a direct speed lever rather than a side
-feature. It needs a frequency list to pick candidates, which is the open
-question.
+Vocabulary candidates are picked by length, rarity within your own library and a
+built-in list of common long words. A proper frequency list (about 20k words)
+would rank candidates far better; it needs a public-domain source.
 
 ## Known limitations
 
-- **Storage is `localStorage` only.** There is now an export/import pair in
-  Settings, but nothing is automatic — no sync, and no reminder to back up.
+- **Storage is `localStorage` only.** There is an export/import pair in
+  Settings and a dashboard reminder, but nothing is automatic — no sync.
   Clearing site data between exports is still unrecoverable.
 - **The AI key is bundled into the client.** Fine locally, not fine deployed —
   a `VITE_` variable is readable by anyone who loads the page. Deploying
@@ -87,5 +84,3 @@ question.
   passage from the transcript.
 - **Local generation speed depends on what else is using the GPU.** Measured
   10-20s per passage with the model loaded, 30-40s including a cold load.
-- **The baseline is a single sample** — one passage, one topic, one day. Two or
-  three passages averaged would make "+X% since baseline" mean more.

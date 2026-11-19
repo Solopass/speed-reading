@@ -11,7 +11,7 @@ export const RECALL_INTERVALS = [2, 7, 21, 60];
 
 export const wordCount = (text) => text.trim().split(/\s+/).filter(Boolean).length;
 
-export function createEntry({ id, title, source, kind = 'read', text, sectionA, sectionB, questions = [] }) {
+export function createEntry({ id, title, source, kind = 'read', text, sectionA, sectionB, questions = [], gistQuestions = [] }) {
     return {
         id: id ?? `p-${Date.now()}`,
         title: title || 'Untitled passage',
@@ -21,6 +21,7 @@ export function createEntry({ id, title, source, kind = 'read', text, sectionA, 
         sectionA: sectionA ?? null,
         sectionB: sectionB ?? null,
         questions,
+        gistQuestions,               // optional, for skim mode
         words: wordCount(kind === 'push' ? `${sectionA} ${sectionB}` : (text ?? '')),
         createdAt: todayKey(),
         lastReadAt: null,
@@ -76,6 +77,11 @@ export const isPartiallyRead = (item) => resumePoint(item) > 0;
 export function recordAttempt(items, id, { wpm, score, kind = 'read' }) {
     return items.map(item => {
         if (item.id !== id) return item;
+        // A skim samples the text rather than reading it, so it neither marks
+        // the passage finished nor touches its retention schedule.
+        if (kind === 'skim') {
+            return { ...item, lastReadAt: todayKey(), progressIndex: 0, attempts: [...item.attempts, { date: todayKey(), wpm, score, kind }] };
+        }
         return {
             ...item,
             lastReadAt: todayKey(),
@@ -96,7 +102,8 @@ export function nextRecallOn(item) {
     const recalls = item.attempts.filter(a => a.kind === 'recall').length;
     if (recalls >= RECALL_INTERVALS.length) return null;
 
-    const lastDate = item.attempts.length ? item.attempts[item.attempts.length - 1].date : item.completedAt;
+    const counted = item.attempts.filter(a => a.kind !== 'skim');
+    const lastDate = counted.length ? counted[counted.length - 1].date : item.completedAt;
     const [y, m, d] = lastDate.split('-').map(Number);
     const due = new Date(Date.UTC(y, m - 1, d + RECALL_INTERVALS[recalls]));
     const pad = (n) => String(n).padStart(2, '0');
@@ -115,7 +122,7 @@ export const recallQueue = (items, today = todayKey()) =>
 export function toPassage(item) {
     return item.kind === 'push'
         ? { id: item.id, title: item.title, sectionA: item.sectionA, sectionB: item.sectionB, questions: item.questions }
-        : { id: item.id, title: item.title, text: item.text, questions: item.questions };
+        : { id: item.id, title: item.title, text: item.text, questions: item.questions, gistQuestions: item.gistQuestions ?? [] };
 }
 
 export function migrateLibrary(raw) {
@@ -126,7 +133,8 @@ export function migrateLibrary(raw) {
             ...createEntry({
                 id: i.id, title: i.title, source: i.source ?? 'import', kind: i.kind ?? 'read',
                 text: i.text, sectionA: i.sectionA, sectionB: i.sectionB,
-                questions: Array.isArray(i.questions) ? i.questions : []
+                questions: Array.isArray(i.questions) ? i.questions : [],
+                gistQuestions: Array.isArray(i.gistQuestions) ? i.gistQuestions : []
             }),
             createdAt: typeof i.createdAt === 'string' ? i.createdAt : todayKey(),
             lastReadAt: typeof i.lastReadAt === 'string' ? i.lastReadAt : null,

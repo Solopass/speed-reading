@@ -1,13 +1,14 @@
 import { useRef, useState } from 'react';
 import { Download, Minus, Plus, Upload } from 'lucide-react';
-import { WPM_MAX, WPM_MIN, clampWpm } from '../lib/stats';
+import { BASELINE_SAMPLES, WPM_MAX, WPM_MIN, clampWpm } from '../lib/stats';
 import { PUSH_PHASES, intensityLabel, phaseMultiplier } from '../lib/protocol';
 import { describeBackup } from '../lib/backup';
 import Toggle from '../components/Toggle';
+import { THEME_OPTIONS, normalizeTheme } from '../lib/theme';
 
 const plural = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
-function DataPanel({ onExport, onImport }) {
+function DataPanel({ onExport, onImport, lastBackupAt }) {
     const fileRef = useRef(null);
     const [pending, setPending] = useState(null);
     const [error, setError] = useState(null);
@@ -38,6 +39,9 @@ function DataPanel({ onExport, onImport }) {
                 Everything — baseline, sessions, saved passages, plans and drill history — lives in this browser only. Clearing site data or
                 switching browsers loses it. Export regularly.
             </p>
+            <p className="text-xs text-slate-500 -mt-2">
+                {lastBackupAt ? `Last exported ${lastBackupAt}.` : 'Never exported from this browser.'}
+            </p>
 
             <div className="flex flex-col sm:flex-row gap-3">
                 <button
@@ -67,7 +71,7 @@ function DataPanel({ onExport, onImport }) {
                     <ul className="text-xs text-slate-300 space-y-1">
                         <li>Exported {pending.summary.exportedAt}</li>
                         <li>
-                            {plural(pending.summary.sessions, 'session')} · {plural(pending.summary.passages, 'saved passage')} · {plural(pending.summary.drills, 'drill run')} · {plural(pending.summary.plans, 'plan')}
+                            {plural(pending.summary.sessions, 'session')} · {plural(pending.summary.passages, 'saved passage')} · {plural(pending.summary.drills, 'drill run')} · {plural(pending.summary.plans, 'plan')} · {plural(pending.summary.vocab ?? 0, 'saved word')}
                         </li>
                         <li>
                             Target {pending.summary.targetWpm} WPM
@@ -299,7 +303,7 @@ function AiPanel({ settings, updateSettings, apiKeyPresent, ai, localAi, onReche
 
             <Toggle
                 label="Check questions before using them"
-                desc="After generating, asks the model to answer its own questions with no passage in front of it, and drops any it gets right. Those were answerable from general knowledge, and scoring them would inflate your comprehension. One extra call (about a second on a local model); not available with copy and paste."
+                desc="After generating, asks the model to answer its own questions with no passage in front of it, and drops any it gets right. Those were answerable from general knowledge, and scoring them would inflate your comprehension. One extra call (about a second on a local model). With copy and paste it is offered as an optional second paste."
                 checked={settings.verifyQuestions} onChange={(v) => updateSettings({ verifyQuestions: v })}
             />
 
@@ -311,17 +315,40 @@ function AiPanel({ settings, updateSettings, apiKeyPresent, ai, localAi, onReche
     );
 }
 
-function SettingsPanel({ settings, updateSettings, apiKeyPresent, ai, localAi, onRecheckLocalAi, hasBaseline, adaptiveTargetWpm, pushIntensity, onExport, onImport, onRecalibrate }) {
+function SettingsPanel({ settings, updateSettings, apiKeyPresent, ai, localAi, onRecheckLocalAi, hasBaseline, baselineSamples = [], lastBackupAt, adaptiveTargetWpm, pushIntensity, onExport, onImport, onRecalibrate, onAddBaseline }) {
     return (
         <div className="max-w-2xl mx-auto space-y-8 animate-in slide-in-from-bottom-4 pb-12">
             <div>
-                <h1 className="text-3xl font-bold text-white">System Settings</h1>
-                <p className="text-slate-400 mt-2">Configure Phase 4 Neuroscience Modules and Engine Params.</p>
+                <h1 className="text-3xl font-bold text-white">Settings</h1>
+                <p className="text-slate-400 mt-2">Appearance, reading aids, targets, AI and your data.</p>
             </div>
 
             <div className="space-y-6">
+                <div className="bg-slate-900 border border-slate-800 p-6 md:p-8 rounded-3xl">
+                    <h2 className="text-xl font-bold text-white mb-1">Appearance</h2>
+                    <p className="text-sm text-slate-400 mb-4">
+                        Theme for the app itself. The page you read on has its own colours in Reading Setup.
+                    </p>
+                    <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label="App theme">
+                        {THEME_OPTIONS.map(option => {
+                            const active = normalizeTheme(settings.theme) === option.id;
+                            return (
+                                <button
+                                    key={option.id} role="radio" aria-checked={active}
+                                    onClick={() => updateSettings({ theme: option.id })}
+                                    className={`py-3 rounded-xl border text-sm font-bold transition-colors ${active
+                                        ? 'border-purple-500 bg-purple-500/10 text-purple-400'
+                                        : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-600'}`}
+                                >
+                                    {option.label}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+
                 <div className="bg-slate-900 border border-slate-800 p-6 md:p-8 rounded-3xl space-y-4">
-                    <h2 className="text-xl font-bold text-white mb-4">Phase 4 Modules</h2>
+                    <h2 className="text-xl font-bold text-white mb-4">Reading aids</h2>
                     <Toggle
                         label="Bionic Reading Mode" desc="Bolds the first half of words in Natural Reading to guide eye fixation."
                         checked={settings.bionicReading} onChange={(v) => updateSettings({bionicReading: v})}
@@ -335,7 +362,7 @@ function SettingsPanel({ settings, updateSettings, apiKeyPresent, ai, localAi, o
                         checked={settings.audioSyncEnabled} onChange={(v) => updateSettings({audioSyncEnabled: v})}
                     />
                     <Toggle
-                        label="RPG Leveling Display" desc="Replaces the streak counter with a Neuro-Tier based on eWPM."
+                        label="Show level instead of streak" desc="Replaces the streak card on the dashboard with a level based on your recent Effective WPM."
                         checked={settings.rpgLeveling} onChange={(v) => updateSettings({rpgLeveling: v})}
                     />
                 </div>
@@ -344,18 +371,37 @@ function SettingsPanel({ settings, updateSettings, apiKeyPresent, ai, localAi, o
                     <h2 className="text-xl font-bold text-white mb-1">Baseline</h2>
                     <p className="text-sm text-slate-400 mb-4">
                         {hasBaseline
-                            ? 'Retake it if the first run was rushed or interrupted — every target and every "since baseline" number is measured from it, so a bad one skews everything. Retaking replaces the old figure; your session history is kept.'
-                            : 'Not set yet. Take the baseline test from the dashboard so your target speed starts from a real measurement.'}
+                            ? `The average of ${baselineSamples.length} of up to ${BASELINE_SAMPLES} passages. More passages make it steadier. Retake it if a run was rushed or interrupted: retaking starts a new average, and your session history is kept.`
+                            : 'Not set yet. Take the baseline test so your target speed starts from a real measurement.'}
                     </p>
-                    <button
-                        onClick={onRecalibrate}
-                        className="bg-slate-800 hover:bg-slate-700 text-white font-bold px-5 py-3 rounded-xl transition-colors"
-                    >
-                        {hasBaseline ? 'Retake baseline test' : 'Take baseline test'}
-                    </button>
+                    {baselineSamples.length > 0 && (
+                        <div className="flex flex-wrap gap-2 mb-4">
+                            {baselineSamples.map((x, i) => (
+                                <span key={i} className="text-xs font-mono bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-slate-300">
+                                    {x.wpm} WPM{typeof x.score === 'number' ? ` · ${x.score}%` : ''}
+                                </span>
+                            ))}
+                        </div>
+                    )}
+                    <div className="flex flex-wrap gap-2">
+                        {hasBaseline && baselineSamples.length < BASELINE_SAMPLES && (
+                            <button
+                                onClick={onAddBaseline}
+                                className="bg-purple-600 hover:bg-purple-500 text-white font-bold px-5 py-3 rounded-xl transition-colors"
+                            >
+                                Add passage {baselineSamples.length + 1} of {BASELINE_SAMPLES}
+                            </button>
+                        )}
+                        <button
+                            onClick={onRecalibrate}
+                            className="bg-slate-800 hover:bg-slate-700 text-white font-bold px-5 py-3 rounded-xl transition-colors"
+                        >
+                            {hasBaseline ? 'Retake baseline test' : 'Take baseline test'}
+                        </button>
+                    </div>
                 </div>
 
-                <DataPanel onExport={onExport} onImport={onImport} />
+                <DataPanel onExport={onExport} onImport={onImport} lastBackupAt={lastBackupAt} />
 
                 <AiPanel
                     settings={settings} updateSettings={updateSettings} apiKeyPresent={apiKeyPresent}

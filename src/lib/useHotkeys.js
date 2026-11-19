@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 
 const TYPING_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 
@@ -18,7 +18,9 @@ export function isTypingTarget(target) {
  */
 export default function useHotkeys(handlers, enabled = true) {
     const handlersRef = useRef(handlers);
-    handlersRef.current = handlers;
+    // Updated after commit rather than during render, so a render React
+    // throws away can never leave a stale handler bound.
+    useLayoutEffect(() => { handlersRef.current = handlers; });
 
     useEffect(() => {
         if (!enabled) return;

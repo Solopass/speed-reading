@@ -1,14 +1,100 @@
-import { Activity, BarChart2, Bookmark, ChevronRight, Play, Shield, Target, TrendingUp, Zap } from 'lucide-react';
+import React from 'react';
 import {
-    CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis
+    ArrowRight, BarChart2, Bookmark, BookOpen, ChevronRight, Flame, HardDriveDownload, Map, Shield, Target, TrendingUp, Zap
+} from 'lucide-react';
+import {
+    CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis
 } from 'recharts';
 import {
-    averageComprehension, baselineDelta, goalProgress, level, recentEffectiveWpm,
-    scoredSessions, sessionsToGoal
+    averageComprehension, baselineDelta, dailyActivity, goalProgress, level, recentEffectiveWpm,
+    recentSeries, scoredSessions, sessionsToGoal
 } from '../lib/stats';
-import StatCard from '../components/StatCard';
+import { chartColors, tooltipStyle } from '../lib/theme';
 
-function Dashboard({ stats, history, settings, recallDue = [], onStart, onCalibrate, onRecall }) {
+const ACTION_ICONS = { baseline: Target, 'baseline-more': Target, recall: Bookmark, plan: Map, push: Zap, read: BookOpen };
+const ACTION_CTA = {
+    baseline: 'Start the test', 'baseline-more': 'Read it', recall: 'Check now', plan: 'Go', push: 'Choose a passage', read: 'Choose a passage'
+};
+
+/** A tiny trend line for a stat card. Draws nothing until there are two points. */
+function Sparkline({ data, color }) {
+    if (data.length < 2) return null;
+    return (
+        <div className="h-10 -mx-1 mt-3" aria-hidden="true">
+            <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={data} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
+                    <YAxis hide domain={['dataMin', 'dataMax']} />
+                    <Line type="monotone" dataKey="v" stroke={color} strokeWidth={2} dot={false} isAnimationActive={false} />
+                </LineChart>
+            </ResponsiveContainer>
+        </div>
+    );
+}
+
+function StatTile({ icon, label, value, subtitle, tone, spark, sparkColor }) {
+    return (
+        <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl flex flex-col min-w-0">
+            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+                <span className={tone}>{React.cloneElement(icon, { size: 16 })}</span>
+                {label}
+            </div>
+            <div className="text-3xl font-black text-white mt-3 tracking-tight tabular-nums">{value}</div>
+            <div className="text-xs text-slate-500 mt-1">{subtitle}</div>
+            {spark && <Sparkline data={spark} color={sparkColor} />}
+        </div>
+    );
+}
+
+/** Twelve weeks of training days, GitHub-style, Monday at the top. */
+function ActivityHeatmap({ history, streak }) {
+    const days = dailyActivity(history, 84);
+    // Pad the front so columns are whole weeks starting on Monday.
+    const [y, m, d] = days[0].date.split('-').map(Number);
+    const lead = (new Date(y, m - 1, d).getDay() + 6) % 7;
+    const cells = [...Array(lead).fill(null), ...days];
+    const weeks = [];
+    for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+    const active = days.filter(x => x.sessions > 0).length;
+
+    const shade = (n) => (n === 0 ? 'bg-slate-800/70' : n === 1 ? 'bg-purple-900' : n === 2 ? 'bg-purple-700' : 'bg-purple-500');
+
+    return (
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 md:p-6">
+            <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+                <h2 className="text-lg font-bold text-white">Training days</h2>
+                <div className="flex items-center gap-4 text-xs text-slate-400">
+                    <span className="flex items-center gap-1.5"><Flame size={14} className="text-orange-400" /> {streak} day streak</span>
+                    <span>{active} of the last 84 days</span>
+                </div>
+            </div>
+            <div className="flex gap-1 overflow-x-auto pb-1" role="img" aria-label={`Trained on ${active} of the last 84 days`}>
+                {weeks.map((week, wi) => (
+                    <div key={wi} className="flex flex-col gap-1">
+                        {week.map((day, di) => day === null
+                            ? <div key={di} className="w-3.5 h-3.5" />
+                            : (
+                                <div
+                                    key={day.date}
+                                    title={`${day.date}: ${day.sessions} session${day.sessions === 1 ? '' : 's'}${day.minutes ? `, ${day.minutes} min` : ''}`}
+                                    className={`w-3.5 h-3.5 rounded-[4px] ${shade(day.sessions)}`}
+                                />
+                            ))}
+                    </div>
+                ))}
+            </div>
+            <div className="flex items-center justify-end gap-1.5 mt-3 text-[10px] text-slate-500">
+                Less
+                {[0, 1, 2, 3].map(n => <span key={n} className={`w-2.5 h-2.5 rounded-[3px] ${shade(n)}`} />)}
+                More
+            </div>
+        </div>
+    );
+}
+
+function Dashboard({
+    stats, history, settings, theme, recallDue = [], nextAction, onAction, backupDue, onBackup, onSnoozeBackup, onRecall, onStart
+}) {
+    const colors = chartColors(theme);
     const hasBaseline = stats.baselineWpm !== null;
     // The speed actually in force. With adaptation off that is the locked
     // setting, and every number below has to agree with the card above it.
@@ -21,156 +107,176 @@ function Dashboard({ stats, history, settings, recallDue = [], onStart, onCalibr
     const eWpm = recentEffectiveWpm(history, 5);
     const comprehension = averageComprehension(history);
     const scored = scoredSessions(history);
+    const recent = scored.slice(-20);
+
+    const ActionIcon = ACTION_ICONS[nextAction?.kind] ?? Zap;
 
     return (
-        <div className="space-y-8 animate-in fade-in zoom-in-95 duration-300">
-            <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="space-y-6 animate-in fade-in duration-300">
+            <header className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
                 <div>
-                    <h1 className="text-3xl font-bold text-white tracking-tight">Welcome back.</h1>
-                    <p className="text-slate-400 mt-1">Ready to push your cognitive limits?</p>
+                    <h1 className="text-2xl md:text-3xl font-bold text-white tracking-tight">
+                        {history.length === 0 ? 'Welcome.' : 'Welcome back.'}
+                    </h1>
+                    <p className="text-slate-400 mt-1 text-sm md:text-base">
+                        {hasBaseline
+                            ? `Reading at ${openingWpm} WPM${delta !== null ? `, ${delta >= 0 ? '+' : ''}${delta}% since your baseline` : ''}.`
+                            : 'Start with a two-minute baseline so every number has a zero point.'}
+                    </p>
                 </div>
-                <button
-                    onClick={hasBaseline ? onStart : onCalibrate}
-                    className="bg-purple-600 hover:bg-purple-500 text-white px-8 py-4 rounded-2xl font-bold transition-all shadow-lg shadow-purple-900/30 flex items-center justify-center gap-2 group"
-                >
-                    {hasBaseline ? <Play className="w-5 h-5 fill-current" /> : <Target className="w-5 h-5" />}
-                    <span>{hasBaseline ? 'Start Training' : 'Run Baseline Test'}</span>
-                </button>
+                {hasBaseline && (
+                    <button onClick={onStart} className="text-sm font-bold text-purple-400 hover:text-purple-300 flex items-center gap-1 self-start sm:self-auto">
+                        All reading options <ChevronRight size={16} />
+                    </button>
+                )}
             </header>
 
-            {!hasBaseline && (
-                <div className="bg-purple-950/30 border border-purple-800/50 rounded-3xl p-6 flex flex-col md:flex-row md:items-center gap-4">
-                    <div className="p-3 bg-purple-500/20 rounded-xl text-purple-400 w-fit shrink-0"><Target size={24} /></div>
-                    <div>
-                        <h3 className="font-bold text-white">Set your baseline first</h3>
-                        <p className="text-sm text-slate-400 mt-1">
-                            Your target speed is a placeholder until you take the baseline test — one short passage read at your natural pace, then five questions.
-                            It takes about two minutes, needs no API key, and gives every later number something real to measure against.
-                        </p>
+            {nextAction && (
+                <section className="relative overflow-hidden rounded-3xl border border-purple-800/60 bg-gradient-to-br from-purple-950/60 via-slate-900 to-slate-900 p-5 md:p-7" aria-label="Do this next">
+                    <div className="flex flex-col md:flex-row md:items-center gap-5">
+                        <div className="shrink-0 w-12 h-12 rounded-2xl bg-purple-600 text-white grid place-items-center shadow-lg shadow-purple-900/40">
+                            <ActionIcon size={22} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <div className="text-[11px] font-bold uppercase tracking-widest text-purple-400">Do this next</div>
+                            <h2 className="text-xl font-bold text-white mt-1 truncate">{nextAction.title}</h2>
+                            <p className="text-sm text-slate-400 mt-1">{nextAction.detail}</p>
+                        </div>
+                        <button
+                            onClick={() => onAction(nextAction)}
+                            className="shrink-0 bg-purple-600 hover:bg-purple-500 text-white px-6 py-3.5 rounded-2xl font-bold transition-colors flex items-center justify-center gap-2"
+                        >
+                            {ACTION_CTA[nextAction.kind] ?? 'Start'} <ArrowRight size={18} />
+                        </button>
+                    </div>
+                </section>
+            )}
+
+            {backupDue && (
+                <div className="rounded-2xl border border-amber-800/60 bg-amber-950/30 p-4 flex flex-col sm:flex-row sm:items-center gap-3" role="status">
+                    <HardDriveDownload size={20} className="text-amber-400 shrink-0" />
+                    <p className="text-sm text-slate-300 flex-1">
+                        <strong className="text-white">Back up your progress.</strong> It lives only in this browser; clearing site data would lose it.
+                    </p>
+                    <div className="flex gap-2">
+                        <button onClick={onBackup} className="bg-amber-600 hover:bg-amber-500 text-white text-sm font-bold px-4 py-2 rounded-lg transition-colors">
+                            Download backup
+                        </button>
+                        <button onClick={onSnoozeBackup} className="text-slate-400 hover:text-white text-sm font-medium px-3">Later</button>
                     </div>
                 </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <StatCard
-                    icon={<Zap />} label="Target Speed" value={`${openingWpm}`} color="text-amber-400"
-                    subtitle={
-                        !hasBaseline ? 'Placeholder — run the baseline test'
-                            : delta === null ? `Peak ${stats.highestWpm} WPM`
-                                // A locked target never moving is a setting, not a
-                                // plateau, so say which one you are looking at.
-                                : `${settings.autoAdaptive ? 'Adaptive' : 'Locked'} · ${delta >= 0 ? '+' : ''}${delta}% vs baseline`
-                    }
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
+                <StatTile
+                    icon={<Zap />} label="Target" tone="text-amber-400"
+                    value={openingWpm}
+                    subtitle={!hasBaseline ? 'Placeholder until the baseline'
+                        : `${settings.autoAdaptive ? 'Adaptive' : 'Locked'} · peak ${stats.highestWpm}`}
+                    spark={recentSeries(history, 'wpm')} sparkColor={colors.warn}
                 />
-                <StatCard
-                    icon={<TrendingUp />} label="Effective WPM" value={eWpm ?? '—'} color="text-emerald-400"
-                    subtitle={eWpm === null ? 'Needs a quizzed session' : `Speed × retention, last ${scored.slice(-5).length}`}
+                <StatTile
+                    icon={<TrendingUp />} label="Effective WPM" tone="text-emerald-400"
+                    value={eWpm ?? '—'}
+                    subtitle={eWpm === null ? 'Needs a quizzed session' : `Speed × retention, last ${Math.min(5, scored.length)}`}
+                    spark={recentSeries(history, 'effectiveWpm')} sparkColor={colors.good}
                 />
-                <StatCard
-                    icon={<Target />} label="Comprehension" value={comprehension === null ? '—' : `${comprehension}%`} color="text-blue-400"
-                    subtitle={comprehension === null ? 'No quizzes taken yet' : `Across ${scored.length} quizzed session${scored.length === 1 ? '' : 's'}`}
+                <StatTile
+                    icon={<Target />} label="Comprehension" tone="text-blue-400"
+                    value={comprehension === null ? '—' : `${comprehension}%`}
+                    subtitle={comprehension === null ? 'No quizzes yet' : `Across ${scored.length} quizzed`}
+                    spark={recentSeries(history, 'comprehension')} sparkColor={colors.info}
                 />
-
                 {settings.rpgLeveling ? (
-                    <StatCard icon={<Shield />} label="Neuro-Tier" value={`Level ${level(history)}`} subtitle="Based on 5-session eWPM" color="text-purple-400" />
+                    <StatTile icon={<Shield />} label="Level" tone="text-purple-400" value={level(history)} subtitle="Recent eWPM ÷ 50" />
                 ) : (
-                    <StatCard icon={<Activity />} label="Streak" value={`${stats.streak} ${stats.streak === 1 ? 'Day' : 'Days'}`} subtitle="Consecutive days trained" color="text-orange-400" />
+                    <StatTile icon={<Flame />} label="Streak" tone="text-orange-400" value={`${stats.streak}d`} subtitle="Consecutive days trained" />
                 )}
             </div>
 
-            {recallDue.length > 0 && (
-                <div className="bg-slate-900 border border-purple-800/50 rounded-3xl p-6 md:p-8">
-                    <div className="flex items-center gap-3 mb-2">
-                        <div className="p-2 bg-purple-500/20 rounded-lg text-purple-400"><Bookmark size={18} /></div>
-                        <h2 className="text-xl font-bold text-white">Retention check due</h2>
+            {recallDue.length > 1 && (
+                <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 md:p-6">
+                    <div className="flex items-center gap-2 mb-3">
+                        <Bookmark size={16} className="text-purple-400" />
+                        <h2 className="text-lg font-bold text-white">Retention checks due</h2>
+                        <span className="text-xs text-slate-500 ml-auto">{recallDue.length}</span>
                     </div>
-                    <p className="text-sm text-slate-400 mb-5">
-                        Reading fast only counts if it stays with you. Re-answer the questions on {recallDue.length === 1 ? 'this passage' : 'these passages'} without re-reading.
-                    </p>
-                    <div className="space-y-2">
-                        {recallDue.slice(0, 4).map(item => (
+                    <div className="grid sm:grid-cols-2 gap-2">
+                        {recallDue.slice(0, 6).map(item => (
                             <button
-                                key={item.id}
-                                onClick={() => onRecall(item.id)}
-                                className="w-full flex items-center justify-between gap-4 bg-slate-950 border border-slate-800 hover:border-purple-500 rounded-2xl p-4 text-left transition-colors group"
+                                key={item.id} onClick={() => onRecall(item.id)}
+                                className="flex items-center justify-between gap-3 bg-slate-950 border border-slate-800 hover:border-purple-500 rounded-2xl px-4 py-3 text-left transition-colors group"
                             >
                                 <div className="min-w-0">
-                                    <div className="font-bold text-white truncate">{item.title}</div>
-                                    <div className="text-xs text-slate-500 mt-1">
-                                        Last read {item.lastReadAt} · {item.attempts.length} attempt{item.attempts.length === 1 ? '' : 's'}
-                                    </div>
+                                    <div className="font-bold text-white text-sm truncate">{item.title}</div>
+                                    <div className="text-xs text-slate-500 mt-0.5">Last read {item.lastReadAt}</div>
                                 </div>
-                                <ChevronRight size={18} className="text-slate-600 group-hover:text-purple-400 transition-colors shrink-0" />
+                                <ChevronRight size={16} className="text-slate-600 group-hover:text-purple-400 shrink-0" />
                             </button>
                         ))}
                     </div>
                 </div>
             )}
 
-            {hasBaseline && (
-                <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-8">
-                    <div className="flex items-end justify-between mb-4 flex-wrap gap-2">
-                        <div>
-                            <h2 className="text-xl font-bold text-white">Road to {settings.goalWpm} WPM</h2>
-                            <p className="text-sm text-slate-400 mt-1">
-                                {toGoal === 0
-                                    ? 'Goal reached. Raise it in Settings.'
-                                    : settings.autoAdaptive
-                                        ? `${toGoal} more perfect sessions at the current climb rate — a floor, since it assumes you never miss a question.`
-                                        : `${toGoal} steps of 5% away. Your speed is locked, so that climb is yours to make in Settings.`}
-                            </p>
+            <div className="grid lg:grid-cols-5 gap-4">
+                <div className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-3xl p-5 md:p-6">
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-lg font-bold text-white">Recent performance</h2>
+                        <span className="text-xs text-slate-500">{scored.length} quizzed {scored.length === 1 ? 'session' : 'sessions'}</span>
+                    </div>
+                    {recent.length > 0 ? (
+                        <div className="h-60 w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <LineChart data={recent} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke={colors.grid} vertical={false} />
+                                    <XAxis dataKey="id" stroke={colors.axis} fontSize={11} tickLine={false} axisLine={false} />
+                                    <YAxis stroke={colors.axis} fontSize={11} tickLine={false} axisLine={false} />
+                                    <RechartsTooltip {...tooltipStyle(theme)} />
+                                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                                    <Line type="monotone" dataKey="wpm" name="Raw WPM" stroke={colors.muted} strokeWidth={2} dot={false} strokeDasharray="4 4" />
+                                    <Line type="monotone" dataKey="effectiveWpm" name="Effective WPM" stroke={colors.accent} strokeWidth={3} dot={{ r: 3, fill: colors.accent }} activeDot={{ r: 5 }} />
+                                </LineChart>
+                            </ResponsiveContainer>
                         </div>
-                        <div className="text-right">
-                            <div className="text-2xl font-black text-white">{progressPct}%</div>
-                            <div className="text-xs text-slate-500 uppercase tracking-wider font-bold">of the way</div>
+                    ) : (
+                        <div className="h-60 flex items-center justify-center text-slate-500 flex-col gap-3 text-sm text-center">
+                            <BarChart2 className="w-10 h-10 opacity-30" />
+                            <p>{history.length > 0 ? 'Practice logged, but no quizzed sessions yet.' : 'Your sessions will chart here.'}</p>
                         </div>
-                    </div>
-                    <div className="w-full bg-slate-950 h-3 rounded-full overflow-hidden">
-                        <div className="h-full bg-gradient-to-r from-purple-600 to-amber-400 transition-all duration-500" style={{ width: `${progressPct}%` }} />
-                    </div>
-                    <div className="flex justify-between mt-2 text-xs text-slate-500 font-mono">
-                        <span>{stats.baselineWpm} baseline</span>
-                        <span className="text-purple-400">{openingWpm} now</span>
-                        <span>{settings.goalWpm} goal</span>
-                    </div>
+                    )}
                 </div>
-            )}
 
-            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-8">
-                <div className="flex items-center justify-between mb-6">
-                    <h2 className="text-xl font-bold text-white">Recent Performance</h2>
-                    <span className="text-sm text-slate-400">{scored.length} quizzed {scored.length === 1 ? 'session' : 'sessions'}</span>
+                <div className="lg:col-span-2 space-y-4">
+                    {hasBaseline && (
+                        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 md:p-6">
+                            <div className="flex items-end justify-between mb-3 gap-2">
+                                <div>
+                                    <h2 className="text-lg font-bold text-white">Road to {settings.goalWpm}</h2>
+                                    <p className="text-xs text-slate-400 mt-1">
+                                        {toGoal === 0
+                                            ? 'Goal reached. Raise it in Settings.'
+                                            : settings.autoAdaptive
+                                                ? `At least ${toGoal} perfect sessions away.`
+                                                : `${toGoal} steps of 5%. Speed is locked in Settings.`}
+                                    </p>
+                                </div>
+                                <div className="text-2xl font-black text-white tabular-nums">{progressPct}%</div>
+                            </div>
+                            <div className="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden">
+                                <div className="h-full bg-gradient-to-r from-purple-600 to-amber-400 transition-all duration-500" style={{ width: `${progressPct}%` }} />
+                            </div>
+                            <div className="flex justify-between mt-2 text-[11px] text-slate-500 font-mono">
+                                <span>{stats.baselineWpm} base</span>
+                                <span className="text-purple-400">{openingWpm} now</span>
+                                <span>{settings.goalWpm} goal</span>
+                            </div>
+                        </div>
+                    )}
+                    <ActivityHeatmap history={history} streak={stats.streak} />
                 </div>
-                {scored.length > 0 ? (
-                    <div className="h-64 w-full">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={scored} margin={{ top: 10, right: 20, bottom: 5, left: 0 }}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                                <XAxis dataKey="id" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
-                                <YAxis stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
-                                <RechartsTooltip
-                                    contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '12px' }}
-                                    itemStyle={{ color: '#c084fc' }}
-                                />
-                                <Line type="monotone" dataKey="effectiveWpm" name="Effective WPM" stroke="#a855f7" strokeWidth={3} dot={{ r: 4, fill: '#a855f7' }} activeDot={{ r: 6 }} />
-                            </LineChart>
-                        </ResponsiveContainer>
-                    </div>
-                ) : (
-                    <div className="h-64 flex items-center justify-center text-slate-500 flex-col gap-3">
-                        <BarChart2 className="w-12 h-12 opacity-20" />
-                        <p>{history.length > 0 ? 'Practice logged, but no quizzed sessions yet.' : 'No training history yet. Start a session!'}</p>
-                    </div>
-                )}
             </div>
         </div>
     );
 }
-
-/**
- * A retention check: the questions from a passage you finished days ago, with
- * no text in front of you. Measures whether the reading stuck, which is the
- * only thing that makes reading fast worth anything.
- */
 
 export default Dashboard;
