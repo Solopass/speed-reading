@@ -33,12 +33,32 @@ const PAGE_NUMBER_RE = /^(?:page\s*\d{1,4}(?:\s*(?:of|\/)\s*\d{1,4})?|[-–—]\
 const STRAY_SYMBOL_TOKEN_RE = /(^|\s)[|~^_\\`*=<>[\]{}•▪▫●○■□◆◇❖➤➢➔►◄★☆✓✔✕✖†‡§¶]+(?=\s|$)/g;
 
 /**
+ * Strips common Markdown syntax (frontmatter, links, images, emphasis, code
+ * fences, heading hashes, blockquote markers) while preserving paragraph breaks.
+ */
+export function stripMarkdown(raw) {
+    return String(raw)
+        .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '')
+        .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+        .replace(/^```[^\n]*$/gm, '')
+        .replace(/`([^`]+)`/g, '$1')
+        .replace(/^#{1,6}\s+/gm, '')
+        .replace(/^\s*>\s?/gm, '')
+        .replace(/(\*\*|__)(.*?)\1/g, '$2')
+        .replace(/(\*|_)(.*?)\1/g, '$2');
+}
+
+const URL_RE = /https?:\/\/\S+/gi;
+const CITATION_RE = /\[\d+(?:[\s,\-–]+\d+)*\]/g;
+
+/**
  * Paragraph structure is what the reader renders and what the pacer measures
  * lines from, so blank lines are preserved while runs of whitespace inside a
  * paragraph are collapsed and extraction artifacts are scrubbed.
  */
-export function normalizeText(raw) {
-    const scrubbed = String(raw)
+export function normalizeText(raw, { stripUrls = false, stripCitations = false } = {}) {
+    let scrubbed = String(raw)
         // NFKC folds compatibility characters: non-breaking spaces become ordinary
         // ones, and PDF typographic ligatures (fi, fl) decompose back into letters.
         .normalize('NFKC')
@@ -47,6 +67,10 @@ export function normalizeText(raw) {
         .replace(/\r\n?/g, '\n')
         // Rejoin words hyphenated across a single wrapped line (common in PDFs).
         .replace(/([A-Za-z]{2,})-[ \t]*\n[ \t]*([a-z]{2,})/g, '$1$2');
+
+    if (stripUrls) scrubbed = scrubbed.replace(URL_RE, '');
+    if (stripCitations) scrubbed = scrubbed.replace(CITATION_RE, '');
+    if (stripUrls || stripCitations) scrubbed = scrubbed.replace(/[ \t]+([,.;:!?])/g, '$1');
 
     const rawLines = scrubbed.split('\n');
     const multiLine = rawLines.length > 2;
@@ -94,12 +118,17 @@ export function extractFromHtml(html) {
     };
 }
 
-async function readPlain(file) {
-    return { title: null, text: normalizeText(await file.text()) };
+async function readPlain(file, options) {
+    return { title: null, text: normalizeText(await file.text(), options) };
 }
 
-async function readHtml(file) {
-    return extractFromHtml(await file.text());
+async function readMarkdown(file, options) {
+    return { title: null, text: normalizeText(stripMarkdown(await file.text()), options) };
+}
+
+async function readHtml(file, options) {
+    const res = extractFromHtml(await file.text());
+    return { ...res, text: normalizeText(res.text, options) };
 }
 
 const decode = (bytes) => new TextDecoder('utf-8').decode(bytes);
@@ -207,7 +236,7 @@ export function stripRepeatedHeadersFooters(pages) {
  * paragraphs from vertical gaps: a large jump means a new paragraph, a small
  * one a wrapped line.
  */
-async function readPdf(file) {
+async function readPdf(file, options = {}) {
     const pdfjs = await import('pdfjs-dist');
     pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
@@ -215,6 +244,7 @@ async function readPdf(file) {
     const pages = [];
 
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+        options.onProgress?.({ page: pageNumber, totalPages: pdf.numPages });
         const page = await pdf.getPage(pageNumber);
         const content = await page.getTextContent();
 
@@ -226,31 +256,33 @@ async function readPdf(file) {
             if (lastY !== null) {
                 const gap = Math.abs(lastY - y);
                 if (gap > 14) text += '\n\n';
-                else if (gap > 2) text += ' ';
+                else if (gap > 2 && !/\s$/.test(text) && !/^[\s,.;:!?)\]]/.test(item.str)) text += ' ';
             }
             text += item.str;
             lastY = y;
         }
         pages.push(text);
+        if (pageNumber % 4 === 0) await new Promise(r => setTimeout(r, 0));
     }
 
-    const text = normalizeText(stripRepeatedHeadersFooters(pages).join('\n\n'));
+    const text = normalizeText(stripRepeatedHeadersFooters(pages).join('\n\n'), options);
     if (!text) throw new Error('No text found in that PDF. Scanned pages need OCR first.');
 
     return { title: (await pdf.getMetadata().catch(() => null))?.info?.Title?.trim() || null, text };
 }
 
 const READERS = {
-    '.txt': readPlain, '.text': readPlain, '.md': readPlain, '.markdown': readPlain,
+    '.txt': readPlain, '.text': readPlain,
+    '.md': readMarkdown, '.markdown': readMarkdown,
     '.html': readHtml, '.htm': readHtml,
     '.epub': readEpub, '.docx': readDocx, '.pdf': readPdf
 };
 
 /**
- * Returns { title, text } for a supported file, or throws with a message meant
- * to be shown to the user.
+ * Returns { title, text, chapters } for a supported file, or throws with a
+ * message meant to be shown to the user.
  */
-export async function extractText(file) {
+export async function extractText(file, options = {}) {
     if (!file) throw new Error('No file given.');
 
     const extension = extensionOf(file.name);
@@ -259,11 +291,14 @@ export async function extractText(file) {
         throw new Error(`Cannot read ${extension || 'that file'}. Supported: ${SUPPORTED_EXTENSIONS.join(', ')}.`);
     }
 
-    const { title, text, chapters = null } = await reader(file);
-    if (!text || text.split(/\s+/).length < 10) {
+    const { title, text, chapters = null } = await reader(file, options);
+    const cleaned = (options.stripUrls || options.stripCitations)
+        ? normalizeText(text, options)
+        : text;
+    if (!cleaned || cleaned.split(/\s+/).length < 10) {
         throw new Error('That file did not contain enough readable text.');
     }
 
     // `chapters` is null unless the format carries its own (EPUB).
-    return { title: title || titleFromFilename(file.name), text, chapters };
+    return { title: title || titleFromFilename(file.name), text: cleaned, chapters };
 }

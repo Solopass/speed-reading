@@ -1,52 +1,99 @@
-import { useRef, useState } from 'react';
-import { Activity, Eraser, Play, Upload as UploadIcon } from 'lucide-react';
+import { useMemo, useRef, useState } from 'react';
+import { Activity, ChevronRight, Eraser, HardDrive, Play, Upload as UploadIcon } from 'lucide-react';
 import { splitPassage } from '../lib/protocol';
 import { ACCEPT_ATTRIBUTE, SUPPORTED_EXTENSIONS, extractText, normalizeText } from '../lib/importText';
 import { BOOK_MIN_WORDS, buildChapters, createBook } from '../lib/book';
 
 const nextId = (prefix) => `${prefix}-${Date.now()}`;
+const STORAGE_LIMIT_BYTES = 4_000_000;
 
 export default function Upload({
-    readingWpm = 300, onStartPassage, onStartPushDrill, onSaveBook, onOpenDocuments, addNotification
+    library = [], readingWpm = 300, onStartPassage, onStartPushDrill, onSaveBook, onSavePassage, onOpenDocuments, addNotification
 }) {
     const [customText, setCustomText] = useState('');
-    const [importedTitle, setImportedTitle] = useState(null);
+    const [title, setTitle] = useState('');
     // The file's own chapters (EPUB), kept until the text is edited by hand.
     const [importedChapters, setImportedChapters] = useState(null);
     const [importing, setImporting] = useState(false);
+    const [pdfProgress, setPdfProgress] = useState(null);
     const [isDragging, setIsDragging] = useState(false);
+    const [stripUrls, setStripUrls] = useState(false);
+    const [stripCitations, setStripCitations] = useState(false);
     const fileRef = useRef(null);
 
-    const loadFile = async (file) => {
-        if (!file) return;
+    const libraryBytes = useMemo(() => JSON.stringify(library).length * 2, [library]);
+    const storagePct = Math.min(100, Math.round((libraryBytes / STORAGE_LIMIT_BYTES) * 100));
+
+    const importBatch = async (files) => {
+        let added = 0;
+        for (const file of files) {
+            try {
+                const res = await extractText(file, {
+                    stripUrls,
+                    stripCitations,
+                    onProgress: (p) => setPdfProgress({ ...p, name: file.name })
+                });
+                const wc = res.text.trim().split(/\s+/).length;
+                if (wc >= BOOK_MIN_WORDS || (res.chapters?.length ?? 0) > 1) {
+                    const chapters = buildChapters({ text: res.text, chapters: res.chapters });
+                    if (chapters.length >= 2) {
+                        if (onSaveBook(createBook({ title: res.title, chapters })) !== false) added += 1;
+                        continue;
+                    }
+                }
+                onSavePassage?.({ id: nextId('custom'), title: res.title, text: res.text, questions: [] });
+                added += 1;
+            } catch (error) {
+                addNotification(`${file.name}: ${error.message || 'Could not read file.'}`);
+            }
+        }
+        if (added > 0) {
+            addNotification(`Added ${added} document${added === 1 ? '' : 's'} to Documents.`, 'success');
+            onOpenDocuments?.();
+        }
+    };
+
+    const loadFiles = async (fileList) => {
+        const files = [...(fileList ?? [])].filter(Boolean);
+        if (files.length === 0) return;
         setImporting(true);
+        setPdfProgress(null);
         try {
-            const { title, text, chapters } = await extractText(file);
-            setCustomText(text);
-            setImportedTitle(title);
-            setImportedChapters(chapters);
-            addNotification(`Loaded ${text.split(/\s+/).length.toLocaleString()} words from ${file.name}.`);
+            if (files.length > 1) {
+                await importBatch(files);
+                return;
+            }
+            const file = files[0];
+            const res = await extractText(file, {
+                stripUrls,
+                stripCitations,
+                onProgress: (p) => setPdfProgress({ ...p, name: file.name })
+            });
+            setCustomText(res.text);
+            setTitle(res.title);
+            setImportedChapters(res.chapters);
+            addNotification(`Loaded ${res.text.split(/\s+/).length.toLocaleString()} words from ${file.name}.`);
         } catch (error) {
             console.error('Import error:', error);
-            setImportedTitle(null);
             setImportedChapters(null);
             addNotification(error.message || 'Could not read that file.');
         } finally {
             setImporting(false);
+            setPdfProgress(null);
         }
     };
 
     const handleDrop = (e) => {
         e.preventDefault();
         setIsDragging(false);
-        loadFile(e.dataTransfer.files?.[0]);
+        loadFiles(e.dataTransfer.files);
     };
 
     const handleCustomStart = () => {
         if (!customText.trim()) return;
         onStartPassage({
             id: nextId('custom'),
-            title: importedTitle || 'Custom Imported Text',
+            title: title.trim() || 'Custom Imported Text',
             text: customText,
             questions: []
         }, { source: 'import', returnTo: 'documents' });
@@ -60,7 +107,7 @@ export default function Upload({
         }
         onStartPushDrill({
             id: nextId('push-custom'),
-            title: importedTitle ? `${importedTitle} (Speed Push)` : 'Custom Speed Push',
+            title: title.trim() ? `${title.trim()} (Speed Push)` : 'Custom Speed Push',
             ...sections,
             questions: []
         }, { source: 'import', returnTo: 'documents' });
@@ -70,29 +117,44 @@ export default function Upload({
     const canBeBook = wordCount >= BOOK_MIN_WORDS || (importedChapters?.length ?? 0) > 1;
     const estMinutes = Math.max(1, Math.round(wordCount / Math.max(100, readingWpm)));
 
+    const previewChapters = useMemo(() => {
+        if (!canBeBook || !customText.trim()) return [];
+        return buildChapters({ text: customText, chapters: importedChapters });
+    }, [canBeBook, customText, importedChapters]);
+
     const handleAddBook = () => {
-        const chapters = buildChapters({ text: customText, chapters: importedChapters });
-        if (chapters.length < 2) {
+        if (previewChapters.length < 2) {
             addNotification('Not enough text to split into chapters. Read it as one passage instead.');
             return;
         }
-        if (onSaveBook(createBook({ title: importedTitle || 'Imported book', chapters })) === false) return;
+        if (onSaveBook(createBook({ title: title.trim() || 'Imported book', chapters: previewChapters })) === false) return;
         setCustomText('');
-        setImportedTitle(null);
+        setTitle('');
         setImportedChapters(null);
         onOpenDocuments?.();
     };
 
     return (
         <div className="max-w-4xl mx-auto space-y-6 animate-in slide-in-from-bottom-4 pb-12">
-            <div>
-                <h1 className="text-3xl font-bold text-white flex items-center gap-3">
-                    <UploadIcon className="text-purple-500 w-7 h-7" /> Upload
-                </h1>
-                <p className="text-slate-400 mt-2 max-w-2xl leading-relaxed">
-                    Import an EPUB, PDF, DOCX, HTML, Markdown, or text file — or paste text directly. Everything is cleaned for
-                    speed reading and saved to your Documents tab.
-                </p>
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                    <h1 className="text-3xl font-bold text-white flex items-center gap-3">
+                        <UploadIcon className="text-purple-500 w-7 h-7" /> Upload
+                    </h1>
+                    <p className="text-slate-400 mt-2 max-w-2xl leading-relaxed">
+                        Import an EPUB, PDF, DOCX, HTML, Markdown, or text file — or drop multiple files at once to save them to your
+                        Documents tab.
+                    </p>
+                </div>
+                <div className="bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 min-w-[11rem]">
+                    <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400 mb-1">
+                        <span className="flex items-center gap-1"><HardDrive size={12} /> Library storage</span>
+                        <span className="font-mono">{(libraryBytes / 1e6).toFixed(1)} / 4.0 MB</span>
+                    </div>
+                    <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div className={`h-full ${storagePct > 85 ? 'bg-amber-500' : 'bg-purple-500'}`} style={{ width: `${storagePct}%` }} />
+                    </div>
+                </div>
             </div>
 
             <div className={`bg-slate-900 border rounded-3xl p-6 md:p-7 transition-colors ${isDragging ? 'border-purple-500 bg-purple-950/15' : 'border-slate-800'}`}>
@@ -113,53 +175,117 @@ export default function Upload({
                             className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white text-sm font-bold px-4 py-2.5 rounded-xl transition-colors"
                         >
                             {importing ? <Activity className="animate-spin" size={16} /> : <UploadIcon size={16} />}
-                            {importing ? 'Reading file...' : 'Choose a file'}
+                            {importing ? 'Reading file...' : 'Choose file(s)'}
                         </button>
-                        <span className="text-xs text-slate-500">or drop one anywhere in this box</span>
+                        <span className="text-xs text-slate-500">or drop one or more anywhere in this box</span>
                         <input
                             ref={fileRef}
                             type="file"
+                            multiple
                             accept={ACCEPT_ATTRIBUTE}
                             className="hidden"
-                            aria-label="Choose a document to import"
-                            onChange={(e) => { loadFile(e.target.files?.[0]); e.target.value = ''; }}
+                            aria-label="Choose documents to import"
+                            onChange={(e) => { loadFiles(e.target.files); e.target.value = ''; }}
                         />
                     </div>
 
-                    <p className="text-[11px] text-slate-600">
-                        Supported: {SUPPORTED_EXTENSIONS.join('   ')} — long articles or books can be split into chapters.
-                    </p>
-
-                    {importedTitle && (
-                        <div className="text-xs bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-300 truncate">
-                            <span className="text-slate-500">Loaded:</span> {importedTitle}
+                    {pdfProgress && (
+                        <div className="space-y-1.5">
+                            <div className="flex justify-between text-xs text-slate-400">
+                                <span className="truncate">Reading {pdfProgress.name}…</span>
+                                <span className="font-mono shrink-0">Page {pdfProgress.page} / {pdfProgress.totalPages}</span>
+                            </div>
+                            <progress
+                                value={pdfProgress.page}
+                                max={pdfProgress.totalPages}
+                                className="w-full h-1.5 rounded-full overflow-hidden accent-purple-500"
+                            />
                         </div>
                     )}
 
+                    <p className="text-[11px] text-slate-600">
+                        Supported: {SUPPORTED_EXTENSIONS.join('   ')} — Markdown formatting, PDF headers/footers, and stray symbols are scrubbed automatically.
+                    </p>
+
+                    <div>
+                        <label htmlFor="upload-title" className="block text-xs font-bold text-slate-400 mb-1.5">Title</label>
+                        <input
+                            id="upload-title"
+                            type="text"
+                            value={title}
+                            onChange={(e) => setTitle(e.target.value)}
+                            placeholder="Optional title (auto-filled from file)"
+                            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-purple-500 transition-colors"
+                        />
+                    </div>
+
                     <textarea
                         value={customText}
-                        onChange={(e) => { setCustomText(e.target.value); setImportedTitle(null); setImportedChapters(null); }}
+                        onChange={(e) => { setCustomText(e.target.value); setImportedChapters(null); }}
                         placeholder="...or paste text straight in here."
                         aria-label="Document text to read"
                         className="w-full min-h-[14rem] bg-slate-950 border border-slate-700 rounded-xl p-4 text-white resize-y focus:outline-none focus:border-purple-500 transition-colors text-sm"
                     />
 
-                    {wordCount > 0 && (
-                        <div className="flex items-center justify-between gap-3 flex-wrap">
-                            <p className="text-xs text-slate-500">
-                                {wordCount.toLocaleString()} words · about {estMinutes} min at {readingWpm} WPM
-                            </p>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setCustomText(prev => normalizeText(prev));
-                                    addNotification('Cleaned formatting and stray characters.');
-                                }}
-                                className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-white border border-slate-800 hover:border-slate-600 px-3 py-1.5 rounded-lg transition-colors"
-                            >
-                                <Eraser size={13} /> Clean pasted text
-                            </button>
+                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <div className="flex items-center gap-4 flex-wrap text-xs text-slate-400">
+                            <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={stripUrls}
+                                    onChange={(e) => setStripUrls(e.target.checked)}
+                                    className="accent-purple-500"
+                                />
+                                Strip URLs
+                            </label>
+                            <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={stripCitations}
+                                    onChange={(e) => setStripCitations(e.target.checked)}
+                                    className="accent-purple-500"
+                                />
+                                Strip [1] citations
+                            </label>
                         </div>
+
+                        {wordCount > 0 && (
+                            <div className="flex items-center gap-3 flex-wrap">
+                                <span className="text-xs text-slate-500">
+                                    {wordCount.toLocaleString()} words · ~{estMinutes} min at {readingWpm} WPM
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setCustomText(prev => normalizeText(prev, { stripUrls, stripCitations }));
+                                        addNotification('Cleaned formatting and stray characters.');
+                                    }}
+                                    className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-white border border-slate-800 hover:border-slate-600 px-3 py-1.5 rounded-lg transition-colors"
+                                >
+                                    <Eraser size={13} /> Clean text
+                                </button>
+                            </div>
+                        )}
+                    </div>
+
+                    {previewChapters.length >= 2 && (
+                        <details className="group bg-slate-950 border border-slate-800 rounded-xl">
+                            <summary className="cursor-pointer select-none px-4 py-2.5 flex items-center justify-between text-xs font-bold text-slate-300 hover:text-white">
+                                <span className="flex items-center gap-1.5">
+                                    <ChevronRight size={14} className="group-open:rotate-90 transition-transform" />
+                                    Chapter preview ({previewChapters.length} {importedChapters?.length > 1 ? 'chapters' : 'parts'})
+                                </span>
+                                <span className="text-slate-500 font-normal">Saved per chapter</span>
+                            </summary>
+                            <ol className="px-4 pb-3 pt-1 space-y-1 max-h-44 overflow-y-auto text-xs text-slate-400">
+                                {previewChapters.map((ch, i) => (
+                                    <li key={i} className="flex justify-between gap-2">
+                                        <span className="truncate">{i + 1}. {ch.title}</span>
+                                        <span className="font-mono text-slate-500 shrink-0">{ch.text.split(/\s+/).length.toLocaleString()}w</span>
+                                    </li>
+                                ))}
+                            </ol>
+                        </details>
                     )}
 
                     {canBeBook && (
@@ -183,7 +309,7 @@ export default function Upload({
                             className="bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white font-bold py-3.5 rounded-xl transition-colors flex flex-col items-center justify-center"
                         >
                             <span className="flex items-center gap-2"><Play size={16} className="fill-current" /> Read with Speed Reader</span>
-                            <span className="block text-[11px] font-normal text-purple-100/80 mt-0.5">RSVP, Paced, Natural, or Skim</span>
+                            <span className="block text-[11px] font-normal text-purple-100/80 mt-0.5">RSVP, Paced, Scroll, Natural, or Skim</span>
                         </button>
                         <button
                             type="button"

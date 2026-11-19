@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-    SUPPORTED_EXTENSIONS, extensionOf, isSupported, normalizeText, stripRepeatedHeadersFooters, titleFromFilename
+    SUPPORTED_EXTENSIONS, extensionOf, isSupported, normalizeText, stripMarkdown, stripRepeatedHeadersFooters, titleFromFilename
 } from './importText';
 
 const NBSP = String.fromCharCode(160);
@@ -98,6 +98,19 @@ describe('stripRepeatedHeadersFooters', () => {
     it('leaves short 1-2 page documents untouched', () => {
         const pages = ['Title\nPage one.', 'Title\nPage two.'];
         expect(stripRepeatedHeadersFooters(pages)).toEqual(pages);
+    });
+});
+
+describe('stripMarkdown and optional filters', () => {
+    it('strips frontmatter, links, images, emphasis, and headings while keeping text', () => {
+        const md = '---\ntitle: Demo\n---\n# Heading\n\nRead **this** [article](https://example.com) ![img](pic.png) with `code`.';
+        expect(normalizeText(stripMarkdown(md))).toBe('Heading\n\nRead this article with code.');
+    });
+
+    it('strips URLs and numeric citations when requested', () => {
+        const raw = 'See https://example.com/paper for details [1, 2] and more [14].';
+        expect(normalizeText(raw, { stripUrls: true, stripCitations: true })).toBe('See for details and more.');
+        expect(normalizeText(raw)).toBe(raw);
     });
 });
 
