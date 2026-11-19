@@ -101,6 +101,7 @@ function Reader({
     const [pacedInitialIndex, setPacedInitialIndex] = useState(safeResume);
     const [wpmMenuOpen, setWpmMenuOpen] = useState(false);
     const wpmMenuRef = useRef(null);
+    const touchStartRef = useRef(null);
     const lastNonScrollModeRef = useRef(mode === 'scroll' ? 'rsvp' : mode);
 
     useEffect(() => {
@@ -419,6 +420,28 @@ function Reader({
             idx = Math.min(words.length - 1, idx + 1);
         }
         seekTo(idx);
+    };
+
+    const handleWheelScrub = (e) => {
+        if (isPlaying || (mode !== 'rsvp' && mode !== 'scroll')) return;
+        if (Math.abs(e.deltaY) < 4) return;
+        seekBy(e.deltaY > 0 ? 3 : -3);
+    };
+
+    const handleTouchStart = (e) => {
+        if (isPlaying || e.touches.length !== 1) return;
+        touchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    };
+
+    const handleTouchEnd = (e) => {
+        const start = touchStartRef.current;
+        touchStartRef.current = null;
+        if (!start || isPlaying || e.changedTouches.length !== 1) return;
+        const dx = e.changedTouches[0].clientX - start.x;
+        const dy = e.changedTouches[0].clientY - start.y;
+        if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+            seekBy(dx < 0 ? SKIP_WORDS : -SKIP_WORDS);
+        }
     };
 
     // You read with your eyes fixed on one point, so reaching for the mouse to
@@ -778,6 +801,9 @@ function Reader({
                 {mode === 'rsvp' ? (
                     <div className="w-full flex flex-col items-center">
                         <div
+                            onWheel={handleWheelScrub}
+                            onTouchStart={handleTouchStart}
+                            onTouchEnd={handleTouchEnd}
                             className="w-full rounded-2xl overflow-hidden flex flex-col items-center"
                             style={{ background: 'var(--reading-bg)', color: 'var(--reading-fg)' }}
                         >
@@ -867,7 +893,13 @@ function Reader({
                         </div>
                     </div>
                 ) : isScroll ? (
-                    <div className="w-full h-full border border-slate-800/40 rounded-3xl p-5 md:p-10 flex flex-col justify-between" style={{ background: 'var(--reading-bg)', color: 'var(--reading-fg)' }}>
+                    <div
+                        onWheel={handleWheelScrub}
+                        onTouchStart={handleTouchStart}
+                        onTouchEnd={handleTouchEnd}
+                        className="w-full h-full border border-slate-800/40 rounded-3xl p-5 md:p-10 flex flex-col justify-between"
+                        style={{ background: 'var(--reading-bg)', color: 'var(--reading-fg)' }}
+                    >
                         <div className="flex items-center justify-between gap-3 border-b pb-3 mb-4" style={{ borderColor: 'var(--reading-muted)' }}>
                             <h2 className="text-lg md:text-xl font-bold truncate" style={{ color: 'var(--reading-fg)', opacity: 0.95 }}>{passage.title}</h2>
                             <button
@@ -886,6 +918,7 @@ function Reader({
                             bionicReading={settings.bionicReading}
                             bionicStrength={reading.bionicStrength}
                             dimRead={reading.dimRead}
+                            focalPct={reading.scrollFocalPct}
                             initialIndex={pacedInitialIndex}
                             seek={pacedSeek}
                             onWordClick={seekTo}

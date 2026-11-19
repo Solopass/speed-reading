@@ -139,6 +139,7 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                     <Section title="Pacer, Scroll & Prose">
                         <Chips label="Pacer style" options={PACER_STYLES} value={reading.pacerStyle} onChange={(id) => set({ pacerStyle: id })} />
                         <Switch label="Fade words already passed" checked={reading.dimRead} onChange={(v) => set({ dimRead: v })} />
+                        <Slider id="rs-scroll-focal" label="Scroll focal position" value={reading.scrollFocalPct} range={LIMITS.scrollFocalPct} step={2} onChange={(v) => set({ scrollFocalPct: v })} format={(v) => `${v}%`} />
                         <Switch label="Bionic bold" hint="Bolds the start of each word." checked={settings.bionicReading} onChange={(v) => updateSettings({ bionicReading: v })} />
                         {settings.bionicReading && (
                             <Slider id="rs-bionic" label="Bold amount" value={reading.bionicStrength} range={LIMITS.bionicStrength} step={0.05} onChange={(v) => set({ bionicStrength: v })} format={(v) => `${Math.round(v * 100)}%`} />

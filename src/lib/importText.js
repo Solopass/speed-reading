@@ -108,26 +108,58 @@ export function normalizeText(raw, options = {}) {
 
 const BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, dd, dt, figcaption';
 
+const BOILERPLATE_SELECTOR = 'script, style, noscript, nav, header, footer, aside, svg, form, button, dialog, [role="navigation"], [role="banner"], [role="contentinfo"], [aria-hidden="true"]';
+
+function pickArticleRoot(doc) {
+    const candidates = [...doc.querySelectorAll('article, main, [role="main"]')];
+    let best = null;
+    let bestWords = 0;
+    for (const el of candidates) {
+        const words = (el.textContent || '').trim().split(/\s+/).filter(Boolean).length;
+        if (words >= 60 && words > bestWords) {
+            best = el;
+            bestWords = words;
+        }
+    }
+    if (best) return best;
+
+    // Fallback: pick the container with the most paragraph prose.
+    let bestContainer = doc.body ?? doc.documentElement;
+    let bestScore = 0;
+    for (const container of doc.querySelectorAll('div, section')) {
+        const pChars = [...container.querySelectorAll(':scope > p')]
+            .reduce((sum, p) => sum + p.textContent.trim().length, 0);
+        if (pChars > bestScore) {
+            bestScore = pChars;
+            bestContainer = container;
+        }
+    }
+    return bestContainer;
+}
+
 /**
  * Pulls prose out of an HTML document. Block elements become paragraphs, so the
- * result keeps the shape the reader needs; textContent alone would run the
- * whole document into a single block.
+ * result keeps the shape the reader needs; prefers <article>/<main> or the
+ * richest paragraph container so navigation/banners are skipped.
  */
 export function extractFromHtml(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
-    doc.querySelectorAll('script, style, noscript, nav, header, footer, aside, svg').forEach(el => el.remove());
+    doc.querySelectorAll(BOILERPLATE_SELECTOR).forEach(el => el.remove());
 
-    const blocks = [...doc.querySelectorAll(BLOCK_SELECTOR)]
+    const root = pickArticleRoot(doc);
+    const blocks = [...(root?.querySelectorAll(BLOCK_SELECTOR) ?? [])]
         // Skip wrappers whose text is already covered by a nested block.
         .filter(el => !el.querySelector(BLOCK_SELECTOR))
         .map(el => el.textContent.trim())
         .filter(Boolean);
 
-    const text = blocks.length ? blocks.join('\n\n') : (doc.body?.textContent ?? '');
+    const text = blocks.length ? blocks.join('\n\n') : (root?.textContent ?? '');
     return {
         title: doc.querySelector('title')?.textContent?.trim() || null,
         // The first heading names the chapter when this is one EPUB spine file.
-        heading: doc.querySelector('h1, h2, h3')?.textContent?.replace(/\s+/g, ' ').trim() || null,
+        heading: root?.querySelector('h1, h2, h3')?.textContent?.replace(/\s+/g, ' ').trim()
+            || doc.querySelector('h1, h2, h3')?.textContent?.replace(/\s+/g, ' ').trim()
+            || null,
         text: normalizeText(text)
     };
 }
@@ -355,7 +387,9 @@ async function readPdf(file, options = {}) {
     const removedHeaders = pages.reduce((n, p, i) => (p !== strippedPages[i] ? n + 1 : n), 0);
     const rawText = pages.join('\n\n');
     const { text, stats } = normalizeTextWithStats(strippedPages.join('\n\n'), options);
-    if (!text) throw new Error('No text found in that PDF. Scanned pages need OCR first.');
+    if (!text) {
+        throw new Error(`This PDF (${pdf.numPages} page${pdf.numPages === 1 ? '' : 's'}) appears to be scanned images with no selectable text. Run OCR (e.g. Adobe, macOS Preview, or ocrmypdf) first, then re-upload.`);
+    }
 
     const chapters = await pdfOutlineChapters(pdf, strippedPages);
     return {

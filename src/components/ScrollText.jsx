@@ -21,6 +21,7 @@ export default function ScrollText({
     bionicReading = false,
     bionicStrength = 0.5,
     dimRead = true,
+    focalPct = 44,
     initialIndex = 0,
     seek = null,
     onWordClick,
@@ -112,7 +113,7 @@ export default function ScrollText({
 
     // Interpolate vertical position between the current word and the next so
     // the upward scroll is continuous rather than stepping line by line.
-    const focalY = viewportHeight * 0.44;
+    const focalY = viewportHeight * (focalPct / 100);
     let targetY = 0;
     if (wordTops.length > 0) {
         const idx = Math.max(0, Math.min(wordTops.length - 1, Math.floor(progress)));
