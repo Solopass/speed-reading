@@ -49,6 +49,12 @@ export default [
         }
     },
 
+    // Config files run in Node, not the browser (vite.config.js reads process.env).
+    {
+        files: ['*.config.js'],
+        languageOptions: { globals: { ...globals.node } }
+    },
+
     {
         files: ['**/*.test.js'],
         languageOptions: { globals: { ...globals.node } },
