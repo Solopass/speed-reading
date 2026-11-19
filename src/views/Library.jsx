@@ -9,6 +9,8 @@ import { PUSH_DRILL_PASSAGE } from '../lib/drills';
 import { isPartiallyRead, nextRecallOn, resumePoint } from '../lib/library';
 import { ACCEPT_ATTRIBUTE, SUPPORTED_EXTENSIONS, extractText } from '../lib/importText';
 import ManualAiPanel from '../components/ManualAiPanel';
+import BookShelf from '../components/BookShelf';
+import { BOOK_MIN_WORDS, buildChapters, createBook, isBook } from '../lib/book';
 
 const SOURCE_LABELS = { ai: 'AI', import: 'Imported', youtube: 'Video', builtin: 'Built-in' };
 
@@ -159,7 +161,10 @@ function SavedPassages({ library, onOpenSaved, onDeleteSaved }) {
     );
 }
 
-function Library({ library, ai, verifyQuestions, onStartPassage, onStartPushDrill, onOpenSaved, onDeleteSaved, addNotification }) {
+function Library({
+    library, ai, verifyQuestions, readingWpm = 300, onStartPassage, onStartPushDrill, onOpenSaved, onDeleteSaved,
+    onSaveBook, onOpenChapter, onRemoveBookmark, addNotification
+}) {
     const useApi = Boolean(ai?.generate);
     const [topic, setTopic] = useState('');
     const [difficulty, setDifficulty] = useState(5);
@@ -167,6 +172,8 @@ function Library({ library, ai, verifyQuestions, onStartPassage, onStartPushDril
     const [outputKind, setOutputKind] = useState('passage');
     const [customText, setCustomText] = useState('');
     const [importedTitle, setImportedTitle] = useState(null);
+    // The file's own chapters (EPUB), kept until the text is edited by hand.
+    const [importedChapters, setImportedChapters] = useState(null);
     const [importing, setImporting] = useState(false);
     const fileRef = useRef(null);
     const [isDragging, setIsDragging] = useState(false);
@@ -298,13 +305,15 @@ function Library({ library, ai, verifyQuestions, onStartPassage, onStartPushDril
         if (!file) return;
         setImporting(true);
         try {
-            const { title, text } = await extractText(file);
+            const { title, text, chapters } = await extractText(file);
             setCustomText(text);
             setImportedTitle(title);
+            setImportedChapters(chapters);
             addNotification(`Loaded ${text.split(/\s+/).length.toLocaleString()} words from ${file.name}.`);
         } catch (error) {
             console.error('Import error:', error);
             setImportedTitle(null);
+            setImportedChapters(null);
             addNotification(error.message || 'Could not read that file.');
         } finally {
             setImporting(false);
@@ -318,6 +327,22 @@ function Library({ library, ai, verifyQuestions, onStartPassage, onStartPushDril
     };
 
     const wordCount = customText.trim() ? customText.trim().split(/\s+/).length : 0;
+    const canBeBook = wordCount >= BOOK_MIN_WORDS || (importedChapters?.length ?? 0) > 1;
+
+    const handleAddBook = () => {
+        const chapters = buildChapters({ text: customText, chapters: importedChapters });
+        if (chapters.length < 2) {
+            addNotification('Not enough text to split into chapters. Read it as one passage instead.');
+            return;
+        }
+        if (onSaveBook(createBook({ title: importedTitle || 'Imported book', chapters })) === false) return;
+        setCustomText('');
+        setImportedTitle(null);
+        setImportedChapters(null);
+    };
+
+    const books = library.filter(isBook);
+    const passages = library.filter(item => !isBook(item));
 
     return (
         <div className="max-w-4xl mx-auto space-y-6 animate-in slide-in-from-bottom-4 pb-12">
@@ -514,7 +539,7 @@ function Library({ library, ai, verifyQuestions, onStartPassage, onStartPushDril
 
                         <textarea
                             value={customText}
-                            onChange={(e) => { setCustomText(e.target.value); setImportedTitle(null); }}
+                            onChange={(e) => { setCustomText(e.target.value); setImportedTitle(null); setImportedChapters(null); }}
                             placeholder="...or paste text straight in here."
                             aria-label="Text to read"
                             className="w-full min-h-[9rem] bg-slate-950 border border-slate-700 rounded-xl p-4 text-white resize-y focus:outline-none focus:border-blue-500 transition-colors text-sm"
@@ -524,6 +549,18 @@ function Library({ library, ai, verifyQuestions, onStartPassage, onStartPushDril
                             <p className="text-xs text-slate-500">
                                 {wordCount.toLocaleString()} words · about {Math.max(1, Math.round(wordCount / 300))} min at 300 WPM
                             </p>
+                        )}
+
+                        {canBeBook && (
+                            <button
+                                onClick={handleAddBook}
+                                className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-3.5 rounded-xl transition-colors"
+                            >
+                                Add as a book
+                                <span className="block text-[11px] font-normal text-purple-100/80 mt-0.5">
+                                    {importedChapters?.length > 1 ? 'Uses the file’s own chapters' : 'Split into chapters'} · progress saved per chapter · bookmarks
+                                </span>
+                            </button>
                         )}
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -546,7 +583,9 @@ function Library({ library, ai, verifyQuestions, onStartPassage, onStartPushDril
                 </div>
             </Card>
 
-            <SavedPassages library={library} onOpenSaved={onOpenSaved} onDeleteSaved={onDeleteSaved} />
+            <BookShelf books={books} wpm={readingWpm} onOpenChapter={onOpenChapter} onRemoveBookmark={onRemoveBookmark} onDelete={onDeleteSaved} />
+
+            <SavedPassages library={passages} onOpenSaved={onOpenSaved} onDeleteSaved={onDeleteSaved} />
         </div>
     );
 }

@@ -247,11 +247,14 @@ src/
     backup.js          export/import of the whole profile
     useHotkeys.js      window-level keyboard shortcuts
     vocab.js           vocabulary candidates, review schedule, flash drill
+    book.js            book mode: chapters, per-chapter progress, bookmarks
+    readerNav.js       honest word counting across rewinds and skips
     nextAction.js      the dashboard's "do this next" pick
     theme.js           app theme (dark / light / system), chart colours
     usePersistentState.js  one localStorage key per piece of state
   components/          PacedText, Quiz, SpeedPush, ManualAiPanel, ReadingSurface,
-                       PassageText, Toggle, AppNav, Toasts
+                       PassageText, Toggle, AppNav, Toasts, ReaderSettings, BookShelf
+  data/                wordfreq-en-20k.txt (CC BY-SA 4.0, see WORDFREQ-NOTICE.md)
     drills/            SchulteDrill, ChunkFlashDrill
   views/               Dashboard, Library, Reader, Tools, Analytics, AICoach,
                        VideoSummary, SettingsPanel, ReadingEnvironment, Guide,
@@ -482,3 +485,12 @@ It recurred because the coercion was duplicated, so it now lives once in
 
 - ✅ **Free** for personal use, hobby projects, study and research, and for nonprofits, schools and public institutions.
 - 💼 **Commercial use** (in a business, product or paid service, or for-profit internal use) needs a paid license. See [COMMERCIAL.md](COMMERCIAL.md), or contact [realsolopass@gmail.com](mailto:realsolopass@gmail.com) · <https://polymatica.pages.dev>.
+
+## Third-party data
+
+`src/data/wordfreq-en-20k.txt` is the 20,000 most frequent English words from
+[wordfreq](https://github.com/rspeer/wordfreq) 3.1.1 by Robyn Speer, shared under
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). wordfreq draws
+on Google Books Ngrams and on SUBTLEX by Marc Brysbaert, Boris New and
+colleagues, among other sources. The license covers that file only; details in
+`src/data/WORDFREQ-NOTICE.md`.

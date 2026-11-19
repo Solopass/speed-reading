@@ -11,9 +11,9 @@ import {
 } from '../lib/stats';
 import { chartColors, tooltipStyle } from '../lib/theme';
 
-const ACTION_ICONS = { baseline: Target, 'baseline-more': Target, recall: Bookmark, plan: Map, push: Zap, read: BookOpen };
+const ACTION_ICONS = { baseline: Target, 'baseline-more': Target, recall: Bookmark, plan: Map, push: Zap, read: BookOpen, book: BookOpen };
 const ACTION_CTA = {
-    baseline: 'Start the test', 'baseline-more': 'Read it', recall: 'Check now', plan: 'Go', push: 'Choose a passage', read: 'Choose a passage'
+    baseline: 'Start the test', 'baseline-more': 'Read it', recall: 'Check now', plan: 'Go', push: 'Choose a passage', read: 'Choose a passage', book: 'Continue'
 };
 
 /** A tiny trend line for a stat card. Draws nothing until there are two points. */

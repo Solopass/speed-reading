@@ -1,4 +1,5 @@
 import { daysBetween, todayKey } from './stats';
+import { isBook, migrateBook } from './book';
 
 const MAX_ITEMS = 60;
 
@@ -31,8 +32,17 @@ export function createEntry({ id, title, source, kind = 'read', text, sectionA, 
     };
 }
 
-const withoutOldest = (items) =>
-    (items.length <= MAX_ITEMS ? items : [...items].sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1)).slice(items.length - MAX_ITEMS));
+/**
+ * Trims the library to MAX_ITEMS by dropping the oldest passages. Books are
+ * never dropped this way: losing a whole imported book and its progress to make
+ * room for a generated passage would be the wrong trade.
+ */
+function withoutOldest(items) {
+    if (items.length <= MAX_ITEMS) return items;
+    const removable = items.filter(i => !isBook(i)).sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+    const drop = new Set(removable.slice(0, items.length - MAX_ITEMS).map(i => i.id));
+    return items.filter(i => !drop.has(i.id));
+}
 
 export function upsertEntry(items, entry) {
     const existing = items.findIndex(i => i.id === entry.id);
@@ -98,6 +108,7 @@ export function recordAttempt(items, id, { wpm, score, kind = 'read' }) {
  * questions to ask, was never finished, or has run out of the schedule.
  */
 export function nextRecallOn(item) {
+    if (isBook(item)) return null;
     if (!item.completedAt || !item.questions?.length) return null;
     const recalls = item.attempts.filter(a => a.kind === 'recall').length;
     if (recalls >= RECALL_INTERVALS.length) return null;
@@ -128,8 +139,8 @@ export function toPassage(item) {
 export function migrateLibrary(raw) {
     if (!Array.isArray(raw)) return [];
     return raw
-        .filter(i => i && typeof i.id === 'string' && (typeof i.text === 'string' || typeof i.sectionA === 'string'))
-        .map(i => ({
+        .filter(i => i && typeof i.id === 'string' && (typeof i.text === 'string' || typeof i.sectionA === 'string' || i.kind === 'book'))
+        .map(i => (i.kind === 'book' ? migrateBook(i) : {
             ...createEntry({
                 id: i.id, title: i.title, source: i.source ?? 'import', kind: i.kind ?? 'read',
                 text: i.text, sectionA: i.sectionA, sectionB: i.sectionB,
@@ -141,5 +152,6 @@ export function migrateLibrary(raw) {
             completedAt: typeof i.completedAt === 'string' ? i.completedAt : null,
             progressIndex: Number.isInteger(i.progressIndex) ? i.progressIndex : 0,
             attempts: Array.isArray(i.attempts) ? i.attempts.filter(a => a && typeof a.date === 'string') : []
-        }));
+        }))
+        .filter(Boolean);
 }

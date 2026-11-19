@@ -40,3 +40,15 @@ describe('pickNextAction', () => {
         expect(pickNextAction({ stats: withBaseline, history: pushes }).kind).toBe('read');
     });
 });
+
+describe('books in the next action', () => {
+    it('offers to continue the most recently read unfinished book', async () => {
+        const { createBook } = await import('./book');
+        const words = (n) => Array.from({ length: n }, () => 'w').join(' ');
+        const book = { ...createBook({ id: 'b1', title: 'Novel', chapters: [{ title: 'One', text: words(300) }, { title: 'Two', text: words(300) }] }), lastReadAt: '2026-01-02', currentChapter: 1 };
+        const unopened = createBook({ id: 'b2', title: 'Unopened', chapters: [{ title: 'X', text: words(300) }] });
+        const a = pickNextAction({ stats: withBaseline, library: [unopened, book] });
+        expect(a).toMatchObject({ kind: 'book', id: 'b1', chapter: 1, title: 'Continue Novel' });
+        expect(pickNextAction({ stats: withBaseline, library: [{ ...book, completedAt: '2026-01-03' }] }).kind).toBe('push');
+    });
+});

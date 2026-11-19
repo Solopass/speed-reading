@@ -97,3 +97,37 @@ describe('migrateVocab duplicates', () => {
         expect(out[0].note).toBe('first');
     });
 });
+
+describe('frequency ranking', () => {
+    it('parses the list into ranks', async () => {
+        const { parseFrequencyList, rankOf } = await import('./vocab');
+        const rank = parseFrequencyList('the\nriver\nflow\n\nriver\n');
+        expect(rank.get('the')).toBe(0);
+        expect(rank.get('river')).toBe(1);
+        expect(rankOf('rivers', rank)).toBe(1);
+        expect(rankOf('zephyr', rank)).toBe(Infinity);
+    });
+
+    it('ranks candidates by rarity in English and drops common words', async () => {
+        const { candidateWords, parseFrequencyList, COMMON_RANK } = await import('./vocab');
+        const list = Array.from({ length: COMMON_RANK + 10 }, (_, i) => `filler${i}`);
+        list[5] = 'sustained';
+        list[COMMON_RANK + 5] = 'microbes';
+        const rank = parseFrequencyList(list.join('\n'));
+        const lib = [{ title: 'T', text: 'Bacteria sustained the microbes and the tubeworms in symbiotic fashion.' }];
+        const words = candidateWords(lib, new Set(), 40, rank).map(c => c.word);
+        expect(words).not.toContain('sustained');
+        expect(words.indexOf('tubeworms')).toBeLessThan(words.indexOf('microbes'));
+        expect(words).toContain('fashion');
+    });
+});
+
+describe('possessives and contractions', () => {
+    it('folds possessives into the base word and skips contractions', () => {
+        const lib = [{ title: 'T', text: "The cesspit's walls and the cesspit leaked. They wouldn't've noticed the waterborne illness." }];
+        const words = candidateWords(lib).map(c => c.word);
+        expect(words.filter(w => w.startsWith('cesspit'))).toEqual([]);
+        expect(words).toContain('waterborne');
+        expect(words.some(w => w.includes("'"))).toBe(false);
+    });
+});

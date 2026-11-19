@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-    Maximize2, Minimize2, Minus, Pause, Play, Plus, RotateCcw, Settings2, SkipBack, SkipForward, Target, Volume2
+    Bookmark, Maximize2, Minimize2, Minus, Pause, Play, Plus, RotateCcw, Settings2, SkipBack, SkipForward, Target, Volume2
 } from 'lucide-react';
 import { normalizeQuestions } from '../lib/quiz';
 import useHotkeys from '../lib/useHotkeys';
@@ -25,6 +25,7 @@ function KeyboardHint() {
             <span><Kbd>[ ]</Kbd> back/skip {SKIP_WORDS}</span>
             <span><Kbd>R</Kbd> restart</span>
             <span><Kbd>S</Kbd> settings</span>
+            <span><Kbd>B</Kbd> bookmark (books)</span>
             <span><Kbd>F</Kbd> full screen</span>
             <span><Kbd>esc</Kbd> exit</span>
         </p>
@@ -64,7 +65,7 @@ function Scrubber({ index, total, onSeek, label }) {
 
 function Reader({
     passage, settings, reading, patchReading, updateSettings, initialWpm, resumeFrom = 0,
-    onFinish, onLeave, onExit, addNotification
+    onFinish, onLeave, onExit, onBookmark = null, addNotification
 }) {
     // The baseline test measures your natural pace, so it is always read as
     // ordinary text with no pacing and no speed control.
@@ -295,16 +296,17 @@ function Reader({
 
     // Position within the whole passage, for the library's resume point.
     const absoluteIndex = mode === 'rsvp' ? currentIndex : pacedIndex;
-    const leaveRef = useRef({ onLeave, passageId: passage?.id, absoluteIndex, finished: false });
+    const chapterIndex = Number.isInteger(passage?.chapterIndex) ? passage.chapterIndex : null;
+    const leaveRef = useRef({ onLeave, passageId: passage?.id, chapterIndex, absoluteIndex, finished: false });
     useLayoutEffect(() => {
-        leaveRef.current = { ...leaveRef.current, onLeave, passageId: passage?.id, absoluteIndex };
+        leaveRef.current = { ...leaveRef.current, onLeave, passageId: passage?.id, chapterIndex, absoluteIndex, mode };
     });
 
     // Navigating away mid-passage saves where you got to; finishing does not,
     // since completing already resets the resume point.
     useEffect(() => () => {
-        const { onLeave: leave, passageId, absoluteIndex: at, finished } = leaveRef.current;
-        if (!finished) leave?.({ passageId, progressIndex: at });
+        const { onLeave: leave, passageId, chapterIndex: chapter, absoluteIndex: at, finished } = leaveRef.current;
+        if (!finished) leave?.({ passageId, chapterIndex: chapter, progressIndex: at, mode: leaveRef.current.mode });
     }, []);
 
     const handleFinishReading = useCallback(() => {
@@ -384,6 +386,7 @@ function Reader({
         ']': () => seekBy(SKIP_WORDS),
         r: () => { if (mode !== 'natural') restart(); },
         s: () => openSettings(),
+        b: () => { if (mode !== 'natural') onBookmark?.({ index: cursorRef.current }); },
         f: () => toggleFullscreen(),
         Escape: () => onExit?.()
     }, !quizActive && !settingsOpen && !isCalibration);
@@ -549,6 +552,14 @@ function Reader({
                                 <button onClick={() => nudgeWpm(25)} aria-label="Faster" className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Plus size={16} /></button>
                             </div>
                         </>
+                    )}
+                    {onBookmark && mode !== 'natural' && (
+                        <button
+                            onClick={() => onBookmark({ index: cursorRef.current })} aria-label="Bookmark this spot" title="Bookmark (B)"
+                            className="p-2.5 rounded-xl border border-slate-800 text-slate-300 hover:text-white hover:border-slate-600 transition-colors"
+                        >
+                            <Bookmark size={18} />
+                        </button>
                     )}
                     <button
                         onClick={openSettings} aria-label="Reading settings" title="Reading settings (S)"

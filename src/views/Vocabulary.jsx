@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, Check, Eye, Plus, Search, Sparkles, Trash2, X, Zap } from 'lucide-react';
 import {
-    FLASH_START_MS, buildFlashRound, candidateWords, pickWord, createVocabItem, dueItems, isLearned, nextExposure,
+    FLASH_START_MS, buildFlashRound, candidateWords, pickWord, createVocabItem, dueItems, isLearned, loadFrequencyRank, nextExposure,
     removeVocab, reviewItem, upsertVocab
 } from '../lib/vocab';
 import usePersistentState from '../lib/usePersistentState';
@@ -230,9 +230,9 @@ function FlashDrill({ pool, addNotification }) {
     );
 }
 
-function FindWords({ library, vocab, setVocab, dismissed, setDismissed, addNotification }) {
+function FindWords({ library, vocab, setVocab, dismissed, setDismissed, rank, addNotification }) {
     const exclude = useMemo(() => new Set([...vocab.map(v => v.word), ...dismissed]), [vocab, dismissed]);
-    const candidates = useMemo(() => candidateWords(library, exclude), [library, exclude]);
+    const candidates = useMemo(() => candidateWords(library, exclude, undefined, rank), [library, exclude, rank]);
     const [filter, setFilter] = useState('');
     const shown = candidates.filter(c => c.word.includes(filter.trim().toLowerCase()));
 
@@ -248,8 +248,11 @@ function FindWords({ library, vocab, setVocab, dismissed, setDismissed, addNotif
     return (
         <div className="space-y-4">
             <p className="text-sm text-slate-400 max-w-2xl">
-                Long, uncommon words from passages you have read, rarest first. Save the ones that made you slow down or re-read;
-                skip the ones you know. Unfamiliar words cost extra fixations, so these are direct speed gains.
+                Uncommon words from passages you have read, rarest in English first. Save the ones that made you slow down or
+                re-read; skip the ones you know. Unfamiliar words cost extra fixations, so these are direct speed gains.
+            </p>
+            <p className="text-[11px] text-slate-600 -mt-2">
+                {rank ? 'Ranked with wordfreq (Robyn Speer), CC BY-SA 4.0; includes SUBTLEX data by Brysbaert & New.' : 'Loading the word-frequency list…'}
             </p>
             <div className="relative max-w-sm">
                 <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
@@ -321,6 +324,14 @@ function EmptyState({ title, body }) {
 }
 
 export default function Vocabulary({ vocab, setVocab, library, ai, addNotification }) {
+    // The ~160 KB frequency list loads only when this page opens. Until it
+    // arrives (or if it fails), candidates fall back to the built-in rules.
+    const [rank, setRank] = useState(null);
+    useEffect(() => {
+        let live = true;
+        loadFrequencyRank().then(r => { if (live) setRank(r); }).catch(() => {});
+        return () => { live = false; };
+    }, []);
     const [tab, setTab] = useState(() => (dueItems(vocab).length > 0 ? 'review' : vocab.length === 0 ? 'find' : 'review'));
     const [dismissed, setDismissed] = usePersistentState('speedReadVocabDismissed', (raw) => (Array.isArray(raw) ? raw.filter(w => typeof w === 'string') : []), []);
     const due = dueItems(vocab).length;
@@ -331,9 +342,9 @@ export default function Vocabulary({ vocab, setVocab, library, ai, addNotificati
     const pool = useMemo(() => {
         const saved = vocab.map(v => v.word);
         if (saved.length >= 8) return saved;
-        const extra = candidateWords(library, new Set(saved), 20).map(c => c.word);
+        const extra = candidateWords(library, new Set(saved), 20, rank).map(c => c.word);
         return [...saved, ...extra];
-    }, [vocab, library]);
+    }, [vocab, library, rank]);
 
     return (
         <div className="space-y-6 animate-in fade-in duration-300">
@@ -362,7 +373,7 @@ export default function Vocabulary({ vocab, setVocab, library, ai, addNotificati
 
             {tab === 'review' && <Review vocab={vocab} setVocab={setVocab} ai={ai} addNotification={addNotification} />}
             {tab === 'flash' && <FlashDrill pool={pool} addNotification={addNotification} />}
-            {tab === 'find' && <FindWords library={library} vocab={vocab} setVocab={setVocab} dismissed={dismissed} setDismissed={setDismissed} addNotification={addNotification} />}
+            {tab === 'find' && <FindWords library={library} vocab={vocab} setVocab={setVocab} dismissed={dismissed} setDismissed={setDismissed} rank={rank} addNotification={addNotification} />}
             {tab === 'list' && <WordList vocab={vocab} setVocab={setVocab} />}
         </div>
     );

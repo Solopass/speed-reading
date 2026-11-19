@@ -234,3 +234,20 @@ describe('skim attempts', () => {
         expect(nextRecallOn(later)).toBe(nextRecallOn(read));
     });
 });
+
+describe('library cap and books', () => {
+    it('drops old passages but never a book', async () => {
+        const { createBook } = await import('./book');
+        const book = { ...createBook({ id: 'book', title: 'B', chapters: [{ title: 'c', text: 'x '.repeat(300) }] }), createdAt: '2000-01-01' };
+        let items = [book];
+        for (let i = 0; i < 65; i++) items = upsertEntry(items, { ...createEntry({ id: `p${i}`, title: 't', source: 'ai', text: 'a b' }), createdAt: `2026-01-${String((i % 28) + 1).padStart(2, '0')}` });
+        expect(items).toHaveLength(60);
+        expect(items.some(i => i.id === 'book')).toBe(true);
+    });
+
+    it('migrateLibrary keeps books and drops broken ones', () => {
+        const out = migrateLibrary([{ id: 'b', kind: 'book', title: 'B', chapters: [{ title: 'c', text: 'hello there' }] }, { id: 'bad', kind: 'book', chapters: [] }]);
+        expect(out.map(i => i.id)).toEqual(['b']);
+        expect(out[0].chapters[0].words).toBe(2);
+    });
+});

@@ -1,5 +1,6 @@
 import { STEP_KINDS, nextStep } from './plans';
 import { BASELINE_SAMPLES } from './stats';
+import { bookProgress, isBook, nextChapterIndex } from './book';
 
 /**
  * The one thing the dashboard suggests doing now, in priority order:
@@ -12,7 +13,7 @@ import { BASELINE_SAMPLES } from './stats';
  *   5. Otherwise a speed push, the highest-leverage drill, unless you have
  *      just done several in a row, in which case a plain measured read.
  */
-export function pickNextAction({ stats, history = [], recallDue = [], plans = [] }) {
+export function pickNextAction({ stats, history = [], recallDue = [], plans = [], library = [] }) {
     if (stats.baselineWpm === null || stats.baselineWpm === undefined) {
         return { kind: 'baseline', title: 'Take the baseline test', detail: 'About two minutes: one passage at your natural pace, then five questions.' };
     }
@@ -47,6 +48,19 @@ export function pickNextAction({ stats, history = [], recallDue = [], plans = []
             kind: 'baseline-more', index: samples,
             title: `Baseline passage ${samples + 1} of ${BASELINE_SAMPLES}`,
             detail: 'Your baseline is one reading so far. Another passage makes every "since baseline" number more trustworthy.'
+        };
+    }
+
+    // A book you have started and not finished: pick up where you left off.
+    const book = library
+        .filter(i => isBook(i) && i.lastReadAt && !i.completedAt)
+        .sort((a, b) => (a.lastReadAt < b.lastReadAt ? 1 : -1))[0];
+    if (book) {
+        const index = nextChapterIndex(book);
+        return {
+            kind: 'book', id: book.id, chapter: index,
+            title: `Continue ${book.title}`,
+            detail: `${book.chapters[index].title} · ${bookProgress(book).pct}% through the book`
         };
     }
 

@@ -61,6 +61,8 @@ export function extractFromHtml(html) {
     const text = blocks.length ? blocks.join('\n\n') : (doc.body?.textContent ?? '');
     return {
         title: doc.querySelector('title')?.textContent?.trim() || null,
+        // The first heading names the chapter when this is one EPUB spine file.
+        heading: doc.querySelector('h1, h2, h3')?.textContent?.replace(/\s+/g, ' ').trim() || null,
         text: normalizeText(text)
     };
 }
@@ -106,14 +108,16 @@ async function readEpub(file) {
         .map(href => new URL(href, `file:///${baseDir}`).pathname.replace(/^\//, ''))
         .map(path => zip[path] ?? zip[decodeURIComponent(path)])
         .filter(Boolean)
-        .map(bytes => extractFromHtml(decode(bytes)).text)
-        .filter(Boolean);
+        .map(bytes => extractFromHtml(decode(bytes)))
+        .filter(ch => ch.text);
 
     if (!chapters.length) throw new Error('No readable chapters found in that EPUB.');
 
     return {
         title: opf.querySelector('metadata title')?.textContent?.trim() || null,
-        text: normalizeText(chapters.join('\n\n'))
+        text: normalizeText(chapters.map(ch => ch.text).join('\n\n')),
+        // Kept separate as well, so book mode can use the file's own chapters.
+        chapters: chapters.map((ch, i) => ({ title: ch.heading || `Chapter ${i + 1}`, text: ch.text }))
     };
 }
 
@@ -192,10 +196,11 @@ export async function extractText(file) {
         throw new Error(`Cannot read ${extension || 'that file'}. Supported: ${SUPPORTED_EXTENSIONS.join(', ')}.`);
     }
 
-    const { title, text } = await reader(file);
+    const { title, text, chapters = null } = await reader(file);
     if (!text || text.split(/\s+/).length < 10) {
         throw new Error('That file did not contain enough readable text.');
     }
 
-    return { title: title || titleFromFilename(file.name), text };
+    // `chapters` is null unless the format carries its own (EPUB).
+    return { title: title || titleFromFilename(file.name), text, chapters };
 }

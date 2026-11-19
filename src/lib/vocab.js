@@ -77,7 +77,8 @@ const passageText = (entry) => [entry.text, entry.sectionA, entry.sectionB].filt
  * Uncommon words from your library, rarest and longest first, each with the
  * sentence it first appeared in. Words already saved or dismissed are skipped.
  */
-export function candidateWords(library, exclude = new Set(), limit = MAX_CANDIDATES) {
+export function candidateWords(library, exclude = new Set(), limit = MAX_CANDIDATES, rank = null) {
+    const minLength = rank ? MIN_RANKED_LENGTH : MIN_WORD_LENGTH;
     const seen = new Map();
     for (const entry of library) {
         const text = passageText(entry);
@@ -86,9 +87,12 @@ export function candidateWords(library, exclude = new Set(), limit = MAX_CANDIDA
             const trimmed = sentence.trim();
             const tokens = trimmed.match(WORD) ?? [];
             tokens.forEach((token, i) => {
-                const word = token.toLowerCase().replace(/^'+|'+$/g, '');
-                if (word.length < MIN_WORD_LENGTH || word.includes('-') || COMMON.has(word) || exclude.has(word)) return;
-                if (isCommon(word)) return;
+                // Possessives count as the base word ("child's" is "child");
+                // any other apostrophe is a contraction, never a vocabulary word.
+                const word = token.toLowerCase().replace(/^'+|'+$/g, '').replace(/['’]s$/, '');
+                if (/['’]/.test(word)) return;
+                if (word.length < minLength || word.includes('-') || exclude.has(word)) return;
+                if (isCommon(word, rank)) return;
                 const capitalised = token[0] !== token[0].toLowerCase();
                 const record = seen.get(word) ?? { word, count: 0, lowercase: 0, midCapital: 0, context: trimmed, source: entry.title };
                 record.count += 1;
@@ -103,13 +107,53 @@ export function candidateWords(library, exclude = new Set(), limit = MAX_CANDIDA
     }
     return [...seen.values()]
         .filter(r => r.lowercase > 0 || r.midCapital === 0)
-        .sort((a, b) => a.count - b.count || b.word.length - a.word.length || a.word.localeCompare(b.word))
+        // With the frequency list: rarest in English first. Without it: rarest
+        // in your own library, then longest.
+        .sort(rank
+            ? (a, b) => rankOf(b.word, rank) - rankOf(a.word, rank) || a.count - b.count || a.word.localeCompare(b.word)
+            : (a, b) => a.count - b.count || b.word.length - a.word.length || a.word.localeCompare(b.word))
         .slice(0, limit)
         .map(({ word, count, context, source }) => ({ word, count, context, source }));
 }
 
+/**
+ * With the frequency list loaded, any word ranked above this is common enough
+ * that a fluent reader recognises it on sight.
+ */
+export const COMMON_RANK = 6000;
+/** Minimum length when ranking by frequency; rarity does the filtering then. */
+export const MIN_RANKED_LENGTH = 6;
+
+/** word -> rank (0 = most frequent) from the bundled list, one word per line. */
+export function parseFrequencyList(text) {
+    const rank = new Map();
+    String(text).split(/\r?\n/).forEach((w, i) => { const word = w.trim(); if (word && !rank.has(word)) rank.set(word, i); });
+    return rank;
+}
+
+let rankPromise = null;
+/** Loads the bundled frequency list once, on demand (it is ~160 KB). */
+export function loadFrequencyRank() {
+    rankPromise ??= import('../data/wordfreq-en-20k.txt?raw').then(m => parseFrequencyList(m.default));
+    return rankPromise;
+}
+
+const stemsOf = (word) => [
+    word.replace(/s$/, ''), word.replace(/es$/, ''), word.replace(/ies$/, 'y'),
+    word.replace(/ed$/, ''), word.replace(/ed$/, 'e'), word.replace(/ing$/, ''), word.replace(/ing$/, 'e'),
+    word.replace(/ly$/, ''), word.replace(/ers?$/, ''), word.replace(/ers?$/, 'e')
+].filter(stem => stem !== word && stem.length > 2);
+
+/** The best (most frequent) rank of a word or its regular stems; Infinity if unlisted. */
+export function rankOf(word, rank) {
+    let best = rank.get(word) ?? Infinity;
+    for (const stem of stemsOf(word)) best = Math.min(best, rank.get(stem) ?? Infinity);
+    return best;
+}
+
 /** Common words and their regular inflections (plurals, -ed, -ing, -ly). */
-function isCommon(word) {
+function isCommon(word, rank = null) {
+    if (rank) return rankOf(word, rank) < COMMON_RANK;
     if (COMMON.has(word)) return true;
     const stems = [
         word.replace(/s$/, ''), word.replace(/es$/, ''), word.replace(/ies$/, 'y'),

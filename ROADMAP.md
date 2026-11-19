@@ -56,26 +56,38 @@ Working and verified:
   pacer style and session options, applied live), a clickable progress bar,
   back/skip and restart, click-a-word to jump, countdown, warm-up ramp, zen
   mode and full screen. Jumps keep the word count honest.
-- **372 tests, zero lint errors.**
+- **Book mode** — long imports (3,000+ words, or an EPUB with chapters) become
+  a book: the file's own chapters, headings found in the text, or ~2,500-word
+  parts. Progress is kept per chapter, the dashboard offers the next one, and
+  bookmarks jump back to a word. A book too large for browser storage is
+  refused up front rather than breaking every later save.
+- **Speed push controls** — the reader's settings drawer, pacer styles,
+  countdown, zen mode and full screen also work in the push drill.
+- **Vocabulary ranked by real word frequency** — the top 20,000 English words
+  from wordfreq (CC BY-SA 4.0, see `src/data/WORDFREQ-NOTICE.md`), loaded only
+  when the Vocabulary page opens.
+- **395 tests, zero lint errors.**
 
 ## Next
 
-### 1. Article URLs
+### 1. Quizzes for your own text
+
+Imported books and articles have no questions, so they count as practice and
+never move the target speed. The local model could write questions per chapter
+or per chunk, checked blind the same way as generated passages.
+
+### 2. Article URLs
 
 File import now covers EPUB, PDF, DOCX, HTML and plain text. The gap left is
 pasting a URL and having the article fetched and stripped of furniture, which
 needs either a CORS proxy or a small server route — the browser cannot fetch
 arbitrary origins directly.
 
-### 2. A bundled word-frequency list
-
-Vocabulary candidates are picked by length, rarity within your own library and a
-built-in list of common long words. A proper frequency list (about 20k words)
-would rank candidates far better; it needs a public-domain source.
 
 ## Known limitations
 
-- **Storage is `localStorage` only.** There is an export/import pair in
+- **Storage is `localStorage` only, about 5 MB.** Books share the library's
+  key, so a few long novels fill it. There is an export/import pair in
   Settings and a dashboard reminder, but nothing is automatic — no sync.
   Clearing site data between exports is still unrecoverable.
 - **The AI key is bundled into the client.** Fine locally, not fine deployed —
