@@ -64,6 +64,19 @@ describe('normalizeText', () => {
     it('decomposes ligatures that PDF extraction produces', () => {
         expect(normalizeText('the ﬁrst ﬂight')).toBe('the first flight');
     });
+
+    it('strips invisible, control, replacement, and Private Use Area characters', () => {
+        expect(normalizeText('com\u00ADpre\u200Bhen\uFEFFsion \uFFFD\uE001 test\u0007')).toBe('comprehension test');
+    });
+
+    it('rejoins hyphenated line breaks without collapsing paragraph breaks', () => {
+        expect(normalizeText('speed-\nreading\n\nNext paragraph.')).toBe('speedreading\n\nNext paragraph.');
+    });
+
+    it('removes dot leaders, divider lines, standalone page numbers, and stray symbols', () => {
+        const dirty = 'Chapter 1 ........ 12\n---\n• First point | ok\nPage 12\n42\n***\nSecond point.';
+        expect(normalizeText(dirty)).toBe('Chapter 1 12\n\nFirst point ok\n\nSecond point.');
+    });
 });
 
 // extractFromHtml needs DOMParser, so it is covered by the browser checks

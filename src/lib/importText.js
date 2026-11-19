@@ -22,20 +22,47 @@ export const isSupported = (name) => SUPPORTED_EXTENSIONS.includes(extensionOf(n
 export const titleFromFilename = (name = '') =>
     String(name).replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || 'Imported text';
 
+// Invisible, control, replacement, and Private Use Area characters that render
+// as tofu boxes or break word splitting / focal-letter alignment in RSVP.
+// eslint-disable-next-line no-control-regex
+const JUNK_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u00AD\u200B-\u200D\u2060\uFEFF\uFFFD\uE000-\uF8FF]/g;
+const ASTRAL_PUA_RE = /[\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/gu;
+const LEADING_BULLET_RE = /^\s*[•▪▫●○■□◆◇❖➤➢➔►◄★☆✓✔✕✖†‡§¶]+\s*/;
+const DIVIDER_LINE_RE = /^[\s*\-_=~•·|—–]+$/;
+const PAGE_NUMBER_RE = /^(?:page\s*\d{1,4}(?:\s*(?:of|\/)\s*\d{1,4})?|[-–—]\s*\d{1,4}\s*[-–—]|\d{1,4}\s*\/\s*\d{1,4})$/i;
+const STRAY_SYMBOL_TOKEN_RE = /(^|\s)[|~^_\\`*=<>[\]{}•▪▫●○■□◆◇❖➤➢➔►◄★☆✓✔✕✖†‡§¶]+(?=\s|$)/g;
+
 /**
  * Paragraph structure is what the reader renders and what the pacer measures
  * lines from, so blank lines are preserved while runs of whitespace inside a
- * paragraph are collapsed.
+ * paragraph are collapsed and extraction artifacts are scrubbed.
  */
 export function normalizeText(raw) {
-    return String(raw)
-        // NFKC folds the compatibility characters that document extraction
-        // produces: non-breaking spaces become ordinary ones, and the ligatures
-        // PDFs are full of (fi, fl) decompose back into letters.
+    const scrubbed = String(raw)
+        // NFKC folds compatibility characters: non-breaking spaces become ordinary
+        // ones, and PDF typographic ligatures (fi, fl) decompose back into letters.
         .normalize('NFKC')
+        .replace(JUNK_CHARS_RE, '')
+        .replace(ASTRAL_PUA_RE, '')
         .replace(/\r\n?/g, '\n')
-        .split('\n')
-        .map(line => line.replace(/[ \t]+/g, ' ').trim())
+        // Rejoin words hyphenated across a single wrapped line (common in PDFs).
+        .replace(/([A-Za-z]{2,})-[ \t]*\n[ \t]*([a-z]{2,})/g, '$1$2');
+
+    const rawLines = scrubbed.split('\n');
+    const multiLine = rawLines.length > 2;
+
+    return rawLines
+        .map(line => {
+            let clean = line
+                .replace(LEADING_BULLET_RE, '')
+                .replace(/\.{4,}/g, ' ')
+                .replace(STRAY_SYMBOL_TOKEN_RE, '$1')
+                .replace(/[ \t]+/g, ' ')
+                .trim();
+            if (!clean || DIVIDER_LINE_RE.test(clean)) return '';
+            if (multiLine && (PAGE_NUMBER_RE.test(clean) || /^\d{1,4}$/.test(clean))) return '';
+            return clean;
+        })
         .join('\n')
         .replace(/\n{3,}/g, '\n\n')
         .trim();

@@ -1,8 +1,8 @@
 import { useRef, useState } from 'react';
-import { Activity, FileText, Play, Upload } from 'lucide-react';
+import { Activity, Eraser, FileText, Play, Upload } from 'lucide-react';
 import { splitPassage } from '../lib/protocol';
 import { isPartiallyRead, resumePoint } from '../lib/library';
-import { ACCEPT_ATTRIBUTE, SUPPORTED_EXTENSIONS, extractText } from '../lib/importText';
+import { ACCEPT_ATTRIBUTE, SUPPORTED_EXTENSIONS, extractText, normalizeText } from '../lib/importText';
 import { BOOK_MIN_WORDS, buildChapters, createBook, isBook } from '../lib/book';
 import BookShelf from '../components/BookShelf';
 
@@ -198,9 +198,21 @@ export default function Documents({
                     />
 
                     {wordCount > 0 && (
-                        <p className="text-xs text-slate-500">
-                            {wordCount.toLocaleString()} words · about {estMinutes} min at {readingWpm} WPM
-                        </p>
+                        <div className="flex items-center justify-between gap-3 flex-wrap">
+                            <p className="text-xs text-slate-500">
+                                {wordCount.toLocaleString()} words · about {estMinutes} min at {readingWpm} WPM
+                            </p>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setCustomText(prev => normalizeText(prev));
+                                    addNotification('Cleaned formatting and stray characters.');
+                                }}
+                                className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-white border border-slate-800 hover:border-slate-600 px-3 py-1.5 rounded-lg transition-colors"
+                            >
+                                <Eraser size={13} /> Clean pasted text
+                            </button>
+                        </div>
                     )}
 
                     {canBeBook && (

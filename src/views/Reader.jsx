@@ -390,54 +390,60 @@ function Reader({
     }, !quizActive && !settingsOpen && !isCalibration);
 
     const renderRsvpChunk = () => {
-        if (settings.chunkSize === 1) {
-            const word = words[currentIndex];
-            if (!word) return null;
-            const centerIdx = word.length <= 1 ? 0 : Math.max(0, Math.floor(word.length / 2) - 1);
+        const chunkWords = words.slice(currentIndex, currentIndex + settings.chunkSize);
+        if (chunkWords.length === 0) return null;
 
-            const start = word.slice(0, centerIdx);
-            const center = word.charAt(centerIdx);
-            const end = word.slice(centerIdx + 1);
-
-            return (
-                // Equal-width flanks keep the ORP character pinned to the exact
-                // horizontal centre without the halves overlapping it.
-                <div
-                    className="flex items-center justify-center w-full select-none"
-                    style={{ fontSize: 'var(--reading-rsvp-size)', fontFamily: 'var(--reading-font)', lineHeight: 1.1 }}
-                >
-                    <span className="flex-1 text-right whitespace-pre" style={{ opacity: 0.8 }}>{start}</span>
-                    <span className="shrink-0 font-bold" style={{ color: focalColorFor(reading) ?? 'inherit' }}>{center}</span>
-                    <span className="flex-1 text-left whitespace-pre" style={{ opacity: 0.8 }}>{end}</span>
-                </div>
-            );
+        const chunk = chunkWords.join(' ');
+        let centerIdx = chunk.length <= 1 ? 0 : Math.max(0, Math.floor(chunk.length / 2) - 1);
+        // Never land the focal highlight on a space between words in multi-word chunks.
+        if (chunk.charAt(centerIdx) === ' ') {
+            if (centerIdx + 1 < chunk.length && chunk.charAt(centerIdx + 1) !== ' ') centerIdx += 1;
+            else if (centerIdx - 1 >= 0 && chunk.charAt(centerIdx - 1) !== ' ') centerIdx -= 1;
         }
-        const chunk = words.slice(currentIndex, currentIndex + settings.chunkSize).join(' ');
+
+        const start = chunk.slice(0, centerIdx);
+        const center = chunk.charAt(centerIdx);
+        const end = chunk.slice(centerIdx + 1);
+        const scale = settings.chunkSize === 1 ? 1
+            : settings.chunkSize === 2 ? 0.72
+            : settings.chunkSize === 3 ? 0.6
+            : 0.5;
+
         return (
+            // Equal-width flanks keep the ORP character pinned to the exact
+            // horizontal centre without the halves overlapping it, for 1 or more words.
             <div
-                className="w-full text-center select-none font-bold leading-tight px-4"
-                style={{ fontSize: 'calc(var(--reading-rsvp-size) * 0.7)', fontFamily: 'var(--reading-font)' }}
+                className="flex items-center justify-center w-full select-none px-4"
+                style={{
+                    fontSize: scale === 1 ? 'var(--reading-rsvp-size)' : `calc(var(--reading-rsvp-size) * ${scale})`,
+                    fontFamily: 'var(--reading-font)',
+                    lineHeight: 1.15
+                }}
             >
-                {chunk}
+                <span className="flex-1 min-w-0 text-right whitespace-pre" style={{ opacity: 0.8 }}>{start}</span>
+                <span className="shrink-0 font-bold" style={{ color: focalColorFor(reading) ?? 'inherit' }}>{center}</span>
+                <span className="flex-1 min-w-0 text-left whitespace-pre" style={{ opacity: 0.8 }}>{end}</span>
             </div>
         );
     };
 
     /** The words immediately before and after the flash, shown above and below it. */
-    const CONTEXT_WORDS = 18;
-    const beforeWords = useMemo(() => {
+    const CONTEXT_WORDS = 16;
+    const beforeContext = useMemo(() => {
         const from = Math.max(0, currentIndex - CONTEXT_WORDS);
-        const slice = words.slice(from, currentIndex).join(' ');
-        if (!slice) return '';
-        return (from > 0 ? '… ' : '') + slice;
+        return {
+            hasMore: from > 0,
+            items: words.slice(from, currentIndex).map((word, i) => ({ word, index: from + i }))
+        };
     }, [words, currentIndex]);
 
-    const afterWords = useMemo(() => {
+    const afterContext = useMemo(() => {
         const start = Math.min(words.length, currentIndex + settings.chunkSize);
         const to = Math.min(words.length, start + CONTEXT_WORDS);
-        const slice = words.slice(start, to).join(' ');
-        if (!slice) return '';
-        return slice + (to < words.length ? ' …' : '');
+        return {
+            hasMore: to < words.length,
+            items: words.slice(start, to).map((word, i) => ({ word, index: start + i }))
+        };
     }, [words, currentIndex, settings.chunkSize]);
 
     if (!passage) return <div className="text-center mt-20 text-slate-400">No passage loaded.</div>;
@@ -586,13 +592,32 @@ function Reader({
                             {reading.rsvpContext && (
                                 <div
                                     aria-hidden="true"
-                                    className="h-14 md:h-16 w-full max-w-2xl px-6 pt-3 pb-1 flex items-end justify-center overflow-hidden select-none pointer-events-none"
+                                    className="h-16 md:h-20 w-full max-w-2xl px-6 pt-3 pb-1 flex items-end justify-center overflow-hidden select-none"
+                                    style={{
+                                        maskImage: 'linear-gradient(to bottom, transparent 0%, black 55%)',
+                                        WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 55%)'
+                                    }}
                                 >
                                     <p
-                                        className="text-sm md:text-base text-center leading-relaxed line-clamp-2"
-                                        style={{ color: 'var(--reading-muted)', fontFamily: 'var(--reading-font)', opacity: 0.8 }}
+                                        className="text-center leading-relaxed"
+                                        style={{
+                                            color: 'var(--reading-muted)',
+                                            fontFamily: 'var(--reading-font)',
+                                            fontSize: 'clamp(0.875rem, calc(var(--reading-prose-size) * 0.85), 1.3rem)'
+                                        }}
                                     >
-                                        {beforeWords}
+                                        {beforeContext.hasMore && <span className="opacity-50 mr-1">…</span>}
+                                        {beforeContext.items.map(({ word, index }) => (
+                                            // Clicking a word is a mouse shortcut; [ and ] are the keyboard path.
+                                            // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
+                                            <span
+                                                key={index}
+                                                onClick={() => seekTo(index)}
+                                                className="cursor-pointer hover:underline"
+                                            >
+                                                {word}{' '}
+                                            </span>
+                                        ))}
                                     </p>
                                 </div>
                             )}
@@ -610,13 +635,32 @@ function Reader({
                             {reading.rsvpContext && (
                                 <div
                                     aria-hidden="true"
-                                    className="h-14 md:h-16 w-full max-w-2xl px-6 pt-1 pb-3 flex items-start justify-center overflow-hidden select-none pointer-events-none"
+                                    className="h-16 md:h-20 w-full max-w-2xl px-6 pt-1 pb-3 flex items-start justify-center overflow-hidden select-none"
+                                    style={{
+                                        maskImage: 'linear-gradient(to top, transparent 0%, black 55%)',
+                                        WebkitMaskImage: 'linear-gradient(to top, transparent 0%, black 55%)'
+                                    }}
                                 >
                                     <p
-                                        className="text-sm md:text-base text-center leading-relaxed line-clamp-2"
-                                        style={{ color: 'var(--reading-muted)', fontFamily: 'var(--reading-font)', opacity: 0.8 }}
+                                        className="text-center leading-relaxed"
+                                        style={{
+                                            color: 'var(--reading-muted)',
+                                            fontFamily: 'var(--reading-font)',
+                                            fontSize: 'clamp(0.875rem, calc(var(--reading-prose-size) * 0.85), 1.3rem)'
+                                        }}
                                     >
-                                        {afterWords}
+                                        {afterContext.items.map(({ word, index }) => (
+                                            // Clicking a word is a mouse shortcut; [ and ] are the keyboard path.
+                                            // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
+                                            <span
+                                                key={index}
+                                                onClick={() => seekTo(index)}
+                                                className="cursor-pointer hover:underline"
+                                            >
+                                                {word}{' '}
+                                            </span>
+                                        ))}
+                                        {afterContext.hasMore && <span className="opacity-50">…</span>}
                                     </p>
                                 </div>
                             )}
