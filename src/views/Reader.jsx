@@ -79,8 +79,9 @@ function Reader({
     // Skim runs at its own speed, so trying a skim and switching back does not
     // leave the reading speed at 1,000 WPM.
     const [skimWpm, setSkimWpm] = useState(() => settings.skimWpm ?? skimStartWpm(initialWpm));
+    const safeResume = Math.max(0, resumeFrom);
     const [isPlaying, setIsPlaying] = useState(false);
-    const [currentIndex, setCurrentIndex] = useState(resumeFrom);
+    const [currentIndex, setCurrentIndex] = useState(safeResume);
     const [mode, setMode] = useState(isCalibration ? 'natural' : (settings.readerMode || 'rsvp'));
     const [isAudioReady, setIsAudioReady] = useState(false);
     const [quizActive, setQuizActive] = useState(false);
@@ -95,11 +96,21 @@ function Reader({
     const [countdown, setCountdown] = useState(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
 
-    const [pacedIndex, setPacedIndex] = useState(resumeFrom);
+    const [pacedIndex, setPacedIndex] = useState(safeResume);
     const [pacedSeek, setPacedSeek] = useState(null);
-    const [pacedInitialIndex, setPacedInitialIndex] = useState(resumeFrom);
+    const [pacedInitialIndex, setPacedInitialIndex] = useState(safeResume);
     const [wpmMenuOpen, setWpmMenuOpen] = useState(false);
+    const wpmMenuRef = useRef(null);
     const lastNonScrollModeRef = useRef(mode === 'scroll' ? 'rsvp' : mode);
+
+    useEffect(() => {
+        if (!wpmMenuOpen) return undefined;
+        const onPointerDown = (e) => {
+            if (!wpmMenuRef.current?.contains(e.target)) setWpmMenuOpen(false);
+        };
+        window.addEventListener('pointerdown', onPointerDown);
+        return () => window.removeEventListener('pointerdown', onPointerDown);
+    }, [wpmMenuOpen]);
 
     const isSkim = mode === 'skim';
     const isScroll = mode === 'scroll';
@@ -691,7 +702,7 @@ function Reader({
                                     {isAudioReady ? 'Audio linked' : 'Link audio'}
                                 </button>
                             )}
-                            <div className="relative">
+                            <div className="relative" ref={wpmMenuRef}>
                                 <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl overflow-hidden">
                                     <button onClick={() => nudgeWpm(-25)} aria-label="Slower" className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Minus size={16} /></button>
                                     <button

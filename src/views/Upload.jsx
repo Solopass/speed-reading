@@ -326,13 +326,26 @@ export default function Upload({
                                 >
                                     Open existing
                                 </button>
-                                {canBeBook && (
+                                {canBeBook ? (
                                     <button
                                         type="button"
                                         onClick={() => handleAddBook(duplicate.id)}
                                         className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold transition-colors"
                                     >
                                         Replace book
+                                    </button>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            if (!customText.trim()) return;
+                                            onDeleteSaved?.(duplicate.id);
+                                            handleCustomStart();
+                                        }}
+                                        disabled={!customText.trim()}
+                                        className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white font-bold transition-colors"
+                                    >
+                                        Replace &amp; read
                                     </button>
                                 )}
                             </div>

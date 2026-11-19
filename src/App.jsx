@@ -112,7 +112,7 @@ export default function App() {
         loadLibraryIdb().then((stored) => {
             if (cancelled) return;
             libraryReadyRef.current = true;
-            if (stored && stored.length > 0) {
+            if (stored !== null) {
                 setLibrary(migrateLibrary(stored));
             } else {
                 setLibrary(prev => {

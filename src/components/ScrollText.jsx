@@ -115,10 +115,12 @@ export default function ScrollText({
     const focalY = viewportHeight * 0.44;
     let targetY = 0;
     if (wordTops.length > 0) {
-        const idx = Math.min(wordTops.length - 1, Math.floor(progress));
+        const idx = Math.max(0, Math.min(wordTops.length - 1, Math.floor(progress)));
         const nextIdx = Math.min(wordTops.length - 1, idx + 1);
-        const frac = progress - Math.floor(progress);
-        targetY = wordTops[idx] + (wordTops[nextIdx] - wordTops[idx]) * frac;
+        const frac = Math.max(0, progress - Math.floor(progress));
+        const y0 = wordTops[idx] ?? 0;
+        const y1 = wordTops[nextIdx] ?? y0;
+        targetY = y0 + (y1 - y0) * frac;
     }
     const translateY = focalY - targetY;
     const readIndex = Math.floor(progress);
