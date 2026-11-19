@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-    Bookmark, ChevronLeft, ChevronRight, Maximize2, Minimize2, Minus, Pause, Play, Plus, RotateCcw, Settings2, SkipBack, SkipForward, Target, Volume2
+    ArrowUpDown, Bookmark, ChevronLeft, ChevronRight, Maximize2, Minimize2, Minus, Pause, Play, Plus, RotateCcw, Settings2, SkipBack, SkipForward, Target, Volume2
 } from 'lucide-react';
 import { normalizeQuestions } from '../lib/quiz';
 import useHotkeys from '../lib/useHotkeys';
 import PacedText from '../components/PacedText';
+import ScrollText from '../components/ScrollText';
 import PassageText from '../components/PassageText';
 import ReadingSurface from '../components/ReadingSurface';
 import ReaderSettings from '../components/ReaderSettings';
@@ -14,6 +15,7 @@ import Quiz from '../components/Quiz';
 
 /** Words skipped by the rewind and skip controls. */
 const SKIP_WORDS = 10;
+const WPM_PRESETS = [200, 300, 400, 500, 650, 800, 1000];
 
 const Kbd = ({ children }) => <kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-400 font-mono">{children}</kbd>;
 
@@ -23,7 +25,9 @@ function KeyboardHint() {
             <span><Kbd>space</Kbd> play/pause</span>
             <span><Kbd>↑↓</Kbd> speed</span>
             <span><Kbd>[ ]</Kbd> back/skip {SKIP_WORDS}</span>
+            <span><Kbd>{'{ }'}</Kbd> prev/next sentence</span>
             <span><Kbd>R</Kbd> restart</span>
+            <span><Kbd>Z</Kbd> zen</span>
             <span><Kbd>S</Kbd> settings</span>
             <span><Kbd>B</Kbd> bookmark (books)</span>
             <span><Kbd>F</Kbd> full screen</span>
@@ -94,8 +98,11 @@ function Reader({
     const [pacedIndex, setPacedIndex] = useState(resumeFrom);
     const [pacedSeek, setPacedSeek] = useState(null);
     const [pacedInitialIndex, setPacedInitialIndex] = useState(resumeFrom);
+    const [wpmMenuOpen, setWpmMenuOpen] = useState(false);
+    const lastNonScrollModeRef = useRef(mode === 'scroll' ? 'rsvp' : mode);
 
     const isSkim = mode === 'skim';
+    const isScroll = mode === 'scroll';
     const isPacer = mode === 'paced' || mode === 'skim';
     const wpm = isSkim ? skimWpm : readWpm;
     const setWpm = isSkim ? setSkimWpm : setReadWpm;
@@ -245,13 +252,14 @@ function Reader({
         if (nextMode === mode) return;
         pause();
         setNaturalStarted(false);
+        if (nextMode !== 'scroll') lastNonScrollModeRef.current = nextMode;
         const at = clampIndex(cursorIndex, words.length);
         accumulatedMsRef.current = 0;
         runningSinceRef.current = null;
         setElapsedSecs(0);
         countRef.current = startCount(at);
         if (nextMode === 'rsvp') setCurrentIndex(at);
-        else if (nextMode === 'paced' || nextMode === 'skim') {
+        else if (nextMode === 'paced' || nextMode === 'skim' || nextMode === 'scroll') {
             setPacedInitialIndex(at);
             setPacedIndex(at);
             setPacedSeek(prev => ({ index: at, nonce: (prev?.nonce ?? 0) + 1 }));
@@ -377,14 +385,29 @@ function Reader({
 
     const restart = () => { pause(); seekTo(0); };
 
-    const nudgeWpm = (delta) => {
-        const next = Math.min(2000, Math.max(100, wpm + delta));
+    const applyWpm = (targetWpm) => {
+        const next = Math.min(2000, Math.max(100, targetWpm));
         setWpm(next);
         if (isSkim) {
             updateSettings?.({ skimWpm: next });
         } else {
             updateSettings?.(settings.autoAdaptive ? { readerWpm: next } : { readerWpm: next, baseWpm: next });
         }
+    };
+
+    const nudgeWpm = (delta) => applyWpm(wpm + delta);
+
+    const seekSentence = (dir) => {
+        if (mode === 'natural' || words.length === 0) return;
+        let idx = clampIndex(cursorRef.current, words.length);
+        if (dir < 0) {
+            idx = Math.max(0, idx - 2);
+            while (idx > 0 && !/[.!?]$/.test(words[idx - 1])) idx--;
+        } else {
+            while (idx < words.length - 1 && !/[.!?]$/.test(words[idx])) idx++;
+            idx = Math.min(words.length - 1, idx + 1);
+        }
+        seekTo(idx);
     };
 
     // You read with your eyes fixed on one point, so reaching for the mouse to
@@ -397,11 +420,14 @@ function Reader({
         ArrowLeft: () => nudgeWpm(-25),
         '[': () => seekBy(-SKIP_WORDS),
         ']': () => seekBy(SKIP_WORDS),
+        '{': () => seekSentence(-1),
+        '}': () => seekSentence(1),
         r: () => { if (mode !== 'natural') restart(); },
+        z: () => patchReading({ zen: !reading.zen }),
         s: () => openSettings(),
         b: () => { if (mode !== 'natural') onBookmark?.({ index: cursorRef.current }); },
         f: () => toggleFullscreen(),
-        Escape: () => onExit?.()
+        Escape: () => { if (wpmMenuOpen) setWpmMenuOpen(false); else onExit?.(); }
     }, !quizActive && !settingsOpen && !isCalibration);
 
     const renderRsvpChunk = () => {
@@ -665,11 +691,53 @@ function Reader({
                                     {isAudioReady ? 'Audio linked' : 'Link audio'}
                                 </button>
                             )}
-                            <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl overflow-hidden">
-                                <button onClick={() => nudgeWpm(-25)} aria-label="Slower" className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Minus size={16} /></button>
-                                <div className="px-2 md:px-3 font-mono font-bold text-purple-400 min-w-[76px] text-center text-sm">{wpm} WPM</div>
-                                <button onClick={() => nudgeWpm(25)} aria-label="Faster" className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Plus size={16} /></button>
+                            <div className="relative">
+                                <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl overflow-hidden">
+                                    <button onClick={() => nudgeWpm(-25)} aria-label="Slower" className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Minus size={16} /></button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setWpmMenuOpen(o => !o)}
+                                        aria-expanded={wpmMenuOpen}
+                                        aria-label="Choose WPM preset"
+                                        title="Click for speed presets"
+                                        className="px-2 md:px-3 py-1.5 font-mono font-bold text-purple-400 hover:text-purple-300 min-w-[76px] text-center text-sm transition-colors"
+                                    >
+                                        {wpm} WPM
+                                    </button>
+                                    <button onClick={() => nudgeWpm(25)} aria-label="Faster" className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Plus size={16} /></button>
+                                </div>
+                                {wpmMenuOpen && (
+                                    <div className="absolute right-0 mt-2 w-36 bg-slate-900 border border-slate-700 rounded-xl shadow-xl p-1.5 z-30 grid grid-cols-1 gap-0.5" role="menu" aria-label="WPM presets">
+                                        {WPM_PRESETS.map(preset => (
+                                            <button
+                                                key={preset}
+                                                type="button"
+                                                role="menuitem"
+                                                onClick={() => { applyWpm(preset); setWpmMenuOpen(false); }}
+                                                className={`text-left px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-colors ${
+                                                    wpm === preset ? 'bg-purple-600 text-white' : 'text-slate-300 hover:bg-slate-800'
+                                                }`}
+                                            >
+                                                {preset} WPM
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
+                            <button
+                                type="button"
+                                onClick={() => switchMode(isScroll ? lastNonScrollModeRef.current : 'scroll')}
+                                aria-pressed={isScroll}
+                                title="Scroll mode — text scrolls up from the bottom"
+                                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-bold transition-colors ${
+                                    isScroll
+                                        ? 'border-purple-500 bg-purple-600 text-white'
+                                        : 'border-slate-800 bg-slate-950 text-slate-300 hover:text-white hover:border-slate-600'
+                                }`}
+                            >
+                                <ArrowUpDown size={15} />
+                                <span className="hidden sm:inline">Scroll</span>
+                            </button>
                         </>
                     )}
                     {onBookmark && mode !== 'natural' && (
@@ -784,6 +852,43 @@ function Reader({
                             {status}
                             {renderTimeline()}
                             <p className="text-slate-600 text-xs">Target {wpm} WPM · actual pace is measured and recorded</p>
+                            {!isCalibration && <KeyboardHint />}
+                        </div>
+                    </div>
+                ) : isScroll ? (
+                    <div className="w-full h-full border border-slate-800/40 rounded-3xl p-5 md:p-10 flex flex-col justify-between" style={{ background: 'var(--reading-bg)', color: 'var(--reading-fg)' }}>
+                        <div className="flex items-center justify-between gap-3 border-b pb-3 mb-4" style={{ borderColor: 'var(--reading-muted)' }}>
+                            <h2 className="text-lg md:text-xl font-bold truncate" style={{ color: 'var(--reading-fg)', opacity: 0.95 }}>{passage.title}</h2>
+                            <button
+                                type="button"
+                                onClick={togglePlay}
+                                className="shrink-0 text-xs font-bold px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white transition-colors"
+                            >
+                                {isPlaying ? 'Pause' : 'Start scroll'}
+                            </button>
+                        </div>
+
+                        <ScrollText
+                            text={passage.text}
+                            wpm={effectiveWpm}
+                            isRunning={isPlaying}
+                            bionicReading={settings.bionicReading}
+                            bionicStrength={reading.bionicStrength}
+                            dimRead={reading.dimRead}
+                            initialIndex={pacedInitialIndex}
+                            seek={pacedSeek}
+                            onWordClick={seekTo}
+                            onProgress={setPacedIndex}
+                            onComplete={handlePacerComplete}
+                        />
+
+                        <div className="mt-6 pt-4 border-t border-slate-800 flex flex-col items-center gap-2">
+                            <Scrubber index={cursorIndex} total={words.length} onSeek={seekTo} label="Reading position" />
+                            {status}
+                            {renderTimeline()}
+                            <p className="text-xs text-center" style={{ color: 'var(--reading-muted)' }}>
+                                Text scrolls upward at {effectiveWpm} WPM. Click any word to jump there, or press Space to pause.
+                            </p>
                             {!isCalibration && <KeyboardHint />}
                         </div>
                     </div>
