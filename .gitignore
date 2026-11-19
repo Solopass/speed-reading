@@ -4,3 +4,4 @@ dist
 .env.local
 # Local editor/agent config
 .claude/
+CLAUDE.local.md
