@@ -52,7 +52,11 @@ Working and verified:
   minutes and drill thresholds. History keeps 1,000 sessions.
 - **App theme** — dark (default), light or system, and a phone layout with a
   bottom tab bar. Reading, pushes and retention checks run full-screen.
-- **364 tests, zero lint errors.**
+- **Reader controls** — a settings drawer inside the reader (page, RSVP,
+  pacer style and session options, applied live), a clickable progress bar,
+  back/skip and restart, click-a-word to jump, countdown, warm-up ramp, zen
+  mode and full screen. Jumps keep the word count honest.
+- **372 tests, zero lint errors.**
 
 ## Next
 
