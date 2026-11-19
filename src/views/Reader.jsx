@@ -320,8 +320,10 @@ function Reader({
 
         if (settings.punctuationPacing && currentChunk.length > 0) {
             const lastWord = currentChunk[currentChunk.length - 1];
-            if (lastWord.endsWith(',')) delayMs += 150;
-            else if (lastWord.endsWith('.') || lastWord.endsWith('!') || lastWord.endsWith('?')) delayMs += 300;
+            const avgLen = currentChunk.reduce((s, w) => s + w.length, 0) / currentChunk.length;
+            if (avgLen >= 8) delayMs *= 1.15;
+            if (/[,;:—]$/.test(lastWord)) delayMs += 130;
+            else if (/[.!?]$/.test(lastWord)) delayMs += 260;
         }
 
         timerRef.current = setTimeout(() => {
@@ -610,9 +612,10 @@ function Reader({
         );
     };
 
+    const pctDone = words.length ? Math.round((cursorIndex / words.length) * 100) : 0;
     const status = (
         <p className="text-slate-500 text-sm font-mono text-center">
-            {cursorIndex} / {words.length} · {left} left · {clock(elapsedSecs)} read
+            {pctDone}% · {cursorIndex} / {words.length} · {left} left · {clock(elapsedSecs)} read
             {ramp < 1 && <span className="text-amber-400"> · warming up {Math.round(ramp * 100)}%</span>}
         </p>
     );
@@ -735,7 +738,7 @@ function Reader({
                                 type="button"
                                 onClick={togglePlay}
                                 aria-label={isPlaying ? 'Pause reading' : 'Start reading'}
-                                className="h-36 md:h-40 flex items-center justify-center w-full relative overflow-hidden cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 rounded-2xl"
+                                className="h-36 md:h-40 flex items-center justify-center w-full relative overflow-hidden cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 border-y border-slate-800/40"
                             >
                                 {reading.showFocalGuide && (
                                     <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 pointer-events-none" style={{ background: 'var(--reading-muted)', opacity: 0.35 }} />
