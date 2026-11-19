@@ -110,8 +110,8 @@ function TargetSpeedPanel({ settings, updateSettings, adaptiveTargetWpm, pushInt
 
     // Switching to manual starts from wherever adaptation had got to, so the
     // speed never jumps just because you took the wheel.
-    const chooseManual = () => updateSettings({ autoAdaptive: false, baseWpm: clampWpm(adaptiveTargetWpm) });
-    const nudge = (delta) => updateSettings({ baseWpm: clampWpm(settings.baseWpm + delta) });
+    const chooseManual = () => updateSettings({ autoAdaptive: false, baseWpm: clampWpm(adaptiveTargetWpm), readerWpm: null });
+    const nudge = (delta) => updateSettings({ baseWpm: clampWpm(settings.baseWpm + delta), readerWpm: null });
 
     return (
         <div className="bg-slate-900 border border-slate-800 p-6 md:p-8 rounded-3xl">
@@ -172,7 +172,7 @@ function TargetSpeedPanel({ settings, updateSettings, adaptiveTargetWpm, pushInt
                     <input
                         type="range" min={WPM_MIN} max={WPM_MAX} step="25"
                         value={settings.baseWpm}
-                        onChange={(e) => updateSettings({ baseWpm: parseInt(e.target.value) })}
+                        onChange={(e) => updateSettings({ baseWpm: parseInt(e.target.value), readerWpm: null })}
                         aria-label="Target speed"
                         className="w-full accent-purple-500 h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer"
                     />

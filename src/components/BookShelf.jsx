@@ -34,7 +34,7 @@ function BookCard({ book, wpm, onOpenChapter, onRemoveBookmark, onDelete }) {
                         className="bg-purple-600 hover:bg-purple-500 text-white text-sm font-bold px-4 py-2 rounded-lg transition-colors flex items-center gap-2 max-w-[16rem]"
                     >
                         <Play size={14} className="fill-current shrink-0" />
-                        <span className="truncate">{finished ? 'Read again' : book.lastReadAt ? `Continue: ${nextChapter.title}` : 'Start reading'}</span>
+                        <span className="truncate">{finished ? 'Read again' : book.lastReadAt ? `Continue: ${nextChapter?.title ?? ''}` : 'Start reading'}</span>
                     </button>
                     <button onClick={() => onDelete(book.id)} aria-label={`Delete ${book.title}`} className="text-slate-600 hover:text-red-400 px-2 transition-colors">
                         <Trash2 size={16} />

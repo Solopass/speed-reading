@@ -263,6 +263,7 @@ function Reader({
     const switchMode = (nextMode) => {
         if (nextMode === mode) return;
         pause();
+        setWpmMenuOpen(false);
         setNaturalStarted(false);
         if (nextMode !== 'scroll') lastNonScrollModeRef.current = nextMode;
         const at = clampIndex(cursorIndex, words.length);
