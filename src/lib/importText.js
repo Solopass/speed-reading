@@ -937,8 +937,11 @@ function sortReadingOrder(items) {
         }
         const y = it.transform[5];
         const lastLine = lines[lines.length - 1];
-        if (lastLine && Math.abs(lastLine.y - y) <= 4) {
+        const yDiff = lastLine ? Math.abs(lastLine.y - y) : Infinity;
+        const lastIsTiny = lastLine && lastLine.items.every(x => Math.abs(x.transform[3] || x.transform[0] || 10) <= 9 && x.str.trim().length <= 4);
+        if (lastLine && (yDiff <= 4 || (yDiff <= 6 && (lastIsTiny || (fs <= 9 && it.str.trim().length <= 4))))) {
             lastLine.items.push(it);
+            if (lastIsTiny && fs > 9) lastLine.y = y;
         } else {
             lines.push({ y, items: [it] });
         }
@@ -1045,9 +1048,10 @@ export function assemblePdfPageText(ordered) {
             const yGap = Math.abs(lastY - y);
             const paraGap = Math.max(14, fontSize * 1.55);
             const lineGap = Math.max(4, fontSize * 0.35);
-            if (yGap > paraGap) {
+            const sameVisualLine = lastEndX !== null && x >= lastEndX - 2 && yGap <= Math.max(7, fontSize * 0.65);
+            if (!sameVisualLine && yGap > paraGap) {
                 text += '\n\n';
-            } else if (yGap > lineGap) {
+            } else if (!sameVisualLine && yGap > lineGap) {
                 text += '\n';
             } else if (lastEndX !== null) {
                 const xGap = x - lastEndX;

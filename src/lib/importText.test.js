@@ -275,6 +275,22 @@ describe('orderPdfItems', () => {
         expect(picked).toHaveLength(1);
         expect(picked[0].next).toBe(p2);
     });
+
+    it('keeps inline superscripts and subscripts on the same line instead of splitting them', () => {
+        const sup = { str: 'th', width: 8, transform: [7, 0, 0, 7, 80.5, 705] };
+        const sub = { str: '2', width: 5, transform: [7, 0, 0, 7, 140.2, 696] };
+        const page = [
+            { str: 'In', width: 10, transform: [12, 0, 0, 12, 40, 700] },
+            { str: 'the', width: 14, transform: [12, 0, 0, 12, 52, 700] },
+            { str: '19', width: 12, transform: [12, 0, 0, 12, 68, 700] },
+            sup,
+            { str: 'century', width: 35, transform: [12, 0, 0, 12, 92, 700] },
+            { str: 'H', width: 8, transform: [12, 0, 0, 12, 132, 700] },
+            sub,
+            { str: 'O', width: 8, transform: [12, 0, 0, 12, 145.5, 700] }
+        ];
+        expect(assemblePdfPageText(orderPdfItems(page, 600))).toBe('In the 19th century H2O');
+    });
 });
 
 // extractFromHtml needs DOMParser, so it is covered by the browser checks
