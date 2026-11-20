@@ -350,8 +350,8 @@ function Reader({
             const lastWord = currentChunk[currentChunk.length - 1];
             const avgLen = currentChunk.reduce((s, w) => s + w.length, 0) / currentChunk.length;
             if (avgLen >= 8) delayMs *= 1.15;
-            if (/[,;:—]$/.test(lastWord)) delayMs += 130;
-            else if (/[.!?]$/.test(lastWord)) delayMs += 260;
+            if (/[,;:—]["'”’)\]]*$/.test(lastWord)) delayMs += 130;
+            else if (/[.!?]["'”’)\]]*$/.test(lastWord)) delayMs += 260;
         }
 
         timerRef.current = setTimeout(() => {
@@ -422,9 +422,9 @@ function Reader({
         let idx = clampIndex(cursorRef.current, words.length);
         if (dir < 0) {
             idx = Math.max(0, idx - 2);
-            while (idx > 0 && !/[.!?]$/.test(words[idx - 1])) idx--;
+            while (idx > 0 && !/[.!?]["'”’)\]]*$/.test(words[idx - 1])) idx--;
         } else {
-            while (idx < words.length - 1 && !/[.!?]$/.test(words[idx])) idx++;
+            while (idx < words.length - 1 && !/[.!?]["'”’)\]]*$/.test(words[idx])) idx++;
             idx = Math.min(words.length - 1, idx + 1);
         }
         seekTo(idx);

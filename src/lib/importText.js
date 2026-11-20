@@ -448,7 +448,7 @@ export function assemblePdfPageText(ordered) {
     return text;
 }
 
-async function pdfOutlineChapters(pdf, cleanPages) {
+async function pdfOutlineChapters(pdf, cleanPages, options = {}) {
     try {
         const outline = await pdf.getOutline();
         if (!Array.isArray(outline) || outline.length < 2) return null;
@@ -473,13 +473,13 @@ async function pdfOutlineChapters(pdf, cleanPages) {
         entries.sort((a, b) => a.pageIndex - b.pageIndex);
         const chapters = [];
         if (entries[0].pageIndex > 0) {
-            const opening = normalizeText(cleanPages.slice(0, entries[0].pageIndex).join('\n\n'));
+            const opening = normalizeText(cleanPages.slice(0, entries[0].pageIndex).join('\n\n'), options);
             if (opening) chapters.push({ title: 'Opening', text: opening });
         }
         for (let i = 0; i < entries.length; i++) {
             const start = entries[i].pageIndex;
             const end = i + 1 < entries.length ? entries[i + 1].pageIndex : cleanPages.length;
-            const text = normalizeText(cleanPages.slice(start, end).join('\n\n'));
+            const text = normalizeText(cleanPages.slice(start, end).join('\n\n'), options);
             if (text) chapters.push({ title: entries[i].title, text });
         }
         return chapters.length >= 2 ? chapters : null;
@@ -518,7 +518,7 @@ async function readPdf(file, options = {}) {
         throw new Error(`This PDF (${pdf.numPages} page${pdf.numPages === 1 ? '' : 's'}) appears to be scanned images with no selectable text. Run OCR (e.g. Adobe, macOS Preview, or ocrmypdf) first, then re-upload.`);
     }
 
-    const chapters = await pdfOutlineChapters(pdf, strippedPages);
+    const chapters = await pdfOutlineChapters(pdf, strippedPages, options);
     return {
         title: (await pdf.getMetadata().catch(() => null))?.info?.Title?.trim() || null,
         text,
