@@ -26,8 +26,8 @@ export default function CutReviewPanel({ cuts, onRestore, onRestoreAll, defaultO
                         <RotateCcw size={11} /> Restore all
                     </button>
                 </div>
-                {cuts.map(item => (
-                    <div key={item.id} className="flex items-start justify-between gap-3 bg-red-950/20 border border-red-900/40 rounded-lg px-3 py-2 text-xs">
+                {cuts.map((item, i) => (
+                    <div key={`${item.id}-${i}`} className="flex items-start justify-between gap-3 bg-red-950/20 border border-red-900/40 rounded-lg px-3 py-2 text-xs">
                         <div className="min-w-0 flex-1">
                             <span className="inline-block text-[10px] font-bold uppercase tracking-wider bg-red-500/20 text-red-300 px-1.5 py-0.5 rounded mr-2">
                                 {item.reason}

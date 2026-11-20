@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     Activity, Bookmark, BookOpen, Brain, ChevronRight, Download, FileText, Play, Search, Sparkles, Upload, X
 } from 'lucide-react';
@@ -47,11 +47,16 @@ function AiCleanModal({ target, ai, onSave, onClose, addNotification }) {
     const [cuts, setCuts] = useState([]);
     const [cleaning, setCleaning] = useState(false);
     const [progress, setProgress] = useState('');
+    const closedRef = useRef(false);
 
     useEffect(() => {
+        closedRef.current = false;
         const onKey = (e) => { if (e.key === 'Escape') onClose(); };
         window.addEventListener('keydown', onKey);
-        return () => window.removeEventListener('keydown', onKey);
+        return () => {
+            closedRef.current = true;
+            window.removeEventListener('keydown', onKey);
+        };
     }, [onClose]);
 
     const blocks = useMemo(() => (draftText.trim() ? selectBlocksForAiClean(draftText) : []), [draftText]);
@@ -85,12 +90,14 @@ function AiCleanModal({ target, ai, onSave, onClose, addNotification }) {
             } else {
                 const allCuts = [];
                 for (let i = 0; i < chunks.length; i++) {
+                    if (closedRef.current) return;
                     setProgress(`${i + 1}/${chunks.length}`);
                     const chunkSpec = cleanDocSpec({ blocks: chunks[i] });
                     const reply = await ai.generate({ prompt: chunkSpec.prompt, schema: chunkSpec.schema });
+                    if (closedRef.current) return;
                     if (Array.isArray(reply?.cuts)) allCuts.push(...reply.cuts);
                 }
-                applyReply({ cuts: allCuts });
+                if (!closedRef.current) applyReply({ cuts: allCuts });
             }
         } catch (error) {
             addNotification(error.message || 'AI cleanup failed.');
