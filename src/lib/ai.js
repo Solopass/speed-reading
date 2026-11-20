@@ -246,7 +246,7 @@ export function cleanDocSpec({ blocks }) {
         label: 'document cleanup',
         prompt: `Review the numbered blocks below from an imported document. Identify ONLY blocks that are non-prose clutter that should NOT be read in a speed reader (navigation menus, cookie/promo banners, copyright/legal boilerplate, raw table of contents listings, bibliography/reference dumps, repeated headers/footers, or garbled OCR).
 
-NEVER cut actual article or book prose, dialogue, or real chapter/section headings. If nothing should be cut, return {"cuts": []}.
+NEVER cut actual article or book prose, dialogue, or real chapter/section headings. When unsure, keep the block. Use the exact number shown in square brackets for each block you cut (the numbers are not consecutive). If nothing should be cut, return {"cuts": []}.
 
 ${listed}`,
         schema: {

@@ -118,3 +118,137 @@ describe('decodeTextBytes', () => {
         expect(decodeTextBytes(new Uint8Array([0xFF, 0xFE, 0x68, 0x00, 0x69, 0x00]))).toBe('hi');
     });
 });
+
+describe('reflowParagraphs (PDF wrapped lines)', () => {
+    it('joins full-width wrapped lines into one paragraph', async () => {
+        const { reflowParagraphs } = await import('./importText');
+        const text = 'The river carried silt down from the hills every spring\nand the farmers waited for the floods to pass before\nplanting again.';
+        expect(reflowParagraphs(text)).toBe('The river carried silt down from the hills every spring and the farmers waited for the floods to pass before planting again.');
+    });
+
+    it('splits at a short line that ends a sentence and keeps headings apart', async () => {
+        const { reflowParagraphs } = await import('./importText');
+        const text = 'Chapter Two\nThe river carried silt down from the hills every spring\nand the farmers waited.\nIn the autumn the water fell again and the fields dried\nout under a pale sun.';
+        expect(reflowParagraphs(text).split('\n\n')).toEqual([
+            'Chapter Two',
+            'The river carried silt down from the hills every spring and the farmers waited.',
+            'In the autumn the water fell again and the fields dried out under a pale sun.'
+        ]);
+    });
+
+    it('leaves lists and verse (all short lines) alone', async () => {
+        const { reflowParagraphs } = await import('./importText');
+        expect(reflowParagraphs('Eggs\nFlour\nMilk')).toBe('Eggs\nFlour\nMilk');
+    });
+});
+
+describe('page numbers inside a paragraph', () => {
+    it('removing one does not split the paragraph', () => {
+        const text = normalizeText('A sentence that wraps\n42\nonto the next line.', { stripPageNumbers: true });
+        expect(text.split(/\n\s*\n/)).toHaveLength(1);
+    });
+});
+
+describe('chaptersFromAnchors', () => {
+    const chapters = [
+        { title: 'One', text: 'Opening line of one.\n\nBody of chapter one here.' },
+        { title: 'Two', text: 'Chapter Two\n\nIt began , as ever , in the rain.\n\nMore of two.' },
+        { title: 'Three', text: 'Chapter Three\n\nThe end came quickly.' }
+    ];
+
+    it('keeps cleaning and cuts when re-splitting into the file chapters', async () => {
+        const { chaptersFromAnchors } = await import('./importText');
+        // Cleaned text: punctuation tidied, one paragraph of chapter one cut.
+        const cleaned = 'Opening line of one.\n\nChapter Two\n\nIt began, as ever, in the rain.\n\nMore of two.\n\nChapter Three\n\nThe end came quickly.';
+        const out = chaptersFromAnchors(cleaned, chapters);
+        expect(out.map(c => c.title)).toEqual(['One', 'Two', 'Three']);
+        expect(out[0].text).toBe('Opening line of one.');
+        expect(out[1].text).toContain('It began, as ever, in the rain.');
+    });
+
+    it('finds a chapter by a later paragraph when its heading was cut', async () => {
+        const { chaptersFromAnchors } = await import('./importText');
+        const cleaned = 'Opening line of one.\n\nBody of chapter one here.\n\nIt began, as ever, in the rain.\n\nMore of two.\n\nChapter Three\n\nThe end came quickly.';
+        const out = chaptersFromAnchors(cleaned, chapters);
+        expect(out[1]).toEqual({ title: 'Two', text: 'It began, as ever, in the rain.\n\nMore of two.' });
+    });
+});
+
+describe('validateAiCuts', () => {
+    const prose = 'The committee met on Tuesday to discuss the budget for the coming year. Several members raised concerns about the cost of the new library building and asked for a fuller breakdown of the figures before any vote was taken. The chair agreed to circulate it within a week.';
+    const text = ['Home | About | Contact', prose, 'Chapter 4', 'Copyright 2024 Example Press. All rights reserved. No part of this book may be reproduced in any form without written permission from the publisher, except for brief quotations used in reviews and certain other noncommercial uses permitted by law.'].join('\n\n');
+    const blocks = [0, 1, 2, 3].map(index => ({ index, text: '' }));
+
+    it('accepts clutter and refuses prose and headings', async () => {
+        const { validateAiCuts } = await import('./importText');
+        const { accepted, skipped } = validateAiCuts([
+            { index: 0, reason: 'nav' }, { index: 1, reason: 'x' }, { index: 2, reason: 'x' }, { index: '3', reason: 'legal' }
+        ], blocks, text);
+        expect(accepted.map(c => c.index)).toEqual([0, 3]);
+        expect(skipped.map(s => s.why)).toEqual(['ordinary prose', 'a chapter heading']);
+    });
+
+    it('refuses an index the AI was not shown', async () => {
+        const { validateAiCuts } = await import('./importText');
+        const { accepted, skipped } = validateAiCuts([{ index: 0, reason: 'nav' }], [{ index: 3, text: '' }], text);
+        expect(accepted).toEqual([]);
+        expect(skipped[0].why).toMatch(/not one/);
+    });
+});
+
+describe('restoring cuts', () => {
+    it('puts each cut back in its original place, in any order, after other cuts', async () => {
+        const { applyParagraphCuts, restoreCutItem } = await import('./importText');
+        const doc = ['p0', 'p1 nav', 'p2', 'p3', 'p4 legal', 'p5'].join('\n\n');
+        const first = applyParagraphCuts(doc, [{ index: 1, reason: 'nav' }]);
+        // A second round on the already-cut text (indices have shifted).
+        const second = applyParagraphCuts(first.text, [{ index: 3, reason: 'legal' }]);
+        expect(second.text).toBe(['p0', 'p2', 'p3', 'p5'].join('\n\n'));
+        let t = restoreCutItem(second.text, first.cutItems[0]);
+        t = restoreCutItem(t, second.cutItems[0]);
+        expect(t).toBe(doc);
+    });
+});
+
+describe('review regressions', () => {
+    it('a contents page listing the headings does not capture the chapters', async () => {
+        const { chaptersFromAnchors } = await import('./importText');
+        const chapters = [
+            { title: 'Contents', text: 'Contents\n\nChapter 1\n\nChapter 2' },
+            { title: 'Chapter 1', text: 'Chapter 1\n\nIt was a dark night and the rain came down hard.' },
+            { title: 'Chapter 2', text: 'Chapter 2\n\nMorning brought a pale sun over the hills.' }
+        ];
+        const text = chapters.map(c => c.text).join('\n\n');
+        const out = chaptersFromAnchors(text, chapters);
+        expect(out.map(c => c.text)).toEqual(chapters.map(c => c.text));
+    });
+
+    it('long clutter starting with a heading word can still be cut', async () => {
+        const { validateAiCuts } = await import('./importText');
+        const toc = 'Chapter 1 The Boy 3 Chapter 2 The Storm 17 Chapter 3 The Sea 31 Chapter 4 Home 52';
+        const { accepted } = validateAiCuts([{ index: 0, reason: 'toc' }], [{ index: 0, text: '' }], toc);
+        expect(accepted).toHaveLength(1);
+    });
+
+    it('reflow keeps a list after a colon one item per line', async () => {
+        const { reflowParagraphs } = await import('./importText');
+        const text = 'You will need the following things for this recipe today:\nflour\nsugar\neggs';
+        expect(reflowParagraphs(text)).toBe(text);
+    });
+
+    it('a null or empty AI index is not block 0', async () => {
+        const { validateAiCuts, aiCutIndex } = await import('./importText');
+        expect(Number.isNaN(aiCutIndex({ index: null }))).toBe(true);
+        expect(Number.isNaN(aiCutIndex({ index: '' }))).toBe(true);
+        expect(aiCutIndex({ index: '2' })).toBe(2);
+        expect(validateAiCuts([{ index: null }], [{ index: 0, text: '' }], 'Home | About').accepted).toEqual([]);
+    });
+
+    it('a removed page number is restored next to its paragraph, not at the end', async () => {
+        const { normalizeTextWithStats, restoreCutItem } = await import('./importText');
+        const raw = 'First para line one.\nthe end.\n12\n\nSecond para.\n\nThird para.\n\nFourth para.';
+        const { text, cuts } = normalizeTextWithStats(raw, { stripPageNumbers: true });
+        const restored = restoreCutItem(text, cuts[0]).split('\n\n');
+        expect(restored.indexOf('12')).toBe(1);
+    });
+});

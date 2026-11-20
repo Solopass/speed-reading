@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 import { cleanDocSpec, dropGuessableQuestions, questionsForTextSpec, verifySpec } from '../lib/ai';
 import { normalizeQuestions } from '../lib/quiz';
-import { applyParagraphCuts, chunkBlocksForAiClean, restoreCutItem, selectBlocksForAiClean } from '../lib/importText';
+import { applyParagraphCuts, chunkBlocksForAiClean, restoreCutItem, selectBlocksForAiClean, validateAiCuts, aiCutIndex } from '../lib/importText';
 import { isPartiallyRead, resumePoint } from '../lib/library';
 import { isBook } from '../lib/book';
 import BookShelf from '../components/BookShelf';
@@ -63,8 +63,11 @@ function AiCleanModal({ target, ai, onSave, onClose, addNotification }) {
     const chunks = useMemo(() => (draftText.trim() ? chunkBlocksForAiClean(draftText) : []), [draftText]);
     const spec = useMemo(() => (blocks.length > 0 ? cleanDocSpec({ blocks }) : null), [blocks]);
 
-    const applyReply = (reply) => {
-        const list = Array.isArray(reply?.cuts) ? reply.cuts : [];
+    const applyReply = (reply, shownBlocks = blocks) => {
+        const { accepted: list, skipped } = validateAiCuts(reply?.cuts, shownBlocks, draftText);
+        if (skipped.length > 0) {
+            addNotification(`Kept ${skipped.length} block${skipped.length === 1 ? '' : 's'} the AI wanted to cut (headings, prose or blocks it was not shown).`);
+        }
         if (list.length === 0) {
             addNotification('AI found no extra clutter to cut.');
             return;
@@ -95,9 +98,10 @@ function AiCleanModal({ target, ai, onSave, onClose, addNotification }) {
                     const chunkSpec = cleanDocSpec({ blocks: chunks[i] });
                     const reply = await ai.generate({ prompt: chunkSpec.prompt, schema: chunkSpec.schema });
                     if (closedRef.current) return;
-                    if (Array.isArray(reply?.cuts)) allCuts.push(...reply.cuts);
+                    const own = new Set(chunks[i].map(b => b.index));
+                    if (Array.isArray(reply?.cuts)) allCuts.push(...reply.cuts.filter(c => own.has(aiCutIndex(c))));
                 }
-                if (!closedRef.current) applyReply({ cuts: allCuts });
+                if (!closedRef.current) applyReply({ cuts: allCuts }, chunks.flat());
             }
         } catch (error) {
             addNotification(error.message || 'AI cleanup failed.');

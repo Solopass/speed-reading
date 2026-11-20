@@ -77,6 +77,15 @@ Working and verified:
   smart pacing (slower at punctuation and long words, same average speed);
   smooth or line-by-line motion; band, thin-line or no guide; spotlight
   dimming, band height, reading-line position, window height and edge fade.
+- **Safer cleaning** — AI Clean only removes blocks the AI was actually shown,
+  never chapter headings or ordinary prose; restoring a cut puts it back next
+  to its neighbours; Clean, AI Clean and hand edits are kept when a file with
+  its own chapters is saved as a book; PDF wrapped lines are rejoined into
+  paragraphs (lists after a colon are kept), and removed page numbers no
+  longer split a paragraph.
+- **Reader quality of life** — speed builder (adds WPM each minute up to a
+  cap), rewind on resume, `-`/`=` text size keys, flash weight, and how faint
+  read text goes.
 - **Vocabulary ranked by real word frequency** — the top 20,000 English words
   from wordfreq (CC BY-SA 4.0, see `src/data/WORDFREQ-NOTICE.md`), loaded only
   when the Vocabulary page opens.

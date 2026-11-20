@@ -118,6 +118,10 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                     <Slider id="rs-scroll-strength" label="Colour strength" value={reading.scrollColorStrength} range={LIMITS.scrollColorStrength} step={0.05} onChange={(v) => set({ scrollColorStrength: v })} format={pct} />
                 </>
             )}
+            <Switch label="Fade text already read" checked={reading.dimRead} onChange={(v) => set({ dimRead: v })} />
+            {reading.dimRead && (
+                <Slider id="rs-scroll-read-opacity" label="Read text stays" value={reading.readOpacity} range={LIMITS.readOpacity} step={0.05} onChange={(v) => set({ readOpacity: v })} format={pct} />
+            )}
             <Switch label="Fade small words" hint={'"the", "of", "and" and the like go fainter, so your eye lands on the words that carry meaning.'} checked={reading.scrollFadeFunctionWords} onChange={(v) => set({ scrollFadeFunctionWords: v })} />
             <div>
                 <div className="text-sm text-slate-300 mb-1.5">Highlight at the reading line</div>
@@ -188,6 +192,7 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
 
                     <Section title="Flash (RSVP)">
                         <Slider id="rs-rsvp" label="Word size" value={reading.rsvpSizePx} range={LIMITS.rsvpSizePx} step={2} onChange={(v) => set({ rsvpSizePx: v })} format={(v) => `${v}px`} />
+                        <Slider id="rs-rsvp-weight" label="Flash weight" value={reading.rsvpWeight} range={LIMITS.rsvpWeight} step={100} onChange={(v) => set({ rsvpWeight: v })} format={(v) => ({ 300: 'Light', 400: 'Regular', 500: 'Medium', 600: 'Semibold', 700: 'Bold', 800: 'Heavy' }[v] ?? v)} />
                         <Slider id="rs-chunk" label={settings.chunkSize > 1 && settings.smartChunks !== false ? 'Words per flash (up to)' : 'Words per flash'} value={settings.chunkSize} range={[1, 5]} step={1} onChange={(v) => updateSettings({ chunkSize: v })} />
                         {settings.chunkSize > 1 && (
                             <Switch
@@ -210,7 +215,15 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
 
                     <Section title="Pacer & Prose">
                         <Chips label="Pacer style" options={PACER_STYLES} value={reading.pacerStyle} onChange={(id) => set({ pacerStyle: id })} />
-                        <Switch label="Fade words already passed" checked={reading.dimRead} onChange={(v) => set({ dimRead: v })} />
+                        {/* In Scroll mode these sit in the Scroll section above. */}
+                        {mode !== 'scroll' && (
+                            <>
+                                <Switch label="Fade words already passed" checked={reading.dimRead} onChange={(v) => set({ dimRead: v })} />
+                                {reading.dimRead && (
+                                    <Slider id="rs-read-opacity" label="Read text stays" value={reading.readOpacity} range={LIMITS.readOpacity} step={0.05} onChange={(v) => set({ readOpacity: v })} format={pct} />
+                                )}
+                            </>
+                        )}
                         <Switch label="Bionic bold" hint="Bolds the start of each word." checked={settings.bionicReading} onChange={(v) => updateSettings({ bionicReading: v })} />
                         {settings.bionicReading && (
                             <Slider id="rs-bionic" label="Bold amount" value={reading.bionicStrength} range={LIMITS.bionicStrength} step={0.05} onChange={(v) => set({ bionicStrength: v })} format={(v) => `${Math.round(v * 100)}%`} />
@@ -220,6 +233,14 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                     <Section title="Session">
                         <Switch label="3-2-1 countdown" hint="A moment to settle your eyes before it starts." checked={reading.countdown} onChange={(v) => set({ countdown: v })} />
                         <Switch label="Warm-up ramp" hint="Starts at 70% of your speed and reaches full speed a quarter of the way in." checked={reading.speedRamp} onChange={(v) => set({ speedRamp: v })} />
+                        <Slider id="rs-accel" label="Speed builder" value={reading.accelWpmPerMin} range={LIMITS.accelWpmPerMin} step={5} onChange={(v) => set({ accelWpmPerMin: v })} format={(v) => (v === 0 ? 'Off' : `+${v} WPM / min`)} />
+                        {reading.accelWpmPerMin > 0 && (
+                            <>
+                                <Slider id="rs-accel-cap" label="Builds up to" value={reading.accelCapPct} range={LIMITS.accelCapPct} step={5} onChange={(v) => set({ accelCapPct: v })} format={(v) => `${v}% of start`} />
+                                <p className="text-[11px] text-slate-500 -mt-1 leading-snug">Speeds up a little every minute you read, stretching your pace without a jump. Your measured speed is what gets recorded.</p>
+                            </>
+                        )}
+                        <Slider id="rs-rewind" label="Rewind on resume" value={reading.rewindWords} range={LIMITS.rewindWords} step={1} onChange={(v) => set({ rewindWords: v })} format={(v) => (v === 0 ? 'Off' : `${v} word${v > 1 ? 's' : ''}`)} />
                         <Switch label="Hide controls while reading" hint="Move the mouse over the top bar to bring them back." checked={reading.zen} onChange={(v) => set({ zen: v })} />
                         {mode === 'rsvp' && (
                             <Switch label="Speak each flash" hint="Text to speech in step with RSVP. Best below about 400 WPM." checked={settings.audioSyncEnabled} onChange={(v) => updateSettings({ audioSyncEnabled: v })} />

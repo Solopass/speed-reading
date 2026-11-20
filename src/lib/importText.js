@@ -77,7 +77,7 @@ const CITATION_RE = /\[\d+(?:[\s,\-–]+\d+)*\]/g;
  * Scrubs extraction artifacts and returns both the cleaned text and counts of
  * what was removed so the Upload UI can show a summary and offer undo.
  */
-export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations = false, stripPageNumbers = false } = {}) {
+export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations = false, stripPageNumbers = false, reflow = false } = {}) {
     const stats = { junkChars: 0, rejoinedHyphens: 0, pageNumbers: 0, dotLeaders: 0 };
     let scrubbed = String(raw)
         // Superscript footnote markers right after punctuation ("end.¹"). NFKC
@@ -99,8 +99,13 @@ export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations 
     const rawLines = scrubbed.split('\n');
     const multiLine = rawLines.length > 2;
     const cuts = [];
+    // The last kept line, so a removed line can be put back next to it.
+    let lastKept = null;
+    let paraIdx = 0;
+    let inPara = false;
+    const REMOVED = null;
 
-    const text = rawLines
+    let text = rawLines
         .map((line, lineIdx) => {
             let clean = line
                 .replace(LEADING_BULLET_RE, '')
@@ -117,25 +122,174 @@ export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations 
                 // Between numbers it is a minus or a range ("5 - 3", "10 - 20"), so left alone.
                 .replace(/(?<=\p{L}{2}[,.;:!?"”’)]?)[ ](?:--?|–)[ ](?=[\p{L}"“‘(]\p{L})/gu, ' — ')
                 .trim();
-            if (!clean) return '';
-            if (DIVIDER_LINE_RE.test(clean)) {
-                cuts.push({ id: `det-${lineIdx}-div`, index: lineIdx, text: clean, reason: 'Divider', source: 'auto' });
+            // A line that was blank is a paragraph break; one emptied by cleaning just goes.
+            if (!clean) {
+                if (line.trim()) return REMOVED;
+                if (inPara) { paraIdx += 1; inPara = false; }
                 return '';
+            }
+            if (DIVIDER_LINE_RE.test(clean)) {
+                cuts.push({ id: `det-${lineIdx}-div`, index: paraIdx, text: clean, reason: 'Divider', source: 'auto', after: lastKept ? [lastKept] : [] });
+                return REMOVED;
             }
             // Only PDFs have page furniture. In any other format a line that is
             // just "1" or "12" is far more likely a chapter number to keep.
             if (stripPageNumbers && multiLine && (PAGE_NUMBER_RE.test(clean) || /^\d{1,4}$/.test(clean))) {
                 stats.pageNumbers += 1;
-                cuts.push({ id: `det-${lineIdx}-pg`, index: lineIdx, text: clean, reason: 'Page number', source: 'auto' });
-                return '';
+                cuts.push({ id: `det-${lineIdx}-pg`, index: paraIdx, text: clean, reason: 'Page number', source: 'auto', after: lastKept ? [lastKept] : [] });
+                return REMOVED;
             }
+            lastKept = clean;
+            inPara = true;
             return clean;
         })
+        // A removed line disappears; it must not leave a blank line behind, which
+        // would split the paragraph it sat in (a page number between two wrapped lines).
+        .filter(line => line !== REMOVED)
         .join('\n')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 
+    if (reflow) text = reflowParagraphs(text);
+
     return { text, stats, cuts };
+}
+
+/**
+ * Rebuilds prose paragraphs from wrapped lines (PDF text keeps one line per
+ * printed line). A full-width line wraps into the next one; a short line that
+ * ends a sentence ends the paragraph (books often mark paragraphs by indent
+ * rather than a gap, which text extraction cannot see); a short unpunctuated
+ * line before a capital is a heading. Blocks of short lines (lists, verse,
+ * contents pages) are left as they are.
+ */
+export function reflowParagraphs(text) {
+    return String(text ?? '').split(/\n\s*\n/).map(block => {
+        const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
+        if (lines.length < 2) return lines.join('');
+        const maxLen = Math.max(...lines.map(l => l.length));
+        if (maxLen < 35) return lines.join('\n');
+        let out = lines[0];
+        const short = (l) => l.length < maxLen * 0.6;
+        let list = false;
+        for (let i = 1; i < lines.length; i++) {
+            const prev = lines[i - 1];
+            const next = lines[i];
+            // Short lines after "...the following:" are a list: one item per line.
+            list = list ? short(prev) : (/[:;]$/.test(prev) && short(next));
+            if (list) { out += `\n${next}`; continue; }
+            const full = prev.length >= maxLen * 0.72;
+            const endsSentence = /[.!?…]["'”’)\]]*$/.test(prev);
+            const heading = prev.length < maxLen * 0.6 && prev.split(/\s+/).length <= 10
+                && !/[.,;:!?…"'”’)\]-]$/.test(prev) && /^[\p{Lu}\p{N}"“‘(]/u.test(next);
+            if (/-$/.test(prev) && /^\p{Ll}/u.test(next)) out += next;
+            else if (full) out += ` ${next}`;
+            else if (endsSentence || heading) out += `\n\n${next}`;
+            else out += ` ${next}`;
+        }
+        return out;
+    }).join('\n\n');
+}
+
+const splitParas = (text) => String(text ?? '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+
+/** A loose identity for a paragraph: survives punctuation and spacing clean-up. */
+const paraKey = (p) => String(p).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+const sameParagraph = (a, b) => {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    // Long paragraphs may have been tidied a little; their openings still match.
+    return a.length >= 30 && b.length >= 30 && a.slice(0, 60) === b.slice(0, 60);
+};
+
+/**
+ * Re-splits (cleaned) text into a file's own chapters. Each chapter is found
+ * by its opening paragraphs, so cleaning, AI cuts and hand edits keep the
+ * chapters instead of saving the original, uncleaned chapter texts. A chapter
+ * whose opening cannot be found is merged into the one before it.
+ */
+export function chaptersFromAnchors(text, chapters) {
+    if (!Array.isArray(chapters) || chapters.length < 2) return null;
+    const paras = splitParas(text);
+    const keys = paras.map(paraKey);
+    const starts = [];
+    // Chapter one owns at least the first paragraph.
+    let from = 1;
+    chapters.forEach((ch, ci) => {
+        if (ci === 0) { starts.push({ ci, at: 0 }); return; }
+        const own = splitParas(ch.text).slice(0, 5).map(paraKey);
+        // A real paragraph of prose is a far safer anchor than a heading, which
+        // also appears in a contents page. A short candidate only counts when
+        // the chapter's following paragraph comes right after it too.
+        const order = own.map((k, j) => ({ k, j })).filter(c => c.k)
+            .sort((a, b) => (b.k.split(' ').length >= 6) - (a.k.split(' ').length >= 6) || a.j - b.j);
+        for (const { k, j } of order) {
+            const short = k.split(' ').length < 6;
+            const at = keys.findIndex((key, i) => i >= from && sameParagraph(key, k)
+                && (!short || !own[j + 1] || sameParagraph(keys[i + 1], own[j + 1])));
+            if (at < 0) continue;
+            // Walk back over the chapter's earlier paragraphs (its heading) when they are still there.
+            let start = at;
+            for (let b = j - 1; b >= 0 && start - 1 >= from && sameParagraph(keys[start - 1], own[b]); b--) start -= 1;
+            starts.push({ ci, at: start });
+            from = at + 1;
+            return;
+        }
+    });
+    const out = [];
+    for (let i = 0; i < starts.length; i++) {
+        const end = i + 1 < starts.length ? starts[i + 1].at : paras.length;
+        const body = paras.slice(starts[i].at, end).join('\n\n');
+        if (body.trim()) out.push({ title: chapters[starts[i].ci].title, text: body });
+    }
+    return out.length >= 2 ? out : null;
+}
+
+/** The block number from an AI cut; NaN for null, empty or missing (Number(null) would be 0). */
+export function aiCutIndex(cut) {
+    const v = cut?.index;
+    if (typeof v === 'number') return v;
+    if (typeof v === 'string' && v.trim() !== '') return Number(v);
+    return NaN;
+}
+
+/** Things an AI may cut even when they read like sentences. */
+const BOILERPLATE_RE = /copyright|©|all rights reserved|\bisbn\b|cookies?\b|subscribe|newsletter|privacy policy|terms of (?:use|service)|table of contents|bibliograph|works cited|\breferences\b|\bdoi\b|https?:\/\/|sign up|log ?in\b|advertisement|sponsored/i;
+const HEADING_RE = /^(?:chapter|part|book|section|prologue|epilogue|introduction|preface|foreword|afterword|appendix)\b|^[IVXLC]+\.?$|^\d{1,3}\.?$/i;
+
+function looksLikeProse(p) {
+    const words = p.split(/\s+/).filter(Boolean);
+    if (words.length < 40) return false;
+    const sentences = (p.match(/[.!?]["'”’)]?(?=\s|$)/g) ?? []).length;
+    const digits = (p.match(/\d/g) ?? []).length / Math.max(1, p.length);
+    return sentences >= 2 && digits < 0.06;
+}
+
+/**
+ * Checks an AI's cut list before anything is removed. A cut is kept only if
+ * its index was one of the blocks the AI was shown (a model that numbers the
+ * list from 0 would otherwise delete unrelated paragraphs of a long book),
+ * and never for a chapter heading or a paragraph of ordinary prose.
+ * Returns { accepted: [{ index, reason }], skipped: [{ index, why }] }.
+ */
+export function validateAiCuts(rawCuts, blocks, text) {
+    const shown = new Set((blocks ?? []).map(b => b.index));
+    const paragraphs = splitParas(text);
+    const accepted = [];
+    const skipped = [];
+    const seen = new Set();
+    for (const c of Array.isArray(rawCuts) ? rawCuts : []) {
+        const index = aiCutIndex(c);
+        if (!Number.isInteger(index) || seen.has(index)) continue;
+        seen.add(index);
+        const p = paragraphs[index];
+        if (!shown.has(index) || !p) { skipped.push({ index, why: 'not one of the blocks it was shown' }); continue; }
+        if (p.split(/\s+/).length <= 8 && HEADING_RE.test(p.trim())) { skipped.push({ index, why: 'a chapter heading' }); continue; }
+        if (looksLikeProse(p) && !BOILERPLATE_RE.test(p)) { skipped.push({ index, why: 'ordinary prose' }); continue; }
+        accepted.push({ index, reason: String(c?.reason || 'Clutter') });
+    }
+    return { accepted, skipped };
 }
 
 /**
@@ -187,7 +341,13 @@ export function applyParagraphCuts(text, cuts = []) {
     const cutItems = [];
     paragraphs.forEach((p, idx) => {
         if (byIndex.has(idx)) {
-            cutItems.push({ id: `ai-${Date.now()}-${idx}`, index: idx, text: p, reason: `AI: ${byIndex.get(idx)}`, source: 'ai' });
+            cutItems.push({
+                id: `ai-${Date.now()}-${idx}`, index: idx, text: p, reason: `AI: ${byIndex.get(idx)}`, source: 'ai',
+                // Neighbours (nearest first), so a restore lands in the right place
+                // even after other cuts and restores have shifted the indices.
+                after: paragraphs.slice(Math.max(0, idx - 3), idx).reverse(),
+                before: paragraphs[idx + 1] ?? null
+            });
         } else {
             kept.push(p);
         }
@@ -197,8 +357,32 @@ export function applyParagraphCuts(text, cuts = []) {
 
 /** Reinserts a previously cut item back into the document text at its original paragraph position. */
 export function restoreCutItem(text, cutItem) {
-    const paragraphs = String(text ?? '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
-    const at = Math.max(0, Math.min(paragraphs.length, Number.isInteger(cutItem?.index) ? cutItem.index : paragraphs.length));
+    const paragraphs = splitParas(text);
+    const keys = paragraphs.map(paraKey);
+    const hint = Number.isInteger(cutItem?.index) ? cutItem.index : paragraphs.length;
+    // The matching paragraph nearest the original position; a line (a page
+    // number's neighbour) matches the paragraph that contains it.
+    const find = (anchor) => {
+        const k = paraKey(anchor ?? '');
+        if (!k) return -1;
+        let best = -1;
+        keys.forEach((key, i) => {
+            if (sameParagraph(key, k) || (k.length >= 6 && key.includes(k))) {
+                if (best < 0 || Math.abs(i - hint) < Math.abs(best - hint)) best = i;
+            }
+        });
+        return best;
+    };
+    let at = -1;
+    for (const anchor of cutItem?.after ?? []) {
+        const i = find(anchor);
+        if (i >= 0) { at = i + 1; break; }
+    }
+    if (at < 0 && cutItem?.before) {
+        const i = find(cutItem.before);
+        if (i >= 0) at = i;
+    }
+    if (at < 0) at = Math.max(0, Math.min(paragraphs.length, hint));
     paragraphs.splice(at, 0, cutItem.text);
     return paragraphs.join('\n\n');
 }
@@ -663,7 +847,7 @@ async function readPdfPages(pdf, options) {
     const strippedPages = stripRepeatedHeadersFooters(pages);
     const removedHeaders = pages.reduce((n, p, i) => (p.trim() !== strippedPages[i] ? n + 1 : n), 0);
     const rawText = pages.join('\n\n');
-    const pdfOptions = { ...options, stripPageNumbers: true };
+    const pdfOptions = { ...options, stripPageNumbers: true, reflow: true };
     const { text, stats, cuts } = normalizeTextWithStats(joinPdfPages(strippedPages), pdfOptions);
     if (!text) {
         throw new Error(`This PDF (${pdf.numPages} page${pdf.numPages === 1 ? '' : 's'}) appears to be scanned images with no selectable text. Run OCR (e.g. Adobe, macOS Preview, or ocrmypdf) first, then re-upload.`);

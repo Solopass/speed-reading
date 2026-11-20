@@ -38,6 +38,7 @@ function KeyboardHint() {
             <span><Kbd>S</Kbd> settings</span>
             <span><Kbd>B</Kbd> bookmark (books)</span>
             <span><Kbd>F</Kbd> full screen</span>
+            <span><Kbd>- =</Kbd> text size</span>
             <span><Kbd>esc</Kbd> exit</span>
         </p>
     );
@@ -178,7 +179,12 @@ function Reader({
     // The warm-up ramp eases the speed in over the first quarter. Quantised to
     // 5% steps so the pacer is not re-timed on every single word.
     const ramp = Math.round(rampFactor(words.length ? cursorIndex / words.length : 1, reading.speedRamp && !isCalibration) * 20) / 20;
-    const effectiveWpm = Math.round(wpm * ramp);
+    const [accelSecs, setAccelSecs] = useState(0);
+    const accelBonus = Math.min(
+        Math.max(0, wpm * (reading.accelCapPct / 100) - wpm),
+        Math.floor(((reading.accelWpmPerMin * accelSecs) / 60) / 5) * 5
+    );
+    const effectiveWpm = Math.min(2000, Math.round(wpm * ramp + (isCalibration ? 0 : accelBonus)));
 
     const timerRef = useRef(null);
 
@@ -238,6 +244,15 @@ function Reader({
         const id = setInterval(() => setElapsedSecs(Math.round(elapsedMs() / 1000)), 1000);
         return () => clearInterval(id);
     }, [clockRunning, elapsedMs]);
+
+    // The speed builder counts seconds of actual playback (not pauses, not the
+    // settings drawer), and keeps counting across mode switches.
+    const accelOn = reading.accelWpmPerMin > 0 && !isCalibration;
+    useEffect(() => {
+        if (!accelOn || !clockRunning || !isPlaying) return undefined;
+        const id = setInterval(() => setAccelSecs(s => s + 1), 1000);
+        return () => clearInterval(id);
+    }, [accelOn, clockRunning, isPlaying]);
 
     // --- Full screen ---------------------------------------------------------
     useEffect(() => {
@@ -440,15 +455,27 @@ function Reader({
         return () => clearTimeout(t);
     }, [countdown]);
 
+    // Set once playback has started, so the first start does not rewind.
+    const hasPlayedRef = useRef(false);
+    useEffect(() => { if (isPlaying) hasPlayedRef.current = true; }, [isPlaying]);
+
     const togglePlay = () => {
         if (countdown !== null) { setCountdown(null); return; }
         if (isPlaying) { setIsPlaying(false); return; }
         if (mode === 'rsvp' && words.length > 0 && currentIndex >= words.length) seekTo(0);
+        // Stepping back a few words on resume picks the sentence back up.
+        else if (hasPlayedRef.current && reading.rewindWords > 0 && cursorRef.current > 0) seekBy(-reading.rewindWords);
         if (reading.countdown) setCountdown(3);
         else setIsPlaying(true);
     };
 
     const pause = () => { setIsPlaying(false); setCountdown(null); };
+
+    /** - and = change the text size of whatever is on screen: the flash in RSVP, the page otherwise. */
+    const resizeText = (dir) => {
+        if (mode === 'rsvp') patchReading({ rsvpSizePx: reading.rsvpSizePx + dir * 4 });
+        else patchReading({ proseSizePx: reading.proseSizePx + dir });
+    };
 
     const openSettings = () => { pause(); setSettingsOpen(true); };
     const closeSettings = useCallback(() => setSettingsOpen(false), []);
@@ -519,6 +546,9 @@ function Reader({
         s: () => openSettings(),
         b: () => { if (mode !== 'natural' && onBookmark) { pause(); setBookmarkNote(''); setBookmarkOpen(true); } },
         f: () => toggleFullscreen(),
+        '-': () => resizeText(-1),
+        '=': () => resizeText(1),
+        '+': () => resizeText(1),
         Escape: () => { if (bookmarkOpen) setBookmarkOpen(false); else if (wpmMenuOpen) setWpmMenuOpen(false); else onExit?.(); }
     }, !quizActive && !settingsOpen && !bookmarkOpen && !isCalibration);
 
@@ -540,6 +570,7 @@ function Reader({
                             fontSize: `calc(var(--reading-rsvp-size) * ${scale})`,
                             fontFamily: 'var(--reading-font)',
                             lineHeight: 1.2,
+                            fontWeight: reading.rsvpWeight,
                             wordSpacing: 'calc(0.08em + var(--reading-word-spacing, 0em))',
                             letterSpacing: 'var(--reading-letter-spacing, 0)',
                             textWrap: 'balance',
@@ -574,7 +605,8 @@ function Reader({
                 style={{
                     fontSize: scale === 1 ? 'var(--reading-rsvp-size)' : `calc(var(--reading-rsvp-size) * ${scale})`,
                     fontFamily: 'var(--reading-font)',
-                    lineHeight: 1.15
+                    lineHeight: 1.15,
+                    fontWeight: reading.rsvpWeight
                 }}
             >
                 <span className="flex-1 min-w-0 text-right whitespace-pre" style={{ opacity: 0.8 }}>{start}</span>
@@ -819,6 +851,7 @@ function Reader({
                                         className="px-2 md:px-3 py-1.5 font-mono font-bold text-purple-400 hover:text-purple-300 min-w-[76px] text-center text-sm transition-colors"
                                     >
                                         {wpm} WPM
+                                        {accelBonus > 0 && <span className="ml-1 text-emerald-400" title="Speed builder">+{accelBonus}</span>}
                                     </button>
                                     <button onClick={() => nudgeWpm(25)} aria-label="Faster" className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Plus size={16} /></button>
                                 </div>
@@ -1036,6 +1069,7 @@ function Reader({
                             bionicStrength={reading.bionicStrength}
                             pacerStyle={reading.pacerStyle}
                             dimRead={reading.dimRead}
+                            readOpacity={reading.readOpacity}
                             initialIndex={pacedInitialIndex}
                             seek={pacedSeek}
                             onWordClick={seekTo}

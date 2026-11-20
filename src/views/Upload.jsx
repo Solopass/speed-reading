@@ -5,8 +5,8 @@ import {
 import { cleanDocSpec } from '../lib/ai';
 import { splitPassage } from '../lib/protocol';
 import {
-    ACCEPT_ATTRIBUTE, SUPPORTED_EXTENSIONS, applyParagraphCuts, chunkBlocksForAiClean, extractFromHtml, extractText,
-    normalizeTextWithStats, restoreCutItem, selectBlocksForAiClean
+    ACCEPT_ATTRIBUTE, SUPPORTED_EXTENSIONS, applyParagraphCuts, chaptersFromAnchors, chunkBlocksForAiClean, extractFromHtml, extractText,
+    normalizeTextWithStats, restoreCutItem, selectBlocksForAiClean, validateAiCuts, aiCutIndex
 } from '../lib/importText';
 import { BOOK_MIN_WORDS, buildChapters, createBook } from '../lib/book';
 import CutReviewPanel from '../components/CutReviewPanel';
@@ -161,8 +161,17 @@ export default function Upload({
         addNotification('Cleaned formatting and stray characters.');
     };
 
-    const applyAiCuts = (reply) => {
-        const cuts = Array.isArray(reply?.cuts) ? reply.cuts : [];
+    const aiBlocks = useMemo(() => (customText.trim() ? selectBlocksForAiClean(customText) : []), [customText]);
+    const aiChunks = useMemo(() => (customText.trim() ? chunkBlocksForAiClean(customText) : []), [customText]);
+    const aiCleanSpec = useMemo(() => (aiBlocks.length > 0 ? cleanDocSpec({ blocks: aiBlocks }) : null), [aiBlocks]);
+
+    // Every AI suggestion is checked first (see validateAiCuts): only blocks it
+    // was shown, never headings or ordinary prose.
+    const applyAiCuts = (reply, shownBlocks = aiBlocks) => {
+        const { accepted: cuts, skipped } = validateAiCuts(reply?.cuts, shownBlocks, customText);
+        if (skipped.length > 0) {
+            addNotification(`Kept ${skipped.length} block${skipped.length === 1 ? '' : 's'} the AI wanted to cut (headings, prose or blocks it was not shown).`);
+        }
         if (cuts.length === 0) {
             addNotification('AI found no extra clutter to cut.');
             setManualAiOpen(false);
@@ -181,9 +190,6 @@ export default function Upload({
         addNotification(`AI cut ${cutItems.length} clutter block${cutItems.length === 1 ? '' : 's'} — review in diff below.`, 'success');
     };
 
-    const aiBlocks = useMemo(() => (customText.trim() ? selectBlocksForAiClean(customText) : []), [customText]);
-    const aiChunks = useMemo(() => (customText.trim() ? chunkBlocksForAiClean(customText) : []), [customText]);
-    const aiCleanSpec = useMemo(() => (aiBlocks.length > 0 ? cleanDocSpec({ blocks: aiBlocks }) : null), [aiBlocks]);
 
     const handleAiClean = async (deep = false) => {
         if (!aiCleanSpec) return;
@@ -203,9 +209,11 @@ export default function Upload({
                     setAiProgress(`${i + 1}/${aiChunks.length}`);
                     const spec = cleanDocSpec({ blocks: aiChunks[i] });
                     const reply = await ai.generate({ prompt: spec.prompt, schema: spec.schema });
-                    if (Array.isArray(reply?.cuts)) allCuts.push(...reply.cuts);
+                    // Each pass may only cut blocks from its own chunk.
+                    const own = new Set(aiChunks[i].map(b => b.index));
+                    if (Array.isArray(reply?.cuts)) allCuts.push(...reply.cuts.filter(c => own.has(aiCutIndex(c))));
                 }
-                applyAiCuts({ cuts: allCuts });
+                applyAiCuts({ cuts: allCuts }, aiChunks.flat());
             }
         } catch (error) {
             addNotification(error.message || 'AI cleanup failed.');
@@ -229,7 +237,8 @@ export default function Upload({
             return;
         }
         let next = customText;
-        for (const item of [...cutLog].reverse()) {
+        // Earliest first: each restore then finds its neighbours already back in place.
+        for (const item of [...cutLog].sort((a, b) => (a.index ?? 0) - (b.index ?? 0))) {
             next = restoreCutItem(next, item);
         }
         setCustomText(next);
@@ -280,7 +289,9 @@ export default function Upload({
 
     const previewChapters = useMemo(() => {
         if (!canBeBook || !customText.trim()) return [];
-        return buildChapters({ text: customText, chapters: importedChapters });
+        // The file's own chapters are re-found in the current text, so cleaning,
+        // AI cuts and hand edits are kept rather than the original chapter texts.
+        return buildChapters({ text: customText, chapters: chaptersFromAnchors(customText, importedChapters) });
     }, [canBeBook, customText, importedChapters]);
 
     const handleAddBook = (replaceId = null) => {
@@ -446,7 +457,7 @@ export default function Upload({
 
                     <textarea
                         value={customText}
-                        onChange={(e) => { setCustomText(e.target.value); setImportedChapters(null); }}
+                        onChange={(e) => setCustomText(e.target.value)}
                         // AI Clean cuts paragraphs by position in the text it was sent;
                         // editing meanwhile would make it cut the wrong ones.
                         readOnly={aiCleaning}

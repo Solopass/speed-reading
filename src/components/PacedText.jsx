@@ -36,7 +36,8 @@ const PARAGRAPH_STYLE = {
  * re-renders, not every word in a long chapter.
  */
 export const Paragraph = memo(function Paragraph({
-    para, readUntil, currentIndex, currentEnd, dimRead, bionicReading, bionicStrength, onWordClick, setRef, looks = null
+    para, readUntil, currentIndex, currentEnd, dimRead, bionicReading, bionicStrength, onWordClick, setRef, looks = null,
+    readOpacity = 0.45
 }) {
     // The highlighted stretch: one word by default, or a phrase [currentIndex, currentEnd).
     const hiEnd = currentEnd ?? currentIndex + 1;
@@ -47,7 +48,7 @@ export const Paragraph = memo(function Paragraph({
                 const isCurrent = currentIndex >= 0 && index >= currentIndex && index < hiEnd;
                 const mid = Math.max(1, Math.round(word.length * bionicStrength));
                 const look = looks?.[index];
-                const opacity = (isRead && dimRead ? 0.45 : 1) * (look?.fade ? 0.5 : 1);
+                const opacity = (isRead && dimRead ? readOpacity : 1) * (look?.fade ? 0.5 : 1);
                 return (
                     // Clicking a word is a mouse shortcut for jumping there; the
                     // keyboard path is [ and ] in the reader.
@@ -102,6 +103,7 @@ export default function PacedText({
     bionicStrength = 0.5,
     pacerStyle = 'band',
     dimRead = true,
+    readOpacity = 0.45,
     initialIndex = 0,
     seek = null,          // { index, nonce }: jump the cursor to a word
     onWordClick,
@@ -299,6 +301,7 @@ export default function PacedText({
                             readUntil={Math.max(start, Math.min(end, readIndex))}
                             currentIndex={currentWord >= start && currentWord < end ? currentWord : -1}
                             dimRead={dimRead}
+                            readOpacity={readOpacity}
                             bionicReading={bionicReading}
                             bionicStrength={bionicStrength}
                             onWordClick={onWordClick}

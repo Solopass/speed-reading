@@ -173,3 +173,15 @@ describe('reader preferences', () => {
         expect(rampFactor(0, false)).toBe(1);
     });
 });
+
+describe('reader QOL settings', () => {
+    it('defaults and clamps the speed builder, rewind, flash weight and read opacity', () => {
+        const r = normalizeReading({ accelWpmPerMin: 500, accelCapPct: 10, rewindWords: 3.6, rsvpWeight: 640, readOpacity: 2 });
+        expect(r.accelWpmPerMin).toBe(60);
+        expect(r.accelCapPct).toBe(110);
+        expect(r.rewindWords).toBe(4);
+        expect(r.rsvpWeight).toBe(600);
+        expect(r.readOpacity).toBe(0.9);
+        expect(normalizeReading({}).accelWpmPerMin).toBe(0);
+    });
+});

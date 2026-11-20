@@ -122,6 +122,11 @@ export const DEFAULT_READING = {
     scrollMotion: 'smooth',
     scrollPacing: true,           // slow at punctuation and long words, same average speed
     countdown: true,      // 3-2-1 before playback starts
+    accelWpmPerMin: 0,    // speed builder: WPM added per minute of reading (0 = off)
+    accelCapPct: 140,     // ...up to this % of the speed you started at
+    rewindWords: 0,       // words to step back when you resume after a pause
+    rsvpWeight: 400,      // font weight of the flashed words
+    readOpacity: 0.45,    // how visible text already read stays, when fading is on
     speedRamp: false,     // ease in from 70% of the target over the first quarter
     zen: false            // hide the controls while playing
 };
@@ -155,7 +160,12 @@ export const LIMITS = {
     scrollBandLines: [1, 3],
     scrollSpotlight: [0, 0.85],
     scrollEdgeFade: [0, 40],
-    scrollHeightVh: [35, 85]
+    scrollHeightVh: [35, 85],
+    accelWpmPerMin: [0, 60],
+    accelCapPct: [110, 200],
+    rewindWords: [0, 12],
+    rsvpWeight: [300, 800],
+    readOpacity: [0.1, 0.9]
 };
 
 const byId = (list, id, fallbackId) =>
@@ -185,6 +195,8 @@ export function normalizeReading(raw) {
     result.scrollGuide = byId(SCROLL_GUIDES, source.scrollGuide, 'band').id;
     result.scrollMotion = byId(SCROLL_MOTIONS, source.scrollMotion, 'smooth').id;
     result.scrollBandLines = Math.round(result.scrollBandLines);
+    result.rewindWords = Math.round(result.rewindWords);
+    result.rsvpWeight = Math.round(result.rsvpWeight / 100) * 100;
     for (const key of BOOLEAN_PREFS) {
         result[key] = typeof source[key] === 'boolean' ? source[key] : DEFAULT_READING[key];
     }

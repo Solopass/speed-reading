@@ -45,7 +45,7 @@ export default function ScrollText({
     onComplete
 }) {
     const {
-        bionicStrength, dimRead, scrollFocalPct: focalPct, scrollColor, scrollPalette, scrollColorStrength,
+        bionicStrength, dimRead, readOpacity, scrollFocalPct: focalPct, scrollColor, scrollPalette, scrollColorStrength,
         scrollFadeFunctionWords, scrollMarker, scrollGuide, scrollBandLines, scrollSpotlight, scrollEdgeFade,
         scrollHeightVh, scrollMotion, scrollPacing
     } = { ...DEFAULT_READING, ...reading };
@@ -283,6 +283,7 @@ export default function ScrollText({
                             currentIndex={inPara ? Math.max(start, marker[0]) : -1}
                             currentEnd={inPara ? Math.min(end, marker[1]) : undefined}
                             dimRead={dimRead}
+                            readOpacity={readOpacity}
                             bionicReading={bionicReading}
                             bionicStrength={bionicStrength}
                             onWordClick={onWordClick}
