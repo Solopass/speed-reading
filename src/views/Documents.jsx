@@ -1,8 +1,14 @@
-import { useState } from 'react';
-import { Bookmark, BookOpen, ChevronRight, Download, FileText, Play, Search, Upload, X } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import {
+    Activity, Bookmark, BookOpen, ChevronRight, Download, FileText, Play, Search, Sparkles, Upload, X
+} from 'lucide-react';
+import { cleanDocSpec } from '../lib/ai';
+import { applyParagraphCuts, restoreCutItem, selectBlocksForAiClean } from '../lib/importText';
 import { isPartiallyRead, resumePoint } from '../lib/library';
 import { isBook } from '../lib/book';
 import BookShelf from '../components/BookShelf';
+import CutReviewPanel from '../components/CutReviewPanel';
+import ManualAiPanel from '../components/ManualAiPanel';
 
 const minutes = (words, wpm) => Math.max(1, Math.round(words / Math.max(100, wpm)));
 
@@ -34,7 +40,112 @@ function exportNotesMarkdown(books, passages) {
     URL.revokeObjectURL(url);
 }
 
-function UploadedPassages({ passages, wpm, onOpenSaved, onDeleteSaved, onRemovePassageBookmark }) {
+function AiCleanModal({ doc, ai, onSave, onClose, addNotification }) {
+    const useApi = Boolean(ai?.generate);
+    const [draftText, setDraftText] = useState(doc.text ?? '');
+    const [cuts, setCuts] = useState([]);
+    const [cleaning, setCleaning] = useState(false);
+
+    const blocks = useMemo(() => (draftText.trim() ? selectBlocksForAiClean(draftText) : []), [draftText]);
+    const spec = useMemo(() => (blocks.length > 0 ? cleanDocSpec({ blocks }) : null), [blocks]);
+
+    const applyReply = (reply) => {
+        const list = Array.isArray(reply?.cuts) ? reply.cuts : [];
+        if (list.length === 0) {
+            addNotification('AI found no extra clutter to cut.');
+            return;
+        }
+        const { text, cutItems } = applyParagraphCuts(draftText, list);
+        if (cutItems.length === 0) {
+            addNotification('AI found no matching blocks to cut.');
+            return;
+        }
+        setDraftText(text);
+        setCuts(prev => [...cutItems, ...prev]);
+        addNotification(`AI cut ${cutItems.length} clutter block${cutItems.length === 1 ? '' : 's'}. Review below.`, 'success');
+    };
+
+    const runAiClean = async () => {
+        if (!spec || !useApi) return;
+        setCleaning(true);
+        try {
+            const reply = await ai.generate({ prompt: spec.prompt, schema: spec.schema });
+            applyReply(reply);
+        } catch (error) {
+            addNotification(error.message || 'AI cleanup failed.');
+        } finally {
+            setCleaning(false);
+        }
+    };
+
+    const restoreOne = (item) => {
+        setDraftText(prev => restoreCutItem(prev, item));
+        setCuts(prev => prev.filter(c => c.id !== item.id));
+    };
+
+    const restoreAll = () => {
+        setDraftText(doc.text ?? '');
+        setCuts([]);
+    };
+
+    const changed = draftText !== (doc.text ?? '');
+
+    return (
+        <div className="fixed inset-0 z-[60] grid place-items-center p-4">
+            <button aria-label="Close AI clean dialog" className="absolute inset-0 bg-black/60" onClick={onClose} />
+            <div role="dialog" aria-label={`Clean ${doc.title}`} className="relative w-full max-w-2xl max-h-[85vh] bg-slate-900 border border-slate-700 rounded-3xl p-6 shadow-2xl flex flex-col gap-4 overflow-y-auto">
+                <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                        <h2 className="text-lg font-bold text-white truncate flex items-center gap-2">
+                            <Sparkles size={17} className="text-purple-400 shrink-0" /> AI Clean: {doc.title}
+                        </h2>
+                        <p className="text-xs text-slate-400 mt-1">
+                            Runs only when you click it. Inspect every cut below and restore anything important before saving.
+                        </p>
+                    </div>
+                    <button type="button" onClick={onClose} aria-label="Close" className="p-1.5 text-slate-400 hover:text-white"><X size={18} /></button>
+                </div>
+
+                {useApi ? (
+                    <button
+                        type="button"
+                        onClick={runAiClean}
+                        disabled={cleaning || !spec}
+                        className="inline-flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-sm font-bold px-4 py-2.5 rounded-xl transition-colors"
+                    >
+                        {cleaning ? <Activity className="animate-spin" size={15} /> : <Sparkles size={15} />}
+                        {cleaning ? `Scanning on ${ai.label}…` : 'Run AI Clean'}
+                    </button>
+                ) : spec && (
+                    <ManualAiPanel spec={spec} addNotification={addNotification} onResult={applyReply} />
+                )}
+
+                <CutReviewPanel cuts={cuts} onRestore={restoreOne} onRestoreAll={restoreAll} defaultOpen />
+
+                <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-800">
+                    <span className="text-xs text-slate-500">
+                        {draftText.trim() ? draftText.trim().split(/\s+/).length.toLocaleString() : 0} words
+                    </span>
+                    <div className="flex gap-2">
+                        <button type="button" onClick={onClose} className="px-4 py-2 rounded-xl text-sm font-medium text-slate-400 hover:text-white">
+                            Cancel
+                        </button>
+                        <button
+                            type="button"
+                            disabled={!changed}
+                            onClick={() => { onSave(doc.id, draftText); onClose(); }}
+                            className="px-4 py-2 rounded-xl text-sm font-bold bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white"
+                        >
+                            Save changes
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function UploadedPassages({ passages, wpm, onOpenSaved, onDeleteSaved, onRemovePassageBookmark, onCleanDoc }) {
     if (passages.length === 0) return null;
 
     return (
@@ -77,7 +188,17 @@ function UploadedPassages({ passages, wpm, onOpenSaved, onDeleteSaved, onRemoveP
                                         </div>
                                     )}
                                 </div>
-                                <div className="flex gap-2 shrink-0">
+                                <div className="flex gap-2 shrink-0 flex-wrap">
+                                    {item.text && (
+                                        <button
+                                            type="button"
+                                            onClick={() => onCleanDoc(item)}
+                                            title="Clean clutter with AI and review cuts"
+                                            className="border border-slate-700 hover:border-purple-500 text-slate-300 hover:text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5"
+                                        >
+                                            <Sparkles size={13} className="text-purple-400" /> AI Clean
+                                        </button>
+                                    )}
                                     <button
                                         type="button"
                                         onClick={() => onOpenSaved(item.id)}
@@ -139,10 +260,11 @@ function UploadedPassages({ passages, wpm, onOpenSaved, onDeleteSaved, onRemoveP
 }
 
 export default function Documents({
-    library, readingWpm = 300, onOpenSaved, onDeleteSaved,
-    onOpenChapter, onRemoveBookmark, onRemovePassageBookmark, onOpenUpload
+    ai, library, readingWpm = 300, onOpenSaved, onDeleteSaved, onUpdateDocumentText,
+    onOpenChapter, onRemoveBookmark, onRemovePassageBookmark, onOpenUpload, addNotification
 }) {
     const [query, setQuery] = useState('');
+    const [cleaningDoc, setCleaningDoc] = useState(null);
     const books = library.filter(isBook);
     const importedPassages = library.filter(item => !isBook(item) && item.source === 'import');
     const totalItems = books.length + importedPassages.length;
@@ -230,11 +352,22 @@ export default function Documents({
                         onOpenSaved={(id, opts) => onOpenSaved(id, { ...opts, returnTo: 'documents' })}
                         onDeleteSaved={onDeleteSaved}
                         onRemovePassageBookmark={onRemovePassageBookmark}
+                        onCleanDoc={setCleaningDoc}
                     />
                     {q && filteredBooks.length === 0 && filteredPassages.length === 0 && (
                         <p className="text-sm text-slate-500 text-center py-6">No documents match &ldquo;{query}&rdquo;.</p>
                     )}
                 </>
+            )}
+
+            {cleaningDoc && (
+                <AiCleanModal
+                    doc={cleaningDoc}
+                    ai={ai}
+                    onSave={onUpdateDocumentText}
+                    onClose={() => setCleaningDoc(null)}
+                    addNotification={addNotification}
+                />
             )}
         </div>
     );

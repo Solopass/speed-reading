@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import {
-    Activity, AlertTriangle, ChevronRight, Eraser, Globe, HardDrive, Play, RotateCcw, Sparkles, Undo2, Upload as UploadIcon
+    Activity, AlertTriangle, ChevronRight, Eraser, Globe, HardDrive, Play, Sparkles, Undo2, Upload as UploadIcon
 } from 'lucide-react';
 import { cleanDocSpec } from '../lib/ai';
 import { splitPassage } from '../lib/protocol';
@@ -9,6 +9,7 @@ import {
     normalizeTextWithStats, restoreCutItem, selectBlocksForAiClean
 } from '../lib/importText';
 import { BOOK_MIN_WORDS, buildChapters, createBook } from '../lib/book';
+import CutReviewPanel from '../components/CutReviewPanel';
 import ManualAiPanel from '../components/ManualAiPanel';
 
 const nextId = (prefix) => `${prefix}-${Date.now()}`;
@@ -450,45 +451,12 @@ export default function Upload({
                         </div>
                     )}
 
-                    {cutLog.length > 0 && (
-                        <details className="group bg-slate-950 border border-red-900/40 rounded-xl" open={cutLog.some(c => c.source === 'ai')}>
-                            <summary className="cursor-pointer select-none px-4 py-2.5 flex items-center justify-between text-xs font-bold text-slate-300 hover:text-white">
-                                <span className="flex items-center gap-1.5">
-                                    <ChevronRight size={14} className="group-open:rotate-90 transition-transform" />
-                                    Review cuts ({cutLog.length})
-                                </span>
-                                <span className="text-slate-500 font-normal">Restore anything important</span>
-                            </summary>
-                            <div className="px-4 pb-3 pt-1 space-y-2 max-h-60 overflow-y-auto">
-                                <div className="flex justify-end">
-                                    <button
-                                        type="button"
-                                        onClick={handleRestoreAllCuts}
-                                        className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-400 hover:text-white"
-                                    >
-                                        <RotateCcw size={11} /> Restore all
-                                    </button>
-                                </div>
-                                {cutLog.map(item => (
-                                    <div key={item.id} className="flex items-start justify-between gap-3 bg-red-950/20 border border-red-900/40 rounded-lg px-3 py-2 text-xs">
-                                        <div className="min-w-0 flex-1">
-                                            <span className="inline-block text-[10px] font-bold uppercase tracking-wider bg-red-500/20 text-red-300 px-1.5 py-0.5 rounded mr-2">
-                                                {item.reason}
-                                            </span>
-                                            <span className="font-mono text-red-300/90 break-words">- {item.text}</span>
-                                        </div>
-                                        <button
-                                            type="button"
-                                            onClick={() => handleRestoreCut(item)}
-                                            className="shrink-0 text-[11px] font-bold text-purple-400 hover:text-purple-300 px-2 py-0.5 rounded border border-purple-800/60"
-                                        >
-                                            Restore
-                                        </button>
-                                    </div>
-                                ))}
-                            </div>
-                        </details>
-                    )}
+                    <CutReviewPanel
+                        cuts={cutLog}
+                        onRestore={handleRestoreCut}
+                        onRestoreAll={handleRestoreAllCuts}
+                        defaultOpen={cutLog.some(c => c.source === 'ai')}
+                    />
 
                     <div className="flex items-center justify-between gap-3 flex-wrap">
                         <div className="flex items-center gap-4 flex-wrap text-xs text-slate-400">
