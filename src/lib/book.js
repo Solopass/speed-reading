@@ -189,7 +189,7 @@ export const recordChapterProgress = (items, id, index, progressIndex, { allowBa
 });
 
 /** Marks a chapter finished and moves on to the next unfinished one. */
-export function completeChapter(items, id, index, { wpm = null } = {}) {
+export function completeChapter(items, id, index, { wpm = null, score = null } = {}) {
     return updateBook(items, id, book => {
         const updated = withChapter(book, index, { completedAt: todayKey(), progressIndex: 0 });
         const next = updated.chapters.findIndex((c, i) => i > index && !c.completedAt);
@@ -200,7 +200,7 @@ export function completeChapter(items, id, index, { wpm = null } = {}) {
             currentChapter: next !== -1 ? next : allDone ? index : firstOpen,
             completedAt: allDone ? (book.completedAt ?? todayKey()) : null,
             lastReadAt: todayKey(),
-            attempts: [...book.attempts, { date: todayKey(), wpm, score: null, kind: 'chapter', chapter: index }]
+            attempts: [...book.attempts, { date: todayKey(), wpm, score, kind: 'chapter', chapter: index }]
         };
     });
 }

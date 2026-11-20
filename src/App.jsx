@@ -491,7 +491,7 @@ export default function App() {
         if (bookChapter && isSkim) {
             // A skim samples the chapter; it does not finish it.
         } else if (bookChapter) {
-            setLibrary(prev => completeChapter(prev, bookChapter.bookId, bookChapter.chapterIndex, { wpm }));
+            setLibrary(prev => completeChapter(prev, bookChapter.bookId, bookChapter.chapterIndex, { wpm, score }));
         } else if (activePassage?.id && !isBaseline) {
             setLibrary(prev => recordAttempt(prev, activePassage.id, {
                 wpm, score, kind: isSkim ? 'skim' : isRecall ? 'recall' : 'read'
@@ -509,9 +509,10 @@ export default function App() {
         } else if (bookChapter) {
             const book = findEntry(library, bookChapter.bookId);
             const next = book?.chapters.findIndex((c, i) => i > bookChapter.chapterIndex && !c.completedAt) ?? -1;
+            const scoreNote = session.scored ? ` at ${score}% retention` : '';
             addNotification(next === -1
-                ? `Chapter done at ${wpm} WPM.`
-                : `Chapter done at ${wpm} WPM. Next: ${book.chapters[next].title}.`, 'success');
+                ? `Chapter done at ${wpm} WPM${scoreNote}.`
+                : `Chapter done at ${wpm} WPM${scoreNote}. Next: ${book.chapters[next].title}.`, 'success');
         } else {
             addNotification(
                 session.scored

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
     Activity, Bookmark, BookOpen, Brain, ChevronRight, Download, FileText, Play, Search, Sparkles, Upload, X
 } from 'lucide-react';
@@ -46,6 +46,12 @@ function AiCleanModal({ target, ai, onSave, onClose, addNotification }) {
     const [draftText, setDraftText] = useState(target.text ?? '');
     const [cuts, setCuts] = useState([]);
     const [cleaning, setCleaning] = useState(false);
+
+    useEffect(() => {
+        const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [onClose]);
 
     const blocks = useMemo(() => (draftText.trim() ? selectBlocksForAiClean(draftText) : []), [draftText]);
     const spec = useMemo(() => (blocks.length > 0 ? cleanDocSpec({ blocks }) : null), [blocks]);
@@ -150,6 +156,12 @@ function QuizModal({ target, ai, verifyQuestions, onSave, onClose, addNotificati
     const useApi = Boolean(ai?.generate);
     const [generating, setGenerating] = useState(false);
     const [pendingCheck, setPendingCheck] = useState(null);
+
+    useEffect(() => {
+        const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [onClose]);
 
     const spec = useMemo(() => questionsForTextSpec({ title: target.title, text: target.text }), [target.title, target.text]);
 
