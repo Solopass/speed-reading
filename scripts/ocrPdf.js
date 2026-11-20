@@ -99,7 +99,7 @@ function runOcrmypdf(bin, args, env, signal) {
 }
 
 /** Runs ocrmypdf on a PDF buffer in an isolated temp dir, cleaning up when finished or aborted. */
-export async function ocrPdfBuffer(pdfBuffer, { force = false, signal } = {}) {
+export async function ocrPdfBuffer(pdfBuffer, { force = true, signal } = {}) {
     const { ocrmypdf, env } = findOcrToolchain();
     if (!ocrmypdf) {
         const err = new Error('OCRmyPDF is not installed on this machine.');
@@ -176,7 +176,7 @@ export function ocrPdfMiddleware(req, res, next) {
     });
 
     const parsed = new URL(req.url, 'http://127.0.0.1');
-    const force = parsed.searchParams.get('force') === '1';
+    const force = parsed.searchParams.get('force') !== '0';
 
     readPdfBody(req)
         .then((buf) => {
