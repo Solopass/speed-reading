@@ -291,6 +291,30 @@ describe('orderPdfItems', () => {
         ];
         expect(assemblePdfPageText(orderPdfItems(page, 600))).toBe('In the 19th century H2O');
     });
+
+    it('cleans OCR dash/tilde clusters and strips annotated multi-paragraph TOC blocks', () => {
+        const raw = [
+            'CONTENTS',
+            'LAW 2 page 8', 'NEVER TRUST FRIENDS', 'Summary of law two here.',
+            'LAW 3 page 16', 'CONCEAL YOUR INTENTIONS', 'Summary of law three here.',
+            'LAW 4 page 31', 'SAY LESS THAN NECESSARY', 'Summary of law four here.',
+            'LAW 5 /mge37', 'GUARD YOUR REPUTATION', 'Summary of law five here.',
+            'CHAPTER 1',
+            'Always make those above you feel comfortable~»—-never inspire fear——~they will resent it.'
+        ].join('\n\n');
+        const { text, cuts } = normalizeTextWithStats(raw, { stripPageNumbers: true });
+        expect(cuts.some(c => c.reason === 'Table of contents')).toBe(true);
+        expect(text).not.toContain('LAW 2 page 8');
+        expect(text).toContain('CHAPTER 1');
+        expect(text).toContain('comfortable — never inspire fear — they will resent it.');
+    });
+
+    it('flags OCR-mangled paragraphs with mixed digits or tildes in selectBlocksForRepair', async () => {
+        const { selectBlocksForRepair } = await import('./importText');
+        const ocrPara = 'Be wary :.3ffziends they will betray you more quickly, for they are easily aroused to envy and 0pen~hea7ted trust can backfire badly.';
+        const picked = selectBlocksForRepair(ocrPara);
+        expect(picked).toHaveLength(1);
+    });
 });
 
 // extractFromHtml needs DOMParser, so it is covered by the browser checks

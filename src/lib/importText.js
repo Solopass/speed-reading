@@ -149,6 +149,8 @@ export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations 
                 // A spaced hyphen or double hyphen between words is a dash.
                 // Between numbers it is a minus or a range ("5 - 3", "10 - 20"), so left alone.
                 .replace(/(?<=\p{L}{2}[,.;:!?"”’)]?)[ ](?:--?|–)[ ](?=[\p{L}"“‘(]\p{L})/gu, ' — ')
+                .replace(/[~»«]*[-–—]{2,}[~»«]*/g, ' — ')
+                .replace(/[ \t]+/g, ' ')
                 .trim();
             // A line that was blank is a paragraph break; one emptied by cleaning just goes.
             if (!clean) {
@@ -194,6 +196,37 @@ export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations 
             }
         });
         text = keptBlocks.join('\n\n');
+
+        // Annotated multi-paragraph Table of Contents (e.g. "LAW 2 page 8" + title + summary).
+        const finalBlocks = text.split(/\n\s*\n/);
+        const pageMarkers = finalBlocks.map((blk, idx) => {
+            const m = blk.trim().match(/^.{2,60}(?:\s(?:page|p\.?|\/mge))\s*(\d{1,4})$/i);
+            return m ? { idx, num: Number(m[1]) } : null;
+        }).filter(Boolean);
+        if (pageMarkers.length >= 4) {
+            let runStart = 0;
+            for (let i = 1; i <= pageMarkers.length; i++) {
+                const prev = pageMarkers[i - 1];
+                const curr = pageMarkers[i];
+                const continues = curr && curr.idx - prev.idx <= 4 && curr.num >= prev.num;
+                if (continues) continue;
+                if (i - runStart >= 4) {
+                    let from = pageMarkers[runStart].idx;
+                    if (from > 0 && /^(?:table of )?contents\b/i.test(finalBlocks[from - 1].trim())) from -= 1;
+                    const to = prev.idx;
+                    const tocText = finalBlocks.slice(from, to + 1).join('\n\n');
+                    cuts.push({
+                        id: `det-atoc-${from}`, index: from, text: tocText, reason: 'Table of contents', source: 'auto',
+                        after: from > 0 ? [finalBlocks[from - 1]] : [],
+                        before: finalBlocks[to + 1] ?? null
+                    });
+                    finalBlocks.splice(from, to - from + 1);
+                    break;
+                }
+                runStart = i;
+            }
+            text = finalBlocks.join('\n\n');
+        }
     }
 
     if (reflow) text = reflowParagraphs(text);
@@ -387,7 +420,7 @@ function garbleScore(p) {
     const singles = tokens.filter(t => /^\p{L}$/u.test(t) && !/^[aAI]$/.test(t)).length;
     const mixed = tokens.filter(t => /\p{L}\d|\d\p{L}/u.test(t) && !/^\d+(?:st|nd|rd|th|s)$/i.test(t)).length;
     const odd = (p.match(/[^\p{L}\p{N}\s.,;:!?'"“”‘’()\-–—…%&/]/gu) ?? []).length;
-    return (singles + mixed) / tokens.length + odd / Math.max(1, p.length) * 4;
+    return (singles + mixed) / tokens.length + mixed * 0.06 + odd * 0.04 + odd / Math.max(1, p.length) * 4;
 }
 
 /**
