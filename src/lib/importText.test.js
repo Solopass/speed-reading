@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-    SUPPORTED_EXTENSIONS, extensionOf, isSupported, normalizeText, normalizeTextWithStats, orderPdfItems, stripMarkdown, stripRepeatedHeadersFooters, titleFromFilename
+    SUPPORTED_EXTENSIONS, applyParagraphCuts, extensionOf, isSupported, normalizeText, normalizeTextWithStats,
+    orderPdfItems, restoreCutItem, selectBlocksForAiClean, stripMarkdown, stripRepeatedHeadersFooters, titleFromFilename
 } from './importText';
 
 const NBSP = String.fromCharCode(160);
@@ -115,12 +116,30 @@ describe('stripMarkdown and optional filters', () => {
 
     it('reports cleaning stats via normalizeTextWithStats', () => {
         const raw = 'speed-\nreading\u00AD\nPage 1\nChapter 1 ........ 5';
-        const { text, stats } = normalizeTextWithStats(raw);
+        const { text, stats, cuts } = normalizeTextWithStats(raw);
         expect(text).toBe('speedreading\n\nChapter 1 5');
         expect(stats.rejoinedHyphens).toBe(1);
         expect(stats.junkChars).toBe(1);
         expect(stats.pageNumbers).toBe(1);
         expect(stats.dotLeaders).toBe(1);
+        expect(cuts).toHaveLength(1);
+        expect(cuts[0].reason).toBe('Page number');
+    });
+
+    it('selects blocks, applies AI cuts, and restores cut blocks cleanly', () => {
+        const doc = 'Cookie policy\n\nReal paragraph one.\n\nAll rights reserved.';
+        const blocks = selectBlocksForAiClean(doc);
+        expect(blocks).toHaveLength(3);
+
+        const { text, cutItems } = applyParagraphCuts(doc, [
+            { index: 0, reason: 'Cookie banner' },
+            { index: 2, reason: 'Legal boilerplate' }
+        ]);
+        expect(text).toBe('Real paragraph one.');
+        expect(cutItems).toHaveLength(2);
+
+        const restored = restoreCutItem(text, cutItems[0]);
+        expect(restored).toBe('Cookie policy\n\nReal paragraph one.');
     });
 });
 

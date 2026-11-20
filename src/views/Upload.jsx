@@ -1,12 +1,15 @@
 import { useMemo, useRef, useState } from 'react';
 import {
-    Activity, AlertTriangle, ChevronRight, Eraser, Globe, HardDrive, Play, Undo2, Upload as UploadIcon
+    Activity, AlertTriangle, ChevronRight, Eraser, Globe, HardDrive, Play, RotateCcw, Sparkles, Undo2, Upload as UploadIcon
 } from 'lucide-react';
+import { cleanDocSpec } from '../lib/ai';
 import { splitPassage } from '../lib/protocol';
 import {
-    ACCEPT_ATTRIBUTE, SUPPORTED_EXTENSIONS, extractFromHtml, extractText, normalizeTextWithStats
+    ACCEPT_ATTRIBUTE, SUPPORTED_EXTENSIONS, applyParagraphCuts, extractFromHtml, extractText,
+    normalizeTextWithStats, restoreCutItem, selectBlocksForAiClean
 } from '../lib/importText';
 import { BOOK_MIN_WORDS, buildChapters, createBook } from '../lib/book';
+import ManualAiPanel from '../components/ManualAiPanel';
 
 const nextId = (prefix) => `${prefix}-${Date.now()}`;
 
@@ -22,12 +25,16 @@ function formatCleanSummary(stats) {
 }
 
 export default function Upload({
-    library = [], readingWpm = 300, onStartPassage, onStartPushDrill, onSaveBook, onSavePassage,
+    ai, library = [], readingWpm = 300, onStartPassage, onStartPushDrill, onSaveBook, onSavePassage,
     onOpenSaved, onDeleteSaved, onOpenDocuments, addNotification
 }) {
+    const useApi = Boolean(ai?.generate);
     const [customText, setCustomText] = useState('');
     const [rawBeforeClean, setRawBeforeClean] = useState(null);
     const [cleanStats, setCleanStats] = useState(null);
+    const [cutLog, setCutLog] = useState([]);
+    const [aiCleaning, setAiCleaning] = useState(false);
+    const [manualAiOpen, setManualAiOpen] = useState(false);
     const [title, setTitle] = useState('');
     const [articleUrl, setArticleUrl] = useState('');
     const [fetchingUrl, setFetchingUrl] = useState(false);
@@ -82,6 +89,7 @@ export default function Upload({
         if (files.length === 0) return;
         setImporting(true);
         setPdfProgress(null);
+        setManualAiOpen(false);
         try {
             if (files.length > 1) {
                 await importBatch(files);
@@ -96,6 +104,7 @@ export default function Upload({
             setCustomText(res.text);
             setRawBeforeClean(res.rawText ?? null);
             setCleanStats(res.stats ?? null);
+            setCutLog(res.cuts ?? []);
             setTitle(res.title);
             setImportedChapters(res.chapters);
             addNotification(`Loaded ${res.text.split(/\s+/).length.toLocaleString()} words from ${file.name}.`);
@@ -114,6 +123,7 @@ export default function Upload({
         const url = articleUrl.trim();
         if (!url) return;
         setFetchingUrl(true);
+        setManualAiOpen(false);
         try {
             const resp = await fetch(`/api/fetch-article?url=${encodeURIComponent(url)}`);
             if (resp.status === 404) {
@@ -122,13 +132,14 @@ export default function Upload({
             const data = await resp.json();
             if (!resp.ok) throw new Error(data.error || 'Could not fetch that URL.');
             const extracted = extractFromHtml(data.html);
-            const { text, stats } = normalizeTextWithStats(extracted.text, { stripUrls, stripCitations });
+            const { text, stats, cuts } = normalizeTextWithStats(extracted.text, { stripUrls, stripCitations });
             if (!text || text.split(/\s+/).length < 10) {
                 throw new Error('That page did not contain enough readable article text.');
             }
             setCustomText(text);
             setRawBeforeClean(extracted.text);
             setCleanStats(stats);
+            setCutLog(cuts);
             setTitle(extracted.title || extracted.heading || new URL(url).hostname);
             setImportedChapters(null);
             addNotification(`Imported ${text.split(/\s+/).length.toLocaleString()} words from ${new URL(url).hostname}.`, 'success');
@@ -141,10 +152,72 @@ export default function Upload({
 
     const handleCleanClick = () => {
         setRawBeforeClean(customText);
-        const { text, stats } = normalizeTextWithStats(customText, { stripUrls, stripCitations });
+        const { text, stats, cuts } = normalizeTextWithStats(customText, { stripUrls, stripCitations });
         setCustomText(text);
         setCleanStats(stats);
+        setCutLog(prev => [...prev, ...cuts]);
         addNotification('Cleaned formatting and stray characters.');
+    };
+
+    const applyAiCuts = (reply) => {
+        const cuts = Array.isArray(reply?.cuts) ? reply.cuts : [];
+        if (cuts.length === 0) {
+            addNotification('AI found no extra clutter to cut.');
+            setManualAiOpen(false);
+            return;
+        }
+        setRawBeforeClean(prev => prev ?? customText);
+        const { text, cutItems } = applyParagraphCuts(customText, cuts);
+        if (cutItems.length === 0) {
+            addNotification('AI found no matching blocks to cut.');
+            setManualAiOpen(false);
+            return;
+        }
+        setCustomText(text);
+        setCutLog(prev => [...cutItems, ...prev]);
+        setManualAiOpen(false);
+        addNotification(`AI cut ${cutItems.length} clutter block${cutItems.length === 1 ? '' : 's'} — review in diff below.`, 'success');
+    };
+
+    const aiBlocks = useMemo(() => (customText.trim() ? selectBlocksForAiClean(customText) : []), [customText]);
+    const aiCleanSpec = useMemo(() => (aiBlocks.length > 0 ? cleanDocSpec({ blocks: aiBlocks }) : null), [aiBlocks]);
+
+    const handleAiClean = async () => {
+        if (!aiCleanSpec) return;
+        if (!useApi) {
+            setManualAiOpen(o => !o);
+            return;
+        }
+        setAiCleaning(true);
+        try {
+            const reply = await ai.generate({ prompt: aiCleanSpec.prompt, schema: aiCleanSpec.schema });
+            applyAiCuts(reply);
+        } catch (error) {
+            addNotification(error.message || 'AI cleanup failed.');
+        } finally {
+            setAiCleaning(false);
+        }
+    };
+
+    const handleRestoreCut = (cutItem) => {
+        setCustomText(prev => restoreCutItem(prev, cutItem));
+        setCutLog(prev => prev.filter(c => c.id !== cutItem.id));
+    };
+
+    const handleRestoreAllCuts = () => {
+        if (rawBeforeClean !== null) {
+            setCustomText(rawBeforeClean);
+            setRawBeforeClean(null);
+            setCleanStats(null);
+            setCutLog([]);
+            return;
+        }
+        let next = customText;
+        for (const item of [...cutLog].reverse()) {
+            next = restoreCutItem(next, item);
+        }
+        setCustomText(next);
+        setCutLog([]);
     };
 
     const handleUndoClean = () => {
@@ -152,6 +225,7 @@ export default function Upload({
         setCustomText(rawBeforeClean);
         setRawBeforeClean(null);
         setCleanStats(null);
+        setCutLog([]);
     };
 
     const handleDrop = (e) => {
@@ -203,6 +277,7 @@ export default function Upload({
         setCustomText('');
         setRawBeforeClean(null);
         setCleanStats(null);
+        setCutLog([]);
         setTitle('');
         setImportedChapters(null);
         onOpenDocuments?.();
@@ -375,6 +450,46 @@ export default function Upload({
                         </div>
                     )}
 
+                    {cutLog.length > 0 && (
+                        <details className="group bg-slate-950 border border-red-900/40 rounded-xl" open={cutLog.some(c => c.source === 'ai')}>
+                            <summary className="cursor-pointer select-none px-4 py-2.5 flex items-center justify-between text-xs font-bold text-slate-300 hover:text-white">
+                                <span className="flex items-center gap-1.5">
+                                    <ChevronRight size={14} className="group-open:rotate-90 transition-transform" />
+                                    Review cuts ({cutLog.length})
+                                </span>
+                                <span className="text-slate-500 font-normal">Restore anything important</span>
+                            </summary>
+                            <div className="px-4 pb-3 pt-1 space-y-2 max-h-60 overflow-y-auto">
+                                <div className="flex justify-end">
+                                    <button
+                                        type="button"
+                                        onClick={handleRestoreAllCuts}
+                                        className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-400 hover:text-white"
+                                    >
+                                        <RotateCcw size={11} /> Restore all
+                                    </button>
+                                </div>
+                                {cutLog.map(item => (
+                                    <div key={item.id} className="flex items-start justify-between gap-3 bg-red-950/20 border border-red-900/40 rounded-lg px-3 py-2 text-xs">
+                                        <div className="min-w-0 flex-1">
+                                            <span className="inline-block text-[10px] font-bold uppercase tracking-wider bg-red-500/20 text-red-300 px-1.5 py-0.5 rounded mr-2">
+                                                {item.reason}
+                                            </span>
+                                            <span className="font-mono text-red-300/90 break-words">- {item.text}</span>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => handleRestoreCut(item)}
+                                            className="shrink-0 text-[11px] font-bold text-purple-400 hover:text-purple-300 px-2 py-0.5 rounded border border-purple-800/60"
+                                        >
+                                            Restore
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        </details>
+                    )}
+
                     <div className="flex items-center justify-between gap-3 flex-wrap">
                         <div className="flex items-center gap-4 flex-wrap text-xs text-slate-400">
                             <label className="inline-flex items-center gap-1.5 cursor-pointer">
@@ -398,8 +513,8 @@ export default function Upload({
                         </div>
 
                         {wordCount > 0 && (
-                            <div className="flex items-center gap-3 flex-wrap">
-                                <span className="text-xs text-slate-500">
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-xs text-slate-500 mr-1">
                                     {wordCount.toLocaleString()} words · ~{estMinutes} min at {readingWpm} WPM
                                 </span>
                                 <button
@@ -409,9 +524,27 @@ export default function Upload({
                                 >
                                     <Eraser size={13} /> Clean text
                                 </button>
+                                <button
+                                    type="button"
+                                    onClick={handleAiClean}
+                                    disabled={aiCleaning || !aiCleanSpec}
+                                    title={ai?.note}
+                                    className="inline-flex items-center gap-1.5 text-xs font-bold text-purple-300 hover:text-white border border-purple-700/60 bg-purple-950/30 hover:bg-purple-900/40 disabled:opacity-40 px-3 py-1.5 rounded-lg transition-colors"
+                                >
+                                    {aiCleaning ? <Activity className="animate-spin" size={13} /> : <Sparkles size={13} />}
+                                    {aiCleaning ? `Cleaning on ${ai.label}…` : 'AI Clean'}
+                                </button>
                             </div>
                         )}
                     </div>
+
+                    {manualAiOpen && !useApi && aiCleanSpec && (
+                        <ManualAiPanel
+                            spec={aiCleanSpec}
+                            addNotification={addNotification}
+                            onResult={applyAiCuts}
+                        />
+                    )}
 
                     {previewChapters.length >= 2 && (
                         <details className="group bg-slate-950 border border-slate-800 rounded-xl">

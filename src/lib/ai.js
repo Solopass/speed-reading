@@ -229,3 +229,43 @@ export function dropGuessableQuestions(questions, blindAnswers) {
 
     return { questions: kept, dropped, applied: true };
 }
+
+/**
+ * Asks the model to identify non-prose junk blocks (navigation, boilerplate,
+ * TOC dumps, OCR noise) by index so kept prose stays 100% verbatim.
+ */
+export function cleanDocSpec({ blocks }) {
+    const listed = blocks
+        .map(({ index, text }) => {
+            const preview = text.length > 260 ? `${text.slice(0, 260)}…` : text;
+            return `[${index}] ${preview.replace(/\s+/g, ' ').trim()}`;
+        })
+        .join('\n');
+
+    return {
+        label: 'document cleanup',
+        prompt: `Review the numbered blocks below from an imported document. Identify ONLY blocks that are non-prose clutter that should NOT be read in a speed reader (navigation menus, cookie/promo banners, copyright/legal boilerplate, raw table of contents listings, bibliography/reference dumps, repeated headers/footers, or garbled OCR).
+
+NEVER cut actual article or book prose, dialogue, or real chapter/section headings. If nothing should be cut, return {"cuts": []}.
+
+${listed}`,
+        schema: {
+            type: 'OBJECT',
+            properties: {
+                cuts: {
+                    type: 'ARRAY',
+                    items: {
+                        type: 'OBJECT',
+                        properties: {
+                            index: { type: 'INTEGER' },
+                            reason: { type: 'STRING' }
+                        },
+                        required: ['index', 'reason']
+                    }
+                }
+            },
+            required: ['cuts']
+        },
+        shape: '{"cuts": [{"index": number, "reason": string}]}'
+    };
+}

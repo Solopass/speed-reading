@@ -74,18 +74,24 @@ export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations 
 
     const rawLines = scrubbed.split('\n');
     const multiLine = rawLines.length > 2;
+    const cuts = [];
 
     const text = rawLines
-        .map(line => {
+        .map((line, lineIdx) => {
             let clean = line
                 .replace(LEADING_BULLET_RE, '')
                 .replace(/\.{4,}/g, () => { stats.dotLeaders += 1; return ' '; })
                 .replace(STRAY_SYMBOL_TOKEN_RE, '$1')
                 .replace(/[ \t]+/g, ' ')
                 .trim();
-            if (!clean || DIVIDER_LINE_RE.test(clean)) return '';
+            if (!clean) return '';
+            if (DIVIDER_LINE_RE.test(clean)) {
+                cuts.push({ id: `det-${lineIdx}-div`, index: lineIdx, text: clean, reason: 'Divider', source: 'auto' });
+                return '';
+            }
             if (multiLine && (PAGE_NUMBER_RE.test(clean) || /^\d{1,4}$/.test(clean))) {
                 stats.pageNumbers += 1;
+                cuts.push({ id: `det-${lineIdx}-pg`, index: lineIdx, text: clean, reason: 'Page number', source: 'auto' });
                 return '';
             }
             return clean;
@@ -94,7 +100,62 @@ export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations 
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 
-    return { text, stats };
+    return { text, stats, cuts };
+}
+
+/**
+ * Picks blocks for AI cleanup: all paragraphs for normal documents (<= maxBlocks),
+ * or front/back matter + suspect short/noisy blocks for long books.
+ */
+export function selectBlocksForAiClean(text, maxBlocks = 60) {
+    const paragraphs = String(text ?? '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+    if (paragraphs.length <= maxBlocks) {
+        return paragraphs.map((p, index) => ({ index, text: p }));
+    }
+
+    const picked = new Map();
+    const edge = 15;
+    for (let i = 0; i < Math.min(edge, paragraphs.length); i++) picked.set(i, paragraphs[i]);
+    for (let i = Math.max(edge, paragraphs.length - edge); i < paragraphs.length; i++) picked.set(i, paragraphs[i]);
+
+    for (let i = edge; i < paragraphs.length - edge && picked.size < maxBlocks; i++) {
+        const p = paragraphs[i];
+        const words = p.split(/\s+/).length;
+        const noisy = /https?:\/\/|copyright|all rights reserved|table of contents|\bISBN\b/i.test(p)
+            || (words <= 6 && !/[.!?]$/.test(p));
+        if (noisy) picked.set(i, p);
+    }
+
+    return [...picked.entries()].sort((a, b) => a[0] - b[0]).map(([index, p]) => ({ index, text: p }));
+}
+
+/** Applies AI cut indices to paragraph-separated text, returning new text and cut items for diff review. */
+export function applyParagraphCuts(text, cuts = []) {
+    const paragraphs = String(text ?? '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+    const byIndex = new Map();
+    for (const c of cuts) {
+        if (Number.isInteger(c?.index) && c.index >= 0 && c.index < paragraphs.length && !byIndex.has(c.index)) {
+            byIndex.set(c.index, String(c.reason || 'Clutter').trim().slice(0, 60));
+        }
+    }
+    const kept = [];
+    const cutItems = [];
+    paragraphs.forEach((p, idx) => {
+        if (byIndex.has(idx)) {
+            cutItems.push({ id: `ai-${Date.now()}-${idx}`, index: idx, text: p, reason: `AI: ${byIndex.get(idx)}`, source: 'ai' });
+        } else {
+            kept.push(p);
+        }
+    });
+    return { text: kept.join('\n\n'), cutItems };
+}
+
+/** Reinserts a previously cut item back into the document text at its original paragraph position. */
+export function restoreCutItem(text, cutItem) {
+    const paragraphs = String(text ?? '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+    const at = Math.max(0, Math.min(paragraphs.length, Number.isInteger(cutItem?.index) ? cutItem.index : paragraphs.length));
+    paragraphs.splice(at, 0, cutItem.text);
+    return paragraphs.join('\n\n');
 }
 
 /**
@@ -165,16 +226,21 @@ export function extractFromHtml(html) {
 }
 
 async function readPlain(file, options) {
-    return { title: null, text: normalizeText(await file.text(), options) };
+    const rawText = await file.text();
+    const { text, stats, cuts } = normalizeTextWithStats(rawText, options);
+    return { title: null, text, rawText, stats, cuts };
 }
 
 async function readMarkdown(file, options) {
-    return { title: null, text: normalizeText(stripMarkdown(await file.text()), options) };
+    const rawText = await file.text();
+    const { text, stats, cuts } = normalizeTextWithStats(stripMarkdown(rawText), options);
+    return { title: null, text, rawText, stats, cuts };
 }
 
 async function readHtml(file, options) {
     const res = extractFromHtml(await file.text());
-    return { ...res, text: normalizeText(res.text, options) };
+    const { text, stats, cuts } = normalizeTextWithStats(res.text, options);
+    return { ...res, text, rawText: res.text, stats, cuts };
 }
 
 const decode = (bytes) => new TextDecoder('utf-8').decode(bytes);
@@ -245,8 +311,8 @@ async function readDocx(file, options) {
 
     if (!paragraphs.length) throw new Error('That .docx appears to contain no text.');
     const rawText = paragraphs.join('\n\n');
-    const { text, stats } = normalizeTextWithStats(rawText, options);
-    return { title: null, text, rawText, stats };
+    const { text, stats, cuts } = normalizeTextWithStats(rawText, options);
+    return { title: null, text, rawText, stats, cuts };
 }
 
 const headerKey = (line) => line.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -386,7 +452,7 @@ async function readPdf(file, options = {}) {
     const strippedPages = stripRepeatedHeadersFooters(pages);
     const removedHeaders = pages.reduce((n, p, i) => (p !== strippedPages[i] ? n + 1 : n), 0);
     const rawText = pages.join('\n\n');
-    const { text, stats } = normalizeTextWithStats(strippedPages.join('\n\n'), options);
+    const { text, stats, cuts } = normalizeTextWithStats(strippedPages.join('\n\n'), options);
     if (!text) {
         throw new Error(`This PDF (${pdf.numPages} page${pdf.numPages === 1 ? '' : 's'}) appears to be scanned images with no selectable text. Run OCR (e.g. Adobe, macOS Preview, or ocrmypdf) first, then re-upload.`);
     }
@@ -397,6 +463,7 @@ async function readPdf(file, options = {}) {
         text,
         rawText,
         chapters,
+        cuts,
         stats: { ...stats, repeatedHeaders: removedHeaders }
     };
 }
@@ -421,7 +488,7 @@ export async function extractText(file, options = {}) {
         throw new Error(`Cannot read ${extension || 'that file'}. Supported: ${SUPPORTED_EXTENSIONS.join(', ')}.`);
     }
 
-    const { title, text, chapters = null, rawText = null, stats = null } = await reader(file, options);
+    const { title, text, chapters = null, rawText = null, stats = null, cuts = [] } = await reader(file, options);
     const cleaned = (options.stripUrls || options.stripCitations)
         ? normalizeText(text, options)
         : text;
@@ -430,5 +497,5 @@ export async function extractText(file, options = {}) {
     }
 
     // `chapters` is null unless the format carries its own (EPUB or PDF outline).
-    return { title: title || titleFromFilename(file.name), text: cleaned, chapters, rawText, stats };
+    return { title: title || titleFromFilename(file.name), text: cleaned, chapters, rawText, stats, cuts };
 }
