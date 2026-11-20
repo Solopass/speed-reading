@@ -10,6 +10,7 @@ import PassageText from '../components/PassageText';
 import ReadingSurface from '../components/ReadingSurface';
 import ReaderSettings from '../components/ReaderSettings';
 import { focalColorFor, rampFactor } from '../lib/readingStyle';
+import { rsvpWordScale } from '../lib/scrollUtils';
 import { clampIndex, clock, extractSections, jump, startCount, wordsCovered } from '../lib/readerNav';
 import { buildChunks, chunkIndexAt, joinFlashWords, pauseAfter, tokenize, wordWeights } from '../lib/chunker';
 import { loadFrequencyRank } from '../lib/vocab';
@@ -55,23 +56,65 @@ export const skimStartWpm = (targetWpm) => Math.min(2000, Math.max(700, Math.rou
  * was covered before every jump.
  */
 function Scrubber({ index, total, onSeek, label }) {
-    const pct = total ? (index / total) * 100 : 0;
-    const seekFromPointer = (e) => {
-        const rect = e.currentTarget.getBoundingClientRect();
-        onSeek(((e.clientX - rect.left) / rect.width) * total);
+    const [dragging, setDragging] = useState(false);
+    const [previewIdx, setPreviewIdx] = useState(null);
+    const barRef = useRef(null);
+    const activeIdx = dragging && previewIdx !== null ? previewIdx : index;
+    const pct = total ? Math.max(0, Math.min(100, (activeIdx / total) * 100)) : 0;
+
+    const indexFromClientX = (clientX) => {
+        const rect = barRef.current?.getBoundingClientRect();
+        if (!rect || rect.width <= 0) return index;
+        const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+        return Math.round(frac * total);
     };
+
     return (
         <div
-            role="slider" tabIndex={0} aria-label={label} aria-valuemin={0} aria-valuemax={total} aria-valuenow={index}
-            onClick={seekFromPointer}
+            ref={barRef}
+            role="slider" tabIndex={0} aria-label={label} aria-valuemin={0} aria-valuemax={total} aria-valuenow={activeIdx}
+            onPointerDown={(e) => {
+                e.preventDefault();
+                const next = indexFromClientX(e.clientX);
+                setDragging(true);
+                setPreviewIdx(next);
+                onSeek(next);
+                e.currentTarget.setPointerCapture?.(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+                if (!dragging) return;
+                const next = indexFromClientX(e.clientX);
+                setPreviewIdx(next);
+                onSeek(next);
+            }}
+            onPointerUp={(e) => {
+                if (!dragging) return;
+                setDragging(false);
+                setPreviewIdx(null);
+                e.currentTarget.releasePointerCapture?.(e.pointerId);
+            }}
+            onPointerCancel={(e) => {
+                if (!dragging) return;
+                setDragging(false);
+                setPreviewIdx(null);
+                e.currentTarget.releasePointerCapture?.(e.pointerId);
+            }}
             onKeyDown={(e) => {
                 if (e.key === 'ArrowLeft') { e.preventDefault(); e.stopPropagation(); onSeek(index - SKIP_WORDS); }
                 if (e.key === 'ArrowRight') { e.preventDefault(); e.stopPropagation(); onSeek(index + SKIP_WORDS); }
             }}
-            className="group w-full max-w-lg py-2 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 rounded"
+            className="relative group w-full max-w-lg py-2 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 rounded touch-none"
         >
+            {dragging && (
+                <div
+                    className="absolute -top-7 -translate-x-1/2 px-2 py-0.5 rounded bg-purple-600 text-white text-[11px] font-mono font-bold shadow pointer-events-none whitespace-nowrap"
+                    style={{ left: `${pct}%` }}
+                >
+                    {Math.round(pct)}% · {activeIdx}
+                </div>
+            )}
             <div className="h-2 group-hover:h-3 transition-all bg-slate-800 rounded-full overflow-hidden">
-                <div className="h-full bg-purple-600 transition-[width] duration-200" style={{ width: `${pct}%` }} />
+                <div className={`h-full bg-purple-600 ${dragging ? '' : 'transition-[width] duration-200'}`} style={{ width: `${pct}%` }} />
             </div>
         </div>
     );
@@ -156,6 +199,20 @@ function Reader({
     const words = useMemo(() => {
         if (!passage?.text) return [];
         return passage.text.trim().split(/\s+/).filter(w => w.length > 0);
+    }, [passage]);
+
+    const paraEnds = useMemo(() => {
+        const ends = new Set();
+        if (!passage?.text) return ends;
+        let idx = 0;
+        for (const p of passage.text.trim().split(/\n\s*\n/)) {
+            const count = p.trim().split(/\s+/).filter(Boolean).length;
+            if (count > 0) {
+                idx += count;
+                ends.add(idx - 1);
+            }
+        }
+        return ends;
     }, [passage]);
 
     const sections = useMemo(() => (book ? [] : extractSections(passage?.text ?? '')), [book, passage?.text]);
@@ -459,7 +516,10 @@ function Reader({
         let units = 0;
         for (let i = currentIndex; i < end; i++) units += weights[i] ?? 1;
         let delayMs = wordMs * units;
-        if (settings.punctuationPacing) delayMs += wordMs * pauseAfter(words[end - 1], gaps[end - 1] ?? 0, words[end]);
+        if (settings.punctuationPacing) {
+            delayMs += wordMs * pauseAfter(words[end - 1], gaps[end - 1] ?? 0, words[end]);
+            if (paraEnds.has(end - 1) && end < words.length) delayMs += Math.min(220, wordMs * 0.45);
+        }
 
         timerRef.current = setTimeout(() => {
             const next = end;
@@ -474,7 +534,7 @@ function Reader({
         }, delayMs);
 
         return () => clearTimeout(timerRef.current);
-    }, [isPlaying, currentIndex, effectiveWpm, mode, words, settings.punctuationPacing, flashEnd, weights, gaps]);
+    }, [isPlaying, currentIndex, effectiveWpm, mode, words, settings.punctuationPacing, flashEnd, weights, gaps, paraEnds]);
 
     // The pacer reports completion from its own animation loop; guard against
     // it firing more than once as the final frames settle.
@@ -556,7 +616,7 @@ function Reader({
     };
 
     const handleWheelScrub = (e) => {
-        if (isPlaying || (mode !== 'rsvp' && mode !== 'scroll')) return;
+        if (isPlaying || mode !== 'rsvp') return;
         if (Math.abs(e.deltaY) < 4) return;
         seekBy(e.deltaY > 0 ? 3 : -3);
     };
@@ -643,7 +703,7 @@ function Reader({
         const start = chunk.slice(0, centerIdx);
         const center = chunk.charAt(centerIdx);
         const end = chunk.slice(centerIdx + 1);
-        const scale = 1;
+        const scale = rsvpWordScale(chunk);
 
         return (
             // Equal-width flanks keep the ORP character pinned to the exact
@@ -1032,7 +1092,20 @@ function Reader({
                                 style={{ height: reading.rsvpPreviewNext ? `calc(${flashBoxHeight(settings.chunkSize)} + 2.4rem)` : flashBoxHeight(settings.chunkSize) }}
                             >
                                 {reading.showFocalGuide && (
-                                    <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 pointer-events-none" style={{ background: 'var(--reading-muted)', opacity: 0.35 }} />
+                                    <>
+                                        <div className="absolute top-0 left-1/2 w-0.5 h-3 -translate-x-1/2 pointer-events-none rounded-b" style={{ background: 'var(--reading-muted)', opacity: 0.55 }} />
+                                        <div className="absolute bottom-0 left-1/2 w-0.5 h-3 -translate-x-1/2 pointer-events-none rounded-t" style={{ background: 'var(--reading-muted)', opacity: 0.55 }} />
+                                    </>
+                                )}
+                                {paraEnds.has(flashEnd(currentIndex) - 1) && (
+                                    <span
+                                        aria-hidden="true"
+                                        title="End of paragraph"
+                                        className="absolute bottom-2 right-3 text-xs font-mono pointer-events-none"
+                                        style={{ color: 'var(--reading-muted)', opacity: 0.6 }}
+                                    >
+                                        ¶
+                                    </span>
                                 )}
                                 {countdown === null && (
                                     <div className="w-full flex flex-col items-center gap-2">
@@ -1115,6 +1188,7 @@ function Reader({
                             onProgress={setPacedIndex}
                             onComplete={handlePacerComplete}
                             onChangeWidth={(ch) => patchReading({ maxWidthCh: ch })}
+                            onChangeFocalPct={(pct) => patchReading({ scrollFocalPct: pct })}
                         />
 
                         <div className="mt-6 pt-4 border-t border-slate-800 flex flex-col items-center gap-2">

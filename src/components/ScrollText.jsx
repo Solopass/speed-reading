@@ -4,21 +4,26 @@ import { buildChunks, chunkIndexAt, pauseAfter, tokenize, wordWeights } from '..
 import {
     advanceByCost, gradientAnchors, gradientBackground, layoutLines, pacingCosts, textLooks
 } from '../lib/textColor';
+import { groupLineTops, isHeadingParagraph } from '../lib/scrollUtils';
 import { DEFAULT_READING, LIMITS } from '../lib/readingStyle';
 
 /** Word centres (for the scroll) and boxes (for the line gradient), relative to the text column. */
-function measureWords(container, wordEls) {
-    if (!container) return { tops: [], boxes: [], width: 1 };
+function measureWords(container, wordEls, needBoxes = false) {
+    if (!container) return { tops: [], lineTops: [], boxes: [], width: 1 };
     const base = container.getBoundingClientRect();
     const tops = [];
-    const boxes = [];
+    const boxes = needBoxes ? [] : null;
     for (const el of wordEls) {
-        if (!el) { tops.push(0); boxes.push(null); continue; }
+        if (!el) {
+            tops.push(0);
+            if (boxes) boxes.push(null);
+            continue;
+        }
         const r = el.getBoundingClientRect();
         tops.push(r.top - base.top + r.height / 2);
-        boxes.push({ top: r.top - base.top, left: r.left - base.left, right: r.right - base.left });
+        if (boxes) boxes.push({ top: r.top - base.top, left: r.left - base.left, right: r.right - base.left });
     }
-    return { tops, boxes, width: base.width };
+    return { tops, lineTops: groupLineTops(tops), boxes: boxes ?? [], width: base.width };
 }
 
 /** One line's height at the current reading settings, as CSS. */
@@ -44,7 +49,8 @@ export default function ScrollText({
     onWordClick,
     onProgress,
     onComplete,
-    onChangeWidth = null
+    onChangeWidth = null,
+    onChangeFocalPct = null
 }) {
     const {
         bionicStrength, dimRead, readOpacity, scrollFocalPct: focalPct, scrollColor, scrollPalette, scrollColorStrength,
@@ -62,12 +68,15 @@ export default function ScrollText({
     const contentRef = useRef(null);
     const wordRefs = useRef([]);
     const wordTopsRef = useRef([]);
+    const wordLineTopsRef = useRef([]);
 
     const paragraphs = useMemo(() => {
         const paras = text.trim().split(/\n\s*\n/).filter(p => p.trim());
         let index = 0;
         return paras.map(p => p.trim().split(/\s+/).map(word => ({ word, index: index++ })));
     }, [text]);
+
+    const paraHeadings = useMemo(() => paragraphs.map(isHeadingParagraph), [paragraphs]);
 
     const totalWords = useMemo(
         () => paragraphs.reduce((sum, p) => sum + p.length, 0),
@@ -119,6 +128,7 @@ export default function ScrollText({
      */
     const paint = useCallback((progress) => {
         const tops = wordTopsRef.current;
+        const lineTops = wordLineTopsRef.current;
         const content = contentRef.current;
         if (!content) return;
         let targetY = 0;
@@ -126,7 +136,7 @@ export default function ScrollText({
             const idx = Math.max(0, Math.min(tops.length - 1, Math.floor(progress)));
             const y0 = tops[idx] ?? 0;
             if (motionRef.current === 'line') {
-                targetY = y0;
+                targetY = lineTops[idx] ?? y0;
             } else {
                 const nextIdx = Math.min(tops.length - 1, idx + 1);
                 const frac = Math.max(0, progress - Math.floor(progress));
@@ -158,12 +168,16 @@ export default function ScrollText({
             }
             // Measured with the transform in place; everything is relative to
             // the text column, so the scroll offset cancels out.
-            const m = measureWords(contentRef.current, wordRefs.current);
+            const needBoxes = scrollColor === 'gradient';
+            const m = measureWords(contentRef.current, wordRefs.current, needBoxes);
             wordTopsRef.current = m.tops;
-            setLayout(prev => {
-                const key = m.boxes.map(b => (b ? `${Math.round(b.top)}:${Math.round(b.left)}` : '-')).join(',') + `|${Math.round(m.width)}`;
-                return prev?.key === key ? prev : { key, boxes: m.boxes, width: m.width };
-            });
+            wordLineTopsRef.current = m.lineTops;
+            if (needBoxes) {
+                setLayout(prev => {
+                    const key = m.boxes.map(b => (b ? `${Math.round(b.top)}:${Math.round(b.left)}` : '-')).join(',') + `|${Math.round(m.width)}`;
+                    return prev?.key === key ? prev : { key, boxes: m.boxes, width: m.width };
+                });
+            }
             paint(progressRef.current);
         };
         measure();
@@ -172,7 +186,7 @@ export default function ScrollText({
         if (contentRef.current) observer.observe(contentRef.current);
         document.fonts?.ready.then(measure).catch(() => {});
         return () => observer.disconnect();
-    }, [paragraphs, bionicReading, totalWords, paint, layoutKey]);
+    }, [paragraphs, bionicReading, totalWords, paint, layoutKey, scrollColor]);
 
     // Moving the reading line or switching motion repositions the text.
     useLayoutEffect(() => {
@@ -241,7 +255,78 @@ export default function ScrollText({
         : 'none';
 
     const [draggingWidth, setDraggingWidth] = useState(false);
+    const [draggingFocal, setDraggingFocal] = useState(false);
     const dragRef = useRef(null);
+    const focalDragRef = useRef(null);
+    const touchScrubRef = useRef(null);
+
+    useEffect(() => {
+        const el = viewportRef.current;
+        if (!el || totalWords === 0) return undefined;
+        const onWheel = (e) => {
+            if (Math.abs(e.deltaY) < 4) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const step = e.deltaY > 0 ? Math.max(2, Math.round(e.deltaY / 18)) : -Math.max(2, Math.round(-e.deltaY / 18));
+            const next = Math.max(0, Math.min(totalWords - 1, Math.round(progressRef.current) + step));
+            if (onWordClick) onWordClick(next);
+            else moveTo(next);
+        };
+        el.addEventListener('wheel', onWheel, { passive: false });
+        return () => el.removeEventListener('wheel', onWheel);
+    }, [totalWords, onWordClick, moveTo]);
+
+    const startFocalDrag = (e) => {
+        if (!onChangeFocalPct || !viewportRef.current) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = viewportRef.current.getBoundingClientRect();
+        focalDragRef.current = { startY: e.clientY, startPct: focalPct, height: Math.max(1, rect.height) };
+        setDraggingFocal(true);
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+    };
+
+    const moveFocalDrag = (e) => {
+        const d = focalDragRef.current;
+        if (!d || !onChangeFocalPct) return;
+        const deltaPct = ((e.clientY - d.startY) / d.height) * 100;
+        const [minPct, maxPct] = LIMITS.scrollFocalPct;
+        const next = Math.round(Math.min(maxPct, Math.max(minPct, d.startPct + deltaPct)));
+        onChangeFocalPct(next);
+    };
+
+    const endFocalDrag = (e) => {
+        if (!focalDragRef.current) return;
+        focalDragRef.current = null;
+        setDraggingFocal(false);
+        e.currentTarget.releasePointerCapture?.(e.pointerId);
+    };
+
+    const nudgeFocalKey = (e) => {
+        if (!onChangeFocalPct) return;
+        const [minPct, maxPct] = LIMITS.scrollFocalPct;
+        if (e.key === 'ArrowUp') { e.preventDefault(); onChangeFocalPct(Math.max(minPct, focalPct - 2)); }
+        if (e.key === 'ArrowDown') { e.preventDefault(); onChangeFocalPct(Math.min(maxPct, focalPct + 2)); }
+    };
+
+    const onTouchStartScroll = (e) => {
+        if (e.touches.length !== 1) return;
+        touchScrubRef.current = { y: e.touches[0].clientY, x: e.touches[0].clientX, startIdx: progressRef.current };
+    };
+
+    const onTouchMoveScroll = (e) => {
+        const t = touchScrubRef.current;
+        if (!t || e.touches.length !== 1 || totalWords === 0) return;
+        const dy = t.y - e.touches[0].clientY;
+        const dx = Math.abs(t.x - e.touches[0].clientX);
+        if (Math.abs(dy) < 10 || dx > Math.abs(dy)) return;
+        const wordsDelta = Math.round(dy / 10);
+        const next = Math.max(0, Math.min(totalWords - 1, Math.round(t.startIdx) + wordsDelta));
+        if (onWordClick) onWordClick(next);
+        else moveTo(next);
+    };
+
+    const onTouchEndScroll = () => { touchScrubRef.current = null; };
 
     const startWidthDrag = (side, e) => {
         if (!onChangeWidth || !contentRef.current) return;
@@ -284,6 +369,9 @@ export default function ScrollText({
     return (
         <div
             ref={viewportRef}
+            onTouchStart={onTouchStartScroll}
+            onTouchMove={onTouchMoveScroll}
+            onTouchEnd={onTouchEndScroll}
             className="relative w-full overflow-hidden select-none group/scroll"
             style={{
                 height: `max(16rem, ${scrollHeightVh}vh)`,
@@ -295,7 +383,7 @@ export default function ScrollText({
             {scrollGuide === 'band' && (
                 <div
                     aria-hidden="true"
-                    className="absolute inset-x-0 pointer-events-none border-y border-purple-500/20 bg-purple-500/[0.05]"
+                    className={`absolute inset-x-0 pointer-events-none border-y transition-colors ${draggingFocal ? 'border-purple-400/60 bg-purple-500/10' : 'border-purple-500/20 bg-purple-500/[0.05]'}`}
                     style={{ top: focalY, height: bandHeight, transform: 'translateY(-50%)' }}
                 />
             )}
@@ -305,6 +393,27 @@ export default function ScrollText({
                     className="absolute inset-x-0 pointer-events-none bg-purple-500/50"
                     style={{ top: `calc(${focalY}px + ${LINE} * 0.5)`, height: 2 }}
                 />
+            )}
+            {onChangeFocalPct && (
+                <div
+                    role="slider"
+                    aria-label="Drag to move reading line"
+                    aria-valuemin={LIMITS.scrollFocalPct[0]}
+                    aria-valuemax={LIMITS.scrollFocalPct[1]}
+                    aria-valuenow={focalPct}
+                    tabIndex={0}
+                    onPointerDown={startFocalDrag}
+                    onPointerMove={moveFocalDrag}
+                    onPointerUp={endFocalDrag}
+                    onPointerCancel={endFocalDrag}
+                    onDoubleClick={() => onChangeFocalPct(DEFAULT_READING.scrollFocalPct)}
+                    onKeyDown={nudgeFocalKey}
+                    title="Drag up/down to move reading line (double-click to reset)"
+                    style={{ top: focalY, transform: 'translateY(-50%)' }}
+                    className="hidden sm:flex items-center justify-center absolute right-1.5 w-5 h-7 cursor-ns-resize z-20 opacity-0 group-hover/scroll:opacity-100 focus:opacity-100 transition-opacity touch-none"
+                >
+                    <span className={`w-3.5 h-1 rounded-full transition-colors ${draggingFocal ? 'bg-purple-400' : 'bg-slate-600 hover:bg-purple-400'}`} />
+                </div>
             )}
 
             <div
@@ -374,15 +483,16 @@ export default function ScrollText({
                             onWordClick={onWordClick}
                             setRef={setRef}
                             looks={looks}
+                            isHeading={paraHeadings[p]}
                         />
                     );
                 })}
                 </div>
             </div>
 
-            {draggingWidth && (
+            {(draggingWidth || draggingFocal) && (
                 <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 px-2.5 py-1 rounded-full bg-purple-600 text-white text-xs font-mono font-bold shadow-lg pointer-events-none">
-                    {reading.maxWidthCh} ch
+                    {draggingWidth ? `${reading.maxWidthCh} ch` : `${focalPct}% down`}
                 </div>
             )}
 

@@ -143,7 +143,18 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                 <Slider id="rs-scroll-band" label="Band height" value={reading.scrollBandLines} range={LIMITS.scrollBandLines} step={1} onChange={(v) => set({ scrollBandLines: v })} format={(v) => `${v} line${v > 1 ? 's' : ''}`} />
             )}
             <Slider id="rs-scroll-spot" label="Spotlight" value={reading.scrollSpotlight} range={LIMITS.scrollSpotlight} step={0.05} onChange={(v) => set({ scrollSpotlight: v })} format={(v) => (v === 0 ? 'Off' : pct(v))} />
-            <Slider id="rs-scroll-focal" label="Reading line position" value={reading.scrollFocalPct} range={LIMITS.scrollFocalPct} step={2} onChange={(v) => set({ scrollFocalPct: v })} format={(v) => `${v}% down`} />
+            <div className="space-y-1">
+                <Slider id="rs-scroll-focal" label="Reading line position" value={reading.scrollFocalPct} range={LIMITS.scrollFocalPct} step={2} onChange={(v) => set({ scrollFocalPct: v })} format={(v) => `${v}% down`} />
+                {reading.scrollFocalPct !== DEFAULT_READING.scrollFocalPct && (
+                    <button
+                        type="button"
+                        onClick={() => set({ scrollFocalPct: DEFAULT_READING.scrollFocalPct })}
+                        className="text-[11px] text-purple-400 hover:text-purple-300 font-medium"
+                    >
+                        Reset to {DEFAULT_READING.scrollFocalPct}%
+                    </button>
+                )}
+            </div>
             <Slider id="rs-scroll-height" label="Window height" value={reading.scrollHeightVh} range={LIMITS.scrollHeightVh} step={5} onChange={(v) => set({ scrollHeightVh: v })} format={(v) => `${v}% of screen`} />
             <Slider id="rs-scroll-fade" label="Edge fade" value={reading.scrollEdgeFade} range={LIMITS.scrollEdgeFade} step={2} onChange={(v) => set({ scrollEdgeFade: v })} format={(v) => (v === 0 ? 'Off' : `${v}%`)} />
         </Section>

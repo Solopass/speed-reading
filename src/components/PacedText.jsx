@@ -37,12 +37,15 @@ const PARAGRAPH_STYLE = {
  */
 export const Paragraph = memo(function Paragraph({
     para, readUntil, currentIndex, currentEnd, dimRead, bionicReading, bionicStrength, onWordClick, setRef, looks = null,
-    readOpacity = 0.45
+    readOpacity = 0.45, isHeading = false
 }) {
     // The highlighted stretch: one word by default, or a phrase [currentIndex, currentEnd).
     const hiEnd = currentEnd ?? currentIndex + 1;
+    const style = isHeading
+        ? { ...PARAGRAPH_STYLE, fontWeight: 700, fontSize: 'calc(var(--reading-prose-size) * 1.12)', letterSpacing: '0.01em' }
+        : PARAGRAPH_STYLE;
     return (
-        <p style={PARAGRAPH_STYLE}>
+        <p style={style}>
             {para.map(({ word, index }) => {
                 const isRead = index < readUntil;
                 const isCurrent = currentIndex >= 0 && index >= currentIndex && index < hiEnd;
