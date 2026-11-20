@@ -1114,6 +1114,7 @@ function Reader({
                             onWordClick={seekTo}
                             onProgress={setPacedIndex}
                             onComplete={handlePacerComplete}
+                            onChangeWidth={(ch) => patchReading({ maxWidthCh: ch })}
                         />
 
                         <div className="mt-6 pt-4 border-t border-slate-800 flex flex-col items-center gap-2">
@@ -1151,6 +1152,7 @@ function Reader({
                             onWordClick={seekTo}
                             onProgress={setPacedIndex}
                             onComplete={handlePacerComplete}
+                            onChangeWidth={(ch) => patchReading({ maxWidthCh: ch })}
                         />
 
                         <div className="mt-10 pt-6 border-t border-slate-800 flex flex-col items-center gap-2">

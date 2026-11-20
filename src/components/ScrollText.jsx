@@ -4,7 +4,7 @@ import { buildChunks, chunkIndexAt, pauseAfter, tokenize, wordWeights } from '..
 import {
     advanceByCost, gradientAnchors, gradientBackground, layoutLines, pacingCosts, textLooks
 } from '../lib/textColor';
-import { DEFAULT_READING } from '../lib/readingStyle';
+import { DEFAULT_READING, LIMITS } from '../lib/readingStyle';
 
 /** Word centres (for the scroll) and boxes (for the line gradient), relative to the text column. */
 function measureWords(container, wordEls) {
@@ -43,7 +43,8 @@ export default function ScrollText({
     seek = null,
     onWordClick,
     onProgress,
-    onComplete
+    onComplete,
+    onChangeWidth = null
 }) {
     const {
         bionicStrength, dimRead, readOpacity, scrollFocalPct: focalPct, scrollColor, scrollPalette, scrollColorStrength,
@@ -239,10 +240,51 @@ export default function ScrollText({
         ? `linear-gradient(to bottom, transparent 0%, black ${fade}%, black ${100 - fade}%, transparent 100%)`
         : 'none';
 
+    const [draggingWidth, setDraggingWidth] = useState(false);
+    const dragRef = useRef(null);
+
+    const startWidthDrag = (side, e) => {
+        if (!onChangeWidth || !contentRef.current) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = contentRef.current.getBoundingClientRect();
+        const startCh = reading.maxWidthCh ?? DEFAULT_READING.maxWidthCh;
+        const pxPerCh = rect.width > 0 ? rect.width / Math.max(1, startCh) : 9;
+        dragRef.current = { startX: e.clientX, startCh, pxPerCh, side };
+        setDraggingWidth(true);
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+    };
+
+    const moveWidthDrag = (e) => {
+        const d = dragRef.current;
+        if (!d || !onChangeWidth) return;
+        const dx = (e.clientX - d.startX) * (d.side === 'left' ? -1 : 1);
+        // Column is centered, so moving one edge by dx changes total width by 2*dx.
+        const deltaCh = (dx * 2) / d.pxPerCh;
+        const [minCh, maxCh] = LIMITS.maxWidthCh;
+        const next = Math.round(Math.min(maxCh, Math.max(minCh, d.startCh + deltaCh)));
+        onChangeWidth(next);
+    };
+
+    const endWidthDrag = (e) => {
+        if (!dragRef.current) return;
+        dragRef.current = null;
+        setDraggingWidth(false);
+        e.currentTarget.releasePointerCapture?.(e.pointerId);
+    };
+
+    const nudgeWidthKey = (e) => {
+        if (!onChangeWidth) return;
+        const [minCh, maxCh] = LIMITS.maxWidthCh;
+        const cur = reading.maxWidthCh ?? DEFAULT_READING.maxWidthCh;
+        if (e.key === 'ArrowLeft') { e.preventDefault(); onChangeWidth(Math.max(minCh, cur - 2)); }
+        if (e.key === 'ArrowRight') { e.preventDefault(); onChangeWidth(Math.min(maxCh, cur + 2)); }
+    };
+
     return (
         <div
             ref={viewportRef}
-            className="relative w-full overflow-hidden select-none"
+            className="relative w-full overflow-hidden select-none group/scroll"
             style={{
                 height: `max(16rem, ${scrollHeightVh}vh)`,
                 fontSize: 'var(--reading-prose-size)',
@@ -266,10 +308,52 @@ export default function ScrollText({
             )}
 
             <div
-                ref={contentRef}
-                className="mx-auto will-change-transform"
+                className={`relative mx-auto w-full ${draggingWidth ? 'ring-1 ring-purple-500/40 rounded-lg' : ''}`}
                 style={{ maxWidth: 'var(--reading-max-width)' }}
             >
+                {onChangeWidth && (
+                    <>
+                        <div
+                            role="slider"
+                            aria-label="Drag to resize scroll width"
+                            aria-valuemin={LIMITS.maxWidthCh[0]}
+                            aria-valuemax={LIMITS.maxWidthCh[1]}
+                            aria-valuenow={reading.maxWidthCh}
+                            tabIndex={0}
+                            onPointerDown={(e) => startWidthDrag('left', e)}
+                            onPointerMove={moveWidthDrag}
+                            onPointerUp={endWidthDrag}
+                            onPointerCancel={endWidthDrag}
+                            onKeyDown={nudgeWidthKey}
+                            title="Drag to resize width"
+                            className="hidden sm:flex items-center justify-center absolute -left-4 top-0 bottom-0 w-4 cursor-ew-resize z-20 opacity-0 group-hover/scroll:opacity-100 focus:opacity-100 transition-opacity touch-none"
+                        >
+                            <span className={`w-1 h-16 rounded-full transition-colors ${draggingWidth ? 'bg-purple-400' : 'bg-slate-600 hover:bg-purple-400'}`} />
+                        </div>
+                        <div
+                            role="slider"
+                            aria-label="Drag to resize scroll width"
+                            aria-valuemin={LIMITS.maxWidthCh[0]}
+                            aria-valuemax={LIMITS.maxWidthCh[1]}
+                            aria-valuenow={reading.maxWidthCh}
+                            tabIndex={0}
+                            onPointerDown={(e) => startWidthDrag('right', e)}
+                            onPointerMove={moveWidthDrag}
+                            onPointerUp={endWidthDrag}
+                            onPointerCancel={endWidthDrag}
+                            onKeyDown={nudgeWidthKey}
+                            title="Drag to resize width"
+                            className="hidden sm:flex items-center justify-center absolute -right-4 top-0 bottom-0 w-4 cursor-ew-resize z-20 opacity-0 group-hover/scroll:opacity-100 focus:opacity-100 transition-opacity touch-none"
+                        >
+                            <span className={`w-1 h-16 rounded-full transition-colors ${draggingWidth ? 'bg-purple-400' : 'bg-slate-600 hover:bg-purple-400'}`} />
+                        </div>
+                    </>
+                )}
+
+                <div
+                    ref={contentRef}
+                    className="w-full will-change-transform"
+                >
                 {paragraphs.map((para, p) => {
                     const start = para[0]?.index ?? 0;
                     const end = start + para.length;
@@ -293,7 +377,14 @@ export default function ScrollText({
                         />
                     );
                 })}
+                </div>
             </div>
+
+            {draggingWidth && (
+                <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 px-2.5 py-1 rounded-full bg-purple-600 text-white text-xs font-mono font-bold shadow-lg pointer-events-none">
+                    {reading.maxWidthCh} ch
+                </div>
+            )}
 
             {/* Spotlight: text away from the reading line is dimmed by page-coloured veils. */}
             {scrollSpotlight > 0 && (
