@@ -34,6 +34,33 @@ export function groupLineTops(tops, tolerancePx = 6) {
 }
 
 /**
+ * Builds per-word line span metadata ({ lineStart, lineLen, nextLineTop }) from
+ * grouped lineTops so smooth scroll interpolates continuously across every word
+ * on a line instead of freezing until the last word and lurching to the next line.
+ */
+export function buildLineSpans(lineTops) {
+    const n = Array.isArray(lineTops) ? lineTops.length : 0;
+    const lineStart = new Array(n);
+    const lineLen = new Array(n);
+    const nextLineTop = new Array(n);
+    let i = 0;
+    while (i < n) {
+        const y = lineTops[i];
+        let j = i + 1;
+        while (j < n && lineTops[j] === y) j += 1;
+        const len = j - i;
+        const nextY = j < n ? lineTops[j] : y;
+        for (let k = i; k < j; k++) {
+            lineStart[k] = i;
+            lineLen[k] = len;
+            nextLineTop[k] = nextY;
+        }
+        i = j;
+    }
+    return { lineStart, lineLen, nextLineTop };
+}
+
+/**
  * Heuristic for standalone section/chapter headings in a paragraph list.
  */
 export function isHeadingParagraph(words) {

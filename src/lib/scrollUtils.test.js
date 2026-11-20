@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { groupLineTops, isHeadingParagraph, rsvpWordScale } from './scrollUtils';
+import { buildLineSpans, groupLineTops, isHeadingParagraph, rsvpWordScale } from './scrollUtils';
 
 describe('scrollUtils', () => {
     it('groups word vertical centers into shared visual-line centers', () => {
@@ -31,5 +31,13 @@ describe('scrollUtils', () => {
         expect(rsvpWordScale('measurement')).toBe(1);
         expect(rsvpWordScale('telecommunications')).toBeLessThan(1);
         expect(rsvpWordScale('pneumonoultramicroscopicsilicovolcanoconiosis')).toBe(0.58);
+    });
+
+    it('builds continuous line-span anchors for constant smooth scroll', () => {
+        const lineTops = [100, 100, 100, 130, 130, 160];
+        const spans = buildLineSpans(lineTops);
+        expect(spans.lineStart).toEqual([0, 0, 0, 3, 3, 5]);
+        expect(spans.lineLen).toEqual([3, 3, 3, 2, 2, 1]);
+        expect(spans.nextLineTop).toEqual([130, 130, 130, 160, 160, 160]);
     });
 });

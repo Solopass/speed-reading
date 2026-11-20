@@ -4,12 +4,12 @@ import { buildChunks, chunkIndexAt, pauseAfter, tokenize, wordWeights } from '..
 import {
     advanceByCost, gradientAnchors, gradientBackground, layoutLines, pacingCosts, textLooks
 } from '../lib/textColor';
-import { groupLineTops, isHeadingParagraph } from '../lib/scrollUtils';
+import { buildLineSpans, groupLineTops, isHeadingParagraph } from '../lib/scrollUtils';
 import { DEFAULT_READING, LIMITS } from '../lib/readingStyle';
 
 /** Word centres (for the scroll) and boxes (for the line gradient), relative to the text column. */
 function measureWords(container, wordEls, needBoxes = false) {
-    if (!container) return { tops: [], lineTops: [], boxes: [], width: 1 };
+    if (!container) return { tops: [], lineTops: [], lineSpans: { lineStart: [], lineLen: [], nextLineTop: [] }, boxes: [], width: 1 };
     const base = container.getBoundingClientRect();
     const tops = [];
     const boxes = needBoxes ? [] : null;
@@ -23,7 +23,8 @@ function measureWords(container, wordEls, needBoxes = false) {
         tops.push(r.top - base.top + r.height / 2);
         if (boxes) boxes.push({ top: r.top - base.top, left: r.left - base.left, right: r.right - base.left });
     }
-    return { tops, lineTops: groupLineTops(tops), boxes: boxes ?? [], width: base.width };
+    const lineTops = groupLineTops(tops);
+    return { tops, lineTops, lineSpans: buildLineSpans(lineTops), boxes: boxes ?? [], width: base.width };
 }
 
 /** One line's height at the current reading settings, as CSS. */
@@ -70,6 +71,7 @@ export default function ScrollText({
     const wordRefs = useRef([]);
     const wordTopsRef = useRef([]);
     const wordLineTopsRef = useRef([]);
+    const lineSpansRef = useRef({ lineStart: [], lineLen: [], nextLineTop: [] });
 
     const paragraphs = useMemo(() => {
         const paras = text.trim().split(/\n\s*\n/).filter(p => p.trim());
@@ -130,18 +132,20 @@ export default function ScrollText({
     const paint = useCallback((progress) => {
         const tops = wordTopsRef.current;
         const lineTops = wordLineTopsRef.current;
+        const spans = lineSpansRef.current;
         const content = contentRef.current;
         if (!content) return;
         let targetY = 0;
         if (tops.length > 0) {
             const idx = Math.max(0, Math.min(tops.length - 1, Math.floor(progress)));
-            const y0 = tops[idx] ?? 0;
+            const y0 = lineTops[idx] ?? tops[idx] ?? 0;
             if (motionRef.current === 'line') {
-                targetY = lineTops[idx] ?? y0;
+                targetY = y0;
             } else {
-                const nextIdx = Math.min(tops.length - 1, idx + 1);
-                const frac = Math.max(0, progress - Math.floor(progress));
-                const y1 = tops[nextIdx] ?? y0;
+                const start = spans.lineStart[idx] ?? idx;
+                const len = Math.max(1, spans.lineLen[idx] ?? 1);
+                const y1 = spans.nextLineTop[idx] ?? y0;
+                const frac = Math.min(1, Math.max(0, (progress - start) / len));
                 targetY = y0 + (y1 - y0) * frac;
             }
         }
@@ -173,6 +177,7 @@ export default function ScrollText({
             const m = measureWords(contentRef.current, wordRefs.current, needBoxes);
             wordTopsRef.current = m.tops;
             wordLineTopsRef.current = m.lineTops;
+            lineSpansRef.current = m.lineSpans;
             if (needBoxes) {
                 setLayout(prev => {
                     const key = m.boxes.map(b => (b ? `${Math.round(b.top)}:${Math.round(b.left)}` : '-')).join(',') + `|${Math.round(m.width)}`;
