@@ -361,6 +361,22 @@ export function stripRepeatedHeadersFooters(pages) {
     });
 }
 
+function sortReadingOrder(items) {
+    // Group into lines first (transitive) so slightly tilted OCR baselines stay in X order.
+    const byYDesc = [...items].sort((a, b) => b.transform[5] - a.transform[5]);
+    const lines = [];
+    for (const it of byYDesc) {
+        const y = it.transform[5];
+        const lastLine = lines[lines.length - 1];
+        if (lastLine && Math.abs(lastLine.y - y) <= 4) {
+            lastLine.items.push(it);
+        } else {
+            lines.push({ y, items: [it] });
+        }
+    }
+    return lines.flatMap(l => l.items.sort((a, b) => a.transform[4] - b.transform[4]));
+}
+
 /**
  * Reorders PDF text items into reading order. Only splits into two columns when
  * a real empty vertical gutter exists down the middle of the page.
@@ -388,14 +404,8 @@ export function orderPdfItems(items, pageWidth = 600) {
     }
 
     const isTwoCol = gutterHits <= 2 && left.length >= 8 && right.length >= 8;
-    const byYThenX = (a, b) => {
-        const dy = b.transform[5] - a.transform[5];
-        if (Math.abs(dy) > 3) return dy;
-        return a.transform[4] - b.transform[4];
-    };
-
-    if (!isTwoCol) return [...textItems].sort(byYThenX);
-    return [...left].sort(byYThenX).concat([...right].sort(byYThenX));
+    if (!isTwoCol) return sortReadingOrder(textItems);
+    return sortReadingOrder(left).concat(sortReadingOrder(right));
 }
 
 /**
@@ -418,9 +428,11 @@ export function assemblePdfPageText(ordered) {
 
         if (lastY !== null) {
             const yGap = Math.abs(lastY - y);
-            if (yGap > 14) {
+            const paraGap = Math.max(14, fontSize * 1.55);
+            const lineGap = Math.max(4, fontSize * 0.35);
+            if (yGap > paraGap) {
                 text += '\n\n';
-            } else if (yGap > 4) {
+            } else if (yGap > lineGap) {
                 text += '\n';
             } else if (lastEndX !== null) {
                 const xGap = x - lastEndX;
@@ -442,6 +454,7 @@ async function pdfOutlineChapters(pdf, cleanPages) {
         if (!Array.isArray(outline) || outline.length < 2) return null;
 
         const entries = [];
+        const seenPages = new Set();
         for (const item of outline) {
             if (!item?.title || !item.dest) continue;
             const dest = typeof item.dest === 'string'
@@ -450,7 +463,8 @@ async function pdfOutlineChapters(pdf, cleanPages) {
             const ref = Array.isArray(dest) ? dest[0] : null;
             if (!ref) continue;
             const pageIndex = await pdf.getPageIndex(ref).catch(() => -1);
-            if (pageIndex >= 0 && pageIndex < cleanPages.length) {
+            if (pageIndex >= 0 && pageIndex < cleanPages.length && !seenPages.has(pageIndex)) {
+                seenPages.add(pageIndex);
                 entries.push({ title: item.title.trim(), pageIndex });
             }
         }
@@ -458,10 +472,14 @@ async function pdfOutlineChapters(pdf, cleanPages) {
 
         entries.sort((a, b) => a.pageIndex - b.pageIndex);
         const chapters = [];
+        if (entries[0].pageIndex > 0) {
+            const opening = normalizeText(cleanPages.slice(0, entries[0].pageIndex).join('\n\n'));
+            if (opening) chapters.push({ title: 'Opening', text: opening });
+        }
         for (let i = 0; i < entries.length; i++) {
             const start = entries[i].pageIndex;
             const end = i + 1 < entries.length ? entries[i + 1].pageIndex : cleanPages.length;
-            const text = normalizeText(cleanPages.slice(start, Math.max(start + 1, end)).join('\n\n'));
+            const text = normalizeText(cleanPages.slice(start, end).join('\n\n'));
             if (text) chapters.push({ title: entries[i].title, text });
         }
         return chapters.length >= 2 ? chapters : null;

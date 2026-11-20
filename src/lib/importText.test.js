@@ -195,6 +195,20 @@ describe('orderPdfItems', () => {
         ];
         expect(assemblePdfPageText(line)).toBe('this book was born.');
     });
+
+    it('keeps slightly tilted OCR baselines in left-to-right order', () => {
+        const tilted = [
+            item('world', 140, 698, 30),
+            item('hello', 60, 700, 30),
+            item('again', 220, 697, 30),
+            item('line2', 60, 670, 30),
+            item('end2', 140, 670, 30),
+            item('line3', 60, 650, 30),
+            item('end3', 140, 650, 30),
+            item('line4', 60, 630, 30)
+        ];
+        expect(orderPdfItems(tilted, 600).slice(0, 3).map(i => i.str)).toEqual(['hello', 'world', 'again']);
+    });
 });
 
 // extractFromHtml needs DOMParser, so it is covered by the browser checks
