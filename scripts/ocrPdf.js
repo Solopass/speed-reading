@@ -114,11 +114,11 @@ export async function ocrPdfBuffer(pdfBuffer, { force = false, signal } = {}) {
         await fs.writeFile(inputPath, pdfBuffer);
         const modeFlag = force ? '--force-ocr' : '--redo-ocr';
         try {
-            await runOcrmypdf(ocrmypdf, [modeFlag, '--optimize', '0', '-l', 'eng', inputPath, outputPath], env, signal);
+            await runOcrmypdf(ocrmypdf, [modeFlag, '--output-type', 'pdf', '--optimize', '0', '-l', 'eng', inputPath, outputPath], env, signal);
         } catch (err) {
             // Digital PDFs with some non-redoable elements fail --redo-ocr; fall back to --force-ocr.
             if (!force && err.name !== 'AbortError' && /--force-ocr|Tagged PDF|cannot be redo/i.test(err.message)) {
-                await runOcrmypdf(ocrmypdf, ['--force-ocr', '--optimize', '0', '-l', 'eng', inputPath, outputPath], env, signal);
+                await runOcrmypdf(ocrmypdf, ['--force-ocr', '--output-type', 'pdf', '--optimize', '0', '-l', 'eng', inputPath, outputPath], env, signal);
             } else {
                 throw err;
             }
