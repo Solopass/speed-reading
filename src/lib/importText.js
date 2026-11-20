@@ -129,6 +129,16 @@ export function selectBlocksForAiClean(text, maxBlocks = 60) {
     return [...picked.entries()].sort((a, b) => a[0] - b[0]).map(([index, p]) => ({ index, text: p }));
 }
 
+/** Splits the full document into chunks of { index, text } blocks for thorough multi-pass AI cleanup. */
+export function chunkBlocksForAiClean(text, chunkSize = 60) {
+    const paragraphs = String(text ?? '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+    const chunks = [];
+    for (let i = 0; i < paragraphs.length; i += chunkSize) {
+        chunks.push(paragraphs.slice(i, i + chunkSize).map((p, j) => ({ index: i + j, text: p })));
+    }
+    return chunks;
+}
+
 /** Applies AI cut indices to paragraph-separated text, returning new text and cut items for diff review. */
 export function applyParagraphCuts(text, cuts = []) {
     const paragraphs = String(text ?? '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);

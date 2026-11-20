@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 import { cleanDocSpec, dropGuessableQuestions, questionsForTextSpec, verifySpec } from '../lib/ai';
 import { normalizeQuestions } from '../lib/quiz';
-import { applyParagraphCuts, restoreCutItem, selectBlocksForAiClean } from '../lib/importText';
+import { applyParagraphCuts, chunkBlocksForAiClean, restoreCutItem, selectBlocksForAiClean } from '../lib/importText';
 import { isPartiallyRead, resumePoint } from '../lib/library';
 import { isBook } from '../lib/book';
 import BookShelf from '../components/BookShelf';
@@ -46,6 +46,7 @@ function AiCleanModal({ target, ai, onSave, onClose, addNotification }) {
     const [draftText, setDraftText] = useState(target.text ?? '');
     const [cuts, setCuts] = useState([]);
     const [cleaning, setCleaning] = useState(false);
+    const [progress, setProgress] = useState('');
 
     useEffect(() => {
         const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -54,6 +55,7 @@ function AiCleanModal({ target, ai, onSave, onClose, addNotification }) {
     }, [onClose]);
 
     const blocks = useMemo(() => (draftText.trim() ? selectBlocksForAiClean(draftText) : []), [draftText]);
+    const chunks = useMemo(() => (draftText.trim() ? chunkBlocksForAiClean(draftText) : []), [draftText]);
     const spec = useMemo(() => (blocks.length > 0 ? cleanDocSpec({ blocks }) : null), [blocks]);
 
     const applyReply = (reply) => {
@@ -72,16 +74,29 @@ function AiCleanModal({ target, ai, onSave, onClose, addNotification }) {
         addNotification(`AI cut ${cutItems.length} clutter block${cutItems.length === 1 ? '' : 's'}. Review below.`, 'success');
     };
 
-    const runAiClean = async () => {
+    const runAiClean = async (deep = false) => {
         if (!spec || !useApi) return;
         setCleaning(true);
+        setProgress('');
         try {
-            const reply = await ai.generate({ prompt: spec.prompt, schema: spec.schema });
-            applyReply(reply);
+            if (!deep || chunks.length <= 1) {
+                const reply = await ai.generate({ prompt: spec.prompt, schema: spec.schema });
+                applyReply(reply);
+            } else {
+                const allCuts = [];
+                for (let i = 0; i < chunks.length; i++) {
+                    setProgress(`${i + 1}/${chunks.length}`);
+                    const chunkSpec = cleanDocSpec({ blocks: chunks[i] });
+                    const reply = await ai.generate({ prompt: chunkSpec.prompt, schema: chunkSpec.schema });
+                    if (Array.isArray(reply?.cuts)) allCuts.push(...reply.cuts);
+                }
+                applyReply({ cuts: allCuts });
+            }
         } catch (error) {
             addNotification(error.message || 'AI cleanup failed.');
         } finally {
             setCleaning(false);
+            setProgress('');
         }
     };
 
@@ -114,15 +129,27 @@ function AiCleanModal({ target, ai, onSave, onClose, addNotification }) {
                 </div>
 
                 {useApi ? (
-                    <button
-                        type="button"
-                        onClick={runAiClean}
-                        disabled={cleaning || !spec}
-                        className="inline-flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-sm font-bold px-4 py-2.5 rounded-xl transition-colors"
-                    >
-                        {cleaning ? <Activity className="animate-spin" size={15} /> : <Sparkles size={15} />}
-                        {cleaning ? `Scanning on ${ai.label}…` : 'Run AI Clean'}
-                    </button>
+                    <div className="flex gap-2 flex-wrap">
+                        <button
+                            type="button"
+                            onClick={() => runAiClean(false)}
+                            disabled={cleaning || !spec}
+                            className="flex-1 inline-flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-sm font-bold px-4 py-2.5 rounded-xl transition-colors"
+                        >
+                            {cleaning ? <Activity className="animate-spin" size={15} /> : <Sparkles size={15} />}
+                            {cleaning ? `Scanning${progress ? ` ${progress}` : ''} on ${ai.label}…` : 'Run AI Clean'}
+                        </button>
+                        {chunks.length > 1 && (
+                            <button
+                                type="button"
+                                onClick={() => runAiClean(true)}
+                                disabled={cleaning}
+                                className="inline-flex items-center justify-center gap-2 border border-slate-700 hover:border-purple-500 disabled:opacity-40 text-slate-200 text-sm font-bold px-4 py-2.5 rounded-xl transition-colors"
+                            >
+                                Deep clean ({chunks.length} chunks)
+                            </button>
+                        )}
+                    </div>
                 ) : spec && (
                     <ManualAiPanel spec={spec} addNotification={addNotification} onResult={applyReply} />
                 )}

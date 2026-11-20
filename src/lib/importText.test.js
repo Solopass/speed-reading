@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-    SUPPORTED_EXTENSIONS, applyParagraphCuts, extensionOf, isSupported, normalizeText, normalizeTextWithStats,
+    SUPPORTED_EXTENSIONS, applyParagraphCuts, chunkBlocksForAiClean, extensionOf, isSupported, normalizeText, normalizeTextWithStats,
     orderPdfItems, restoreCutItem, selectBlocksForAiClean, stripMarkdown, stripRepeatedHeadersFooters, titleFromFilename
 } from './importText';
 
@@ -140,6 +140,16 @@ describe('stripMarkdown and optional filters', () => {
 
         const restored = restoreCutItem(text, cutItems[0]);
         expect(restored).toBe('Cookie policy\n\nReal paragraph one.');
+    });
+
+    it('chunks all paragraphs with global indices for deep AI clean', () => {
+        const doc = Array.from({ length: 5 }, (_, i) => `Para ${i}`).join('\n\n');
+        const chunks = chunkBlocksForAiClean(doc, 2);
+        expect(chunks).toHaveLength(3);
+        expect(chunks[1]).toEqual([
+            { index: 2, text: 'Para 2' },
+            { index: 3, text: 'Para 3' }
+        ]);
     });
 });
 

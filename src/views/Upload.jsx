@@ -5,7 +5,7 @@ import {
 import { cleanDocSpec } from '../lib/ai';
 import { splitPassage } from '../lib/protocol';
 import {
-    ACCEPT_ATTRIBUTE, SUPPORTED_EXTENSIONS, applyParagraphCuts, extractFromHtml, extractText,
+    ACCEPT_ATTRIBUTE, SUPPORTED_EXTENSIONS, applyParagraphCuts, chunkBlocksForAiClean, extractFromHtml, extractText,
     normalizeTextWithStats, restoreCutItem, selectBlocksForAiClean
 } from '../lib/importText';
 import { BOOK_MIN_WORDS, buildChapters, createBook } from '../lib/book';
@@ -35,6 +35,7 @@ export default function Upload({
     const [cleanStats, setCleanStats] = useState(null);
     const [cutLog, setCutLog] = useState([]);
     const [aiCleaning, setAiCleaning] = useState(false);
+    const [aiProgress, setAiProgress] = useState('');
     const [manualAiOpen, setManualAiOpen] = useState(false);
     const [title, setTitle] = useState('');
     const [articleUrl, setArticleUrl] = useState('');
@@ -181,22 +182,36 @@ export default function Upload({
     };
 
     const aiBlocks = useMemo(() => (customText.trim() ? selectBlocksForAiClean(customText) : []), [customText]);
+    const aiChunks = useMemo(() => (customText.trim() ? chunkBlocksForAiClean(customText) : []), [customText]);
     const aiCleanSpec = useMemo(() => (aiBlocks.length > 0 ? cleanDocSpec({ blocks: aiBlocks }) : null), [aiBlocks]);
 
-    const handleAiClean = async () => {
+    const handleAiClean = async (deep = false) => {
         if (!aiCleanSpec) return;
         if (!useApi) {
             setManualAiOpen(o => !o);
             return;
         }
         setAiCleaning(true);
+        setAiProgress('');
         try {
-            const reply = await ai.generate({ prompt: aiCleanSpec.prompt, schema: aiCleanSpec.schema });
-            applyAiCuts(reply);
+            if (!deep || aiChunks.length <= 1) {
+                const reply = await ai.generate({ prompt: aiCleanSpec.prompt, schema: aiCleanSpec.schema });
+                applyAiCuts(reply);
+            } else {
+                const allCuts = [];
+                for (let i = 0; i < aiChunks.length; i++) {
+                    setAiProgress(`${i + 1}/${aiChunks.length}`);
+                    const spec = cleanDocSpec({ blocks: aiChunks[i] });
+                    const reply = await ai.generate({ prompt: spec.prompt, schema: spec.schema });
+                    if (Array.isArray(reply?.cuts)) allCuts.push(...reply.cuts);
+                }
+                applyAiCuts({ cuts: allCuts });
+            }
         } catch (error) {
             addNotification(error.message || 'AI cleanup failed.');
         } finally {
             setAiCleaning(false);
+            setAiProgress('');
         }
     };
 
@@ -494,14 +509,25 @@ export default function Upload({
                                 </button>
                                 <button
                                     type="button"
-                                    onClick={handleAiClean}
+                                    onClick={() => handleAiClean(false)}
                                     disabled={aiCleaning || !aiCleanSpec}
                                     title={ai?.note}
                                     className="inline-flex items-center gap-1.5 text-xs font-bold text-purple-300 hover:text-white border border-purple-700/60 bg-purple-950/30 hover:bg-purple-900/40 disabled:opacity-40 px-3 py-1.5 rounded-lg transition-colors"
                                 >
                                     {aiCleaning ? <Activity className="animate-spin" size={13} /> : <Sparkles size={13} />}
-                                    {aiCleaning ? `Cleaning on ${ai.label}…` : 'AI Clean'}
+                                    {aiCleaning ? `Cleaning${aiProgress ? ` ${aiProgress}` : ''} on ${ai.label}…` : 'AI Clean'}
                                 </button>
+                                {useApi && aiChunks.length > 1 && (
+                                    <button
+                                        type="button"
+                                        onClick={() => handleAiClean(true)}
+                                        disabled={aiCleaning}
+                                        title={`Scan all ${aiChunks.length} chunks across the full document`}
+                                        className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-300 hover:text-white border border-slate-700 hover:border-purple-500 disabled:opacity-40 px-3 py-1.5 rounded-lg transition-colors"
+                                    >
+                                        Deep clean ({aiChunks.length} chunks)
+                                    </button>
+                                )}
                             </div>
                         )}
                     </div>
