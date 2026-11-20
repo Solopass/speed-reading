@@ -2,11 +2,12 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { articleProxyPlugin } from './scripts/articleProxy.js';
+import { ocrPdfPlugin } from './scripts/ocrPdf.js';
 
 export default defineConfig({
   // GitHub Pages serves the demo from /speed-reading/; locally it stays at /.
   base: process.env.PAGES_BASE ?? '/',
-  plugins: [react(), tailwindcss(), articleProxyPlugin()],
+  plugins: [react(), tailwindcss(), articleProxyPlugin(), ocrPdfPlugin()],
   // Vite's default host is localhost, i.e. loopback only. Keep it that way:
   // the article proxy fetches URLs on request, so these servers must never be
   // started with --host or host: true.

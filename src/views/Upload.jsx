@@ -50,6 +50,9 @@ export default function Upload({
     const [rank, setRank] = useState(null);
     useEffect(() => { loadFrequencyRank().then(r => { rankRef.current = r; setRank(r); }).catch(() => {}); }, []);
     const [importing, setImporting] = useState(false);
+    const [ocring, setOcring] = useState(false);
+    const [lastPdfFile, setLastPdfFile] = useState(null);
+    const ocrAbortRef = useRef(null);
     const [pdfProgress, setPdfProgress] = useState(null);
     const [isDragging, setIsDragging] = useState(false);
     const [stripUrls, setStripUrls] = useState(false);
@@ -105,6 +108,7 @@ export default function Upload({
                 return;
             }
             const file = files[0];
+            setLastPdfFile(file.name.toLowerCase().endsWith('.pdf') ? file : null);
             const res = await extractText(file, {
                 stripUrls,
                 stripCitations,
@@ -152,6 +156,7 @@ export default function Upload({
             setCleanStats(stats);
             setCutLog(cuts);
             setTitle(extracted.title || extracted.heading || new URL(url).hostname);
+            setLastPdfFile(null);
             setImportedChapters(null);
             setChaptersEdited(false);
             addNotification(`Imported ${text.split(/\s+/).length.toLocaleString()} words from ${new URL(url).hostname}.`, 'success');
@@ -370,12 +375,71 @@ export default function Upload({
                         <button
                             type="button"
                             onClick={() => fileRef.current?.click()}
-                            disabled={importing}
+                            disabled={importing || ocring}
                             className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white text-sm font-bold px-4 py-2.5 rounded-xl transition-colors"
                         >
                             {importing ? <Activity className="animate-spin" size={16} /> : <UploadIcon size={16} />}
                             {importing ? 'Reading file...' : 'Choose file(s)'}
                         </button>
+                        {lastPdfFile && (
+                            <button
+                                type="button"
+                                onClick={async () => {
+                                    if (ocring) {
+                                        ocrAbortRef.current?.abort();
+                                        return;
+                                    }
+                                    const controller = new AbortController();
+                                    ocrAbortRef.current = controller;
+                                    setOcring(true);
+                                    try {
+                                        const resp = await fetch('/api/ocr-pdf', {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/pdf' },
+                                            body: lastPdfFile,
+                                            signal: controller.signal
+                                        });
+                                        if (resp.status === 404) {
+                                            throw new Error('Local OCR requires running the app with the Vite dev or preview server.');
+                                        }
+                                        if (!resp.ok) {
+                                            const errData = await resp.json().catch(() => ({}));
+                                            throw new Error(errData.error || 'Local OCR failed.');
+                                        }
+                                        const ocrBlob = await resp.blob();
+                                        const ocrFile = new File([ocrBlob], lastPdfFile.name, { type: 'application/pdf' });
+                                        setImporting(true);
+                                        const res = await extractText(ocrFile, {
+                                            stripUrls,
+                                            stripCitations,
+                                            onProgress: (p) => setPdfProgress({ ...p, name: ocrFile.name })
+                                        });
+                                        setCustomText(res.text);
+                                        setRawBeforeClean(res.rawText ?? null);
+                                        setCleanStats(res.stats ?? null);
+                                        setCutLog(res.cuts ?? []);
+                                        setTitle(res.title);
+                                        setImportedChapters(res.chapters);
+                                        setChaptersEdited(false);
+                                        addNotification(`Re-OCR complete: loaded ${res.text.split(/\s+/).length.toLocaleString()} words from ${ocrFile.name}.`, 'success');
+                                    } catch (error) {
+                                        if (error.name === 'AbortError') addNotification('OCR cancelled.');
+                                        else addNotification(error.message || 'Local OCR failed.');
+                                    } finally {
+                                        ocrAbortRef.current = null;
+                                        setOcring(false);
+                                        setImporting(false);
+                                        setPdfProgress(null);
+                                    }
+                                }}
+                                disabled={importing && !ocring}
+                                className="flex items-center gap-2 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/40 disabled:opacity-50 text-purple-200 text-xs font-bold px-3.5 py-2.5 rounded-xl transition-colors"
+                                title="Re-run open-source OCRmyPDF on this PDF (launches on demand and closes when finished)"
+                            >
+                                {ocring ? <Activity className="animate-spin" size={14} /> : <Sparkles size={14} />}
+                                {ocring ? 'Running OCR… (click to cancel)' : 'Re-OCR PDF'}
+                            </button>
+                        )}
                         <span className="text-xs text-slate-500">or drop one or more anywhere in this box</span>
                         <input
                             ref={fileRef}
