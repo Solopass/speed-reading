@@ -157,6 +157,7 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
             </div>
             <Slider id="rs-scroll-height" label="Window height" value={reading.scrollHeightVh} range={LIMITS.scrollHeightVh} step={5} onChange={(v) => set({ scrollHeightVh: v })} format={(v) => `${v}% of screen`} />
             <Slider id="rs-scroll-fade" label="Edge fade" value={reading.scrollEdgeFade} range={LIMITS.scrollEdgeFade} step={2} onChange={(v) => set({ scrollEdgeFade: v })} format={(v) => (v === 0 ? 'Off' : `${v}%`)} />
+            <Slider id="rs-scroll-tunnel" label="Focus tunnel" value={reading.scrollTunnel} range={LIMITS.scrollTunnel} step={5} onChange={(v) => set({ scrollTunnel: v })} format={(v) => (v === 0 ? 'Off' : `${v}%`)} />
         </Section>
     );
 

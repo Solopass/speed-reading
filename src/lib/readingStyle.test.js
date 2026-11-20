@@ -184,4 +184,10 @@ describe('reader QOL settings', () => {
         expect(r.readOpacity).toBe(0.9);
         expect(normalizeReading({}).accelWpmPerMin).toBe(0);
     });
+
+    it('defaults and clamps scrollTunnel', () => {
+        expect(normalizeReading({}).scrollTunnel).toBe(0);
+        expect(normalizeReading({ scrollTunnel: 50 }).scrollTunnel).toBe(35);
+        expect(normalizeReading({ scrollTunnel: -5 }).scrollTunnel).toBe(0);
+    });
 });

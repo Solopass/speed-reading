@@ -157,3 +157,12 @@ describe('rarity pacing', () => {
         expect(wordWeights(words)[0]).toBeCloseTo(1, 6);
     });
 });
+
+describe('quote and parenthetical grouping', () => {
+    it('keeps short dialogue quotes and parentheticals together in one flash', () => {
+        const text = 'He whispered "not today" before leaving.';
+        const words = text.split(/\s+/);
+        const chunks = buildChunks(text, { maxWords: 3 }).map(c => words.slice(c.start, c.end).join(' '));
+        expect(chunks.some(c => c.includes('"not today"'))).toBe(true);
+    });
+});

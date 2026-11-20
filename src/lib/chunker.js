@@ -134,6 +134,24 @@ export function buildChunks(text, { maxWords = 1, minWords, smart = true } = {})
     const lens = tokens.map(t => [...t.word].length);
     const isWord = tokens.map(t => !PUNCT_ONLY_RE.test(t.word));
     const isClauseEnd = tokens.map(t => CLAUSE_END_RE.test(t.word));
+    const startsSpan = tokens.map(t => /^["“‘(]/.test(t.word));
+    const endsSpan = tokens.map(t => /["”’)]$/.test(t.word));
+    const insideDelim = new Array(tokens.length).fill(false);
+    let parenDepth = 0;
+    let inCurlyQuote = false;
+    let inStraightQuote = false;
+    for (let k = 0; k < tokens.length; k++) {
+        const w = tokens[k].word;
+        for (const ch of w) {
+            if (ch === '(') parenDepth += 1;
+            else if (ch === ')' && parenDepth > 0) parenDepth -= 1;
+            else if (ch === '“') inCurlyQuote = true;
+            else if (ch === '”') inCurlyQuote = false;
+            else if (ch === '"') inStraightQuote = !inStraightQuote;
+        }
+        if (hard[k]) { parenDepth = 0; inCurlyQuote = false; inStraightQuote = false; }
+        insideDelim[k] = parenDepth > 0 || inCurlyQuote || inStraightQuote;
+    }
 
     /** Cost of a group covering tokens [i, j). Lower is better. */
     const groupCost = (i, j, segEnd) => {
@@ -165,6 +183,9 @@ export function buildChunks(text, { maxWords = 1, minWords, smart = true } = {})
             // A lone dash or quote mark belongs with a neighbour, never alone at an edge.
             if (!isWord[j]) cost += 3;
             if (!isWord[j - 1] && !CLAUSE_END_RE.test(last)) cost += 3;
+            // Keep short dialogue quotes and parenthetical asides grouped together.
+            if (insideDelim[j - 1]) cost += 4.5;
+            if (startsSpan[j] || endsSpan[j - 1]) cost -= 1.5;
         }
         return cost;
     };

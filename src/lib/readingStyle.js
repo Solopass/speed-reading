@@ -118,6 +118,7 @@ export const DEFAULT_READING = {
     scrollBandLines: 1,           // height of the band, in lines
     scrollSpotlight: 0.35,        // how far text away from the reading line is dimmed
     scrollEdgeFade: 18,           // % of the window faded at top and bottom
+    scrollTunnel: 0,              // % horizontal edge fade (focus tunnel) in Scroll mode
     scrollHeightVh: 55,           // window height, % of the screen
     scrollMotion: 'smooth',
     scrollPacing: true,           // slow at punctuation and long words, same average speed
@@ -163,6 +164,7 @@ export const LIMITS = {
     scrollBandLines: [1, 3],
     scrollSpotlight: [0, 0.85],
     scrollEdgeFade: [0, 40],
+    scrollTunnel: [0, 35],
     scrollHeightVh: [35, 85],
     accelWpmPerMin: [0, 60],
     accelCapPct: [110, 200],

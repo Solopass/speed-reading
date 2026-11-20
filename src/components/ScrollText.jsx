@@ -50,12 +50,13 @@ export default function ScrollText({
     onProgress,
     onComplete,
     onChangeWidth = null,
-    onChangeFocalPct = null
+    onChangeFocalPct = null,
+    onChangeHeightVh = null
 }) {
     const {
         bionicStrength, dimRead, readOpacity, scrollFocalPct: focalPct, scrollColor, scrollPalette, scrollColorStrength,
         scrollFadeFunctionWords, scrollMarker, scrollGuide, scrollBandLines, scrollSpotlight, scrollEdgeFade,
-        scrollHeightVh, scrollMotion, scrollPacing, rarityPacing
+        scrollTunnel, scrollHeightVh, scrollMotion, scrollPacing, rarityPacing
     } = { ...DEFAULT_READING, ...reading };
 
     // Settings that move words without resizing the column (justify, spacing,
@@ -256,8 +257,10 @@ export default function ScrollText({
 
     const [draggingWidth, setDraggingWidth] = useState(false);
     const [draggingFocal, setDraggingFocal] = useState(false);
+    const [draggingHeight, setDraggingHeight] = useState(false);
     const dragRef = useRef(null);
     const focalDragRef = useRef(null);
+    const heightDragRef = useRef(null);
     const touchScrubRef = useRef(null);
 
     useEffect(() => {
@@ -307,6 +310,37 @@ export default function ScrollText({
         const [minPct, maxPct] = LIMITS.scrollFocalPct;
         if (e.key === 'ArrowUp') { e.preventDefault(); onChangeFocalPct(Math.max(minPct, focalPct - 2)); }
         if (e.key === 'ArrowDown') { e.preventDefault(); onChangeFocalPct(Math.min(maxPct, focalPct + 2)); }
+    };
+
+    const startHeightDrag = (e) => {
+        if (!onChangeHeightVh) return;
+        e.preventDefault();
+        e.stopPropagation();
+        heightDragRef.current = { startY: e.clientY, startVh: scrollHeightVh, vhPx: Math.max(1, window.innerHeight / 100) };
+        setDraggingHeight(true);
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+    };
+
+    const moveHeightDrag = (e) => {
+        const d = heightDragRef.current;
+        if (!d || !onChangeHeightVh) return;
+        const deltaVh = (e.clientY - d.startY) / d.vhPx;
+        const [minVh, maxVh] = LIMITS.scrollHeightVh;
+        onChangeHeightVh(Math.round(Math.min(maxVh, Math.max(minVh, d.startVh + deltaVh))));
+    };
+
+    const endHeightDrag = (e) => {
+        if (!heightDragRef.current) return;
+        heightDragRef.current = null;
+        setDraggingHeight(false);
+        e.currentTarget.releasePointerCapture?.(e.pointerId);
+    };
+
+    const nudgeHeightKey = (e) => {
+        if (!onChangeHeightVh) return;
+        const [minVh, maxVh] = LIMITS.scrollHeightVh;
+        if (e.key === 'ArrowUp') { e.preventDefault(); onChangeHeightVh(Math.max(minVh, scrollHeightVh - 5)); }
+        if (e.key === 'ArrowDown') { e.preventDefault(); onChangeHeightVh(Math.min(maxVh, scrollHeightVh + 5)); }
     };
 
     const onTouchStartScroll = (e) => {
@@ -490,9 +524,52 @@ export default function ScrollText({
                 </div>
             </div>
 
-            {(draggingWidth || draggingFocal) && (
+            {(draggingWidth || draggingFocal || draggingHeight) && (
                 <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 px-2.5 py-1 rounded-full bg-purple-600 text-white text-xs font-mono font-bold shadow-lg pointer-events-none">
-                    {draggingWidth ? `${reading.maxWidthCh} ch` : `${focalPct}% down`}
+                    {draggingWidth ? `${reading.maxWidthCh} ch` : draggingFocal ? `${focalPct}% down` : `${scrollHeightVh}vh`}
+                </div>
+            )}
+
+            {/* Horizontal focus tunnel: optional left/right edge fade to narrow peripheral distraction. */}
+            {scrollTunnel > 0 && (
+                <>
+                    <div
+                        aria-hidden="true"
+                        className="absolute inset-y-0 left-0 pointer-events-none"
+                        style={{
+                            width: `${scrollTunnel}%`,
+                            background: 'linear-gradient(to right, var(--reading-bg) 0%, transparent 100%)'
+                        }}
+                    />
+                    <div
+                        aria-hidden="true"
+                        className="absolute inset-y-0 right-0 pointer-events-none"
+                        style={{
+                            width: `${scrollTunnel}%`,
+                            background: 'linear-gradient(to left, var(--reading-bg) 0%, transparent 100%)'
+                        }}
+                    />
+                </>
+            )}
+
+            {onChangeHeightVh && (
+                <div
+                    role="slider"
+                    aria-label="Drag to resize scroll height"
+                    aria-valuemin={LIMITS.scrollHeightVh[0]}
+                    aria-valuemax={LIMITS.scrollHeightVh[1]}
+                    aria-valuenow={scrollHeightVh}
+                    tabIndex={0}
+                    onPointerDown={startHeightDrag}
+                    onPointerMove={moveHeightDrag}
+                    onPointerUp={endHeightDrag}
+                    onPointerCancel={endHeightDrag}
+                    onDoubleClick={() => onChangeHeightVh(DEFAULT_READING.scrollHeightVh)}
+                    onKeyDown={nudgeHeightKey}
+                    title="Drag bottom edge to resize height (double-click to reset)"
+                    className="hidden sm:flex items-center justify-center absolute inset-x-0 bottom-0 h-3.5 cursor-ns-resize z-20 opacity-0 group-hover/scroll:opacity-100 focus:opacity-100 transition-opacity touch-none"
+                >
+                    <span className={`h-1 w-16 rounded-full transition-colors ${draggingHeight ? 'bg-purple-400' : 'bg-slate-600 hover:bg-purple-400'}`} />
                 </div>
             )}
 

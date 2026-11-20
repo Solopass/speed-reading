@@ -574,6 +574,20 @@ function Reader({
 
     const pause = () => { setIsPlaying(false); setCountdown(null); };
 
+    // Auto-pause and step back slightly when the user switches tabs mid-read.
+    useEffect(() => {
+        const onVis = () => {
+            if (!document.hidden || !isPlaying || mode === 'natural') return;
+            setIsPlaying(false);
+            setCountdown(null);
+            const back = Math.max(4, reading.rewindWords || 0);
+            if (cursorRef.current > 0) seekBy(-back);
+            addNotification?.('Paused when tab left the foreground.');
+        };
+        document.addEventListener('visibilitychange', onVis);
+        return () => document.removeEventListener('visibilitychange', onVis);
+    }, [isPlaying, mode, reading.rewindWords, seekBy, addNotification]);
+
     /** - and = change the text size of whatever is on screen: the flash in RSVP, the page otherwise. */
     const resizeText = (dir) => {
         if (mode === 'rsvp') patchReading({ rsvpSizePx: reading.rsvpSizePx + dir * 4 });
@@ -1189,6 +1203,7 @@ function Reader({
                             onComplete={handlePacerComplete}
                             onChangeWidth={(ch) => patchReading({ maxWidthCh: ch })}
                             onChangeFocalPct={(pct) => patchReading({ scrollFocalPct: pct })}
+                            onChangeHeightVh={(vh) => patchReading({ scrollHeightVh: vh })}
                         />
 
                         <div className="mt-6 pt-4 border-t border-slate-800 flex flex-col items-center gap-2">
