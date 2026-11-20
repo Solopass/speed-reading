@@ -1,4 +1,24 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+
+function locateCursor(lines, progress) {
+    if (!lines.length) return null;
+    let consumed = 0;
+    for (const line of lines) {
+        if (progress < consumed + line.count) {
+            const within = (progress - consumed) / line.count;
+            return {
+                x: line.left + within * (line.right - line.left),
+                top: line.top,
+                height: line.height,
+                left: line.left,
+                right: line.right
+            };
+        }
+        consumed += line.count;
+    }
+    const last = lines[lines.length - 1];
+    return { x: last.right, top: last.top, height: last.height, left: last.left, right: last.right };
+}
 
 /**
  * A guided pacer: text stays in its normal layout while a cursor sweeps each
@@ -17,6 +37,7 @@ export default function PacedText({
     bionicStrength = 0.5,
     pacerStyle = 'band',
     dimRead = true,
+    initialIndex = 0,
     seek = null,          // { index, nonce }: jump the cursor to a word
     onWordClick,
     onProgress,
@@ -39,8 +60,9 @@ export default function PacedText({
     );
 
     const [lines, setLines] = useState([]);
-    const [progress, setProgress] = useState(0); // fractional word index
-    const progressRef = useRef(0);
+    const clampedInitial = Math.max(0, Math.min(totalWords, initialIndex));
+    const [progress, setProgress] = useState(clampedInitial); // fractional word index
+    const progressRef = useRef(clampedInitial);
 
     // Group word spans into visual lines by their vertical position. Reading
     // this from the DOM rather than guessing means the pacer follows real
@@ -49,6 +71,7 @@ export default function PacedText({
         const measure = () => {
             const container = containerRef.current;
             if (!container) return;
+            wordRefs.current.length = totalWords;
             const base = container.getBoundingClientRect();
             const grouped = [];
 
@@ -83,22 +106,35 @@ export default function PacedText({
         // Font loading can reflow the text after the first measure.
         document.fonts?.ready.then(measure).catch(() => {});
         return () => observer.disconnect();
-    }, [paragraphs, bionicReading]);
+    }, [paragraphs, bionicReading, totalWords]);
 
-    const reset = useCallback(() => {
-        progressRef.current = 0;
-        setProgress(0);
-    }, []);
-
-    useEffect(() => { reset(); }, [text, reset]);
+    useEffect(() => {
+        let cancelled = false;
+        const startAt = Math.max(0, Math.min(totalWords, initialIndex));
+        queueMicrotask(() => {
+            if (cancelled) return;
+            progressRef.current = startAt;
+            setProgress(startAt);
+            if (startAt > 0) {
+                wordRefs.current[Math.min(startAt, Math.max(0, totalWords - 1))]?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+            }
+        });
+        return () => { cancelled = true; };
+    }, [text, initialIndex, totalWords]);
 
     // An external jump (rewind, skip, click on the progress bar). Keyed on a
     // nonce so jumping to the same word twice still moves the cursor.
     useEffect(() => {
-        if (!seek) return;
+        if (!seek) return undefined;
+        let cancelled = false;
         const index = Math.max(0, Math.min(totalWords, seek.index));
-        progressRef.current = index;
-        setProgress(index);
+        queueMicrotask(() => {
+            if (cancelled) return;
+            progressRef.current = index;
+            setProgress(index);
+            wordRefs.current[Math.min(index, Math.max(0, totalWords - 1))]?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+        });
+        return () => { cancelled = true; };
     }, [seek, totalWords]);
 
     // Time-based rather than per-frame increments, so the pace stays honest
@@ -134,27 +170,8 @@ export default function PacedText({
     useEffect(() => { onProgress?.(Math.floor(progress)); }, [progress, onProgress]);
 
     // Locate the cursor: which line holds the current word, and how far along it.
-    const cursor = useMemo(() => {
-        if (!lines.length) return null;
-        let consumed = 0;
-        for (const line of lines) {
-            if (progress < consumed + line.count) {
-                const within = (progress - consumed) / line.count;
-                return {
-                    x: line.left + within * (line.right - line.left),
-                    top: line.top,
-                    height: line.height,
-                    left: line.left,
-                    right: line.right
-                };
-            }
-            consumed += line.count;
-        }
-        const last = lines[lines.length - 1];
-        return { x: last.right, top: last.top, height: last.height, left: last.left, right: last.right };
-    }, [lines, progress]);
+    const cursor = locateCursor(lines, progress);
 
-    wordRefs.current = [];
     const readIndex = Math.floor(progress);
 
     return (

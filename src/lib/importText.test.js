@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-    SUPPORTED_EXTENSIONS, extensionOf, isSupported, normalizeText, titleFromFilename
+    SUPPORTED_EXTENSIONS, applyParagraphCuts, extensionOf, isSupported, normalizeText, normalizeTextWithStats,
+    orderPdfItems, restoreCutItem, selectBlocksForAiClean, stripMarkdown, stripRepeatedHeadersFooters, titleFromFilename
 } from './importText';
 
 const NBSP = String.fromCharCode(160);
@@ -63,6 +64,100 @@ describe('normalizeText', () => {
     // PDF extraction commonly yields typographic ligatures.
     it('decomposes ligatures that PDF extraction produces', () => {
         expect(normalizeText('the ﬁrst ﬂight')).toBe('the first flight');
+    });
+
+    it('strips invisible, control, replacement, and Private Use Area characters', () => {
+        expect(normalizeText('com\u00ADpre\u200Bhen\uFEFFsion \uFFFD\uE001 test\u0007')).toBe('comprehension test');
+    });
+
+    it('rejoins hyphenated line breaks without collapsing paragraph breaks', () => {
+        expect(normalizeText('speed-\nreading\n\nNext paragraph.')).toBe('speedreading\n\nNext paragraph.');
+    });
+
+    it('removes dot leaders, divider lines, standalone page numbers, and stray symbols', () => {
+        const dirty = 'Chapter 1 ........ 12\n---\n• First point | ok\nPage 12\n42\n***\nSecond point.';
+        expect(normalizeText(dirty)).toBe('Chapter 1 12\n\nFirst point ok\n\nSecond point.');
+    });
+});
+
+describe('stripRepeatedHeadersFooters', () => {
+    it('removes repeated headers and footers across PDF pages while keeping unique lines', () => {
+        const pages = [
+            'The Great Book\nBody paragraph one.\nFooter 1',
+            'The Great Book\nBody paragraph two.\nFooter 2',
+            'The Great Book\nBody paragraph three.\nFooter 3',
+            'The Great Book\nBody paragraph four.\nFooter 4'
+        ];
+        expect(stripRepeatedHeadersFooters(pages)).toEqual([
+            'Body paragraph one.',
+            'Body paragraph two.',
+            'Body paragraph three.',
+            'Body paragraph four.'
+        ]);
+    });
+
+    it('leaves short 1-2 page documents untouched', () => {
+        const pages = ['Title\nPage one.', 'Title\nPage two.'];
+        expect(stripRepeatedHeadersFooters(pages)).toEqual(pages);
+    });
+});
+
+describe('stripMarkdown and optional filters', () => {
+    it('strips frontmatter, links, images, emphasis, and headings while keeping text', () => {
+        const md = '---\ntitle: Demo\n---\n# Heading\n\nRead **this** [article](https://example.com) ![img](pic.png) with `code`.';
+        expect(normalizeText(stripMarkdown(md))).toBe('Heading\n\nRead this article with code.');
+    });
+
+    it('strips URLs and numeric citations when requested', () => {
+        const raw = 'See https://example.com/paper for details [1, 2] and more [14].';
+        expect(normalizeText(raw, { stripUrls: true, stripCitations: true })).toBe('See for details and more.');
+        expect(normalizeText(raw)).toBe(raw);
+    });
+
+    it('reports cleaning stats via normalizeTextWithStats', () => {
+        const raw = 'speed-\nreading\u00AD\nPage 1\nChapter 1 ........ 5';
+        const { text, stats, cuts } = normalizeTextWithStats(raw);
+        expect(text).toBe('speedreading\n\nChapter 1 5');
+        expect(stats.rejoinedHyphens).toBe(1);
+        expect(stats.junkChars).toBe(1);
+        expect(stats.pageNumbers).toBe(1);
+        expect(stats.dotLeaders).toBe(1);
+        expect(cuts).toHaveLength(1);
+        expect(cuts[0].reason).toBe('Page number');
+    });
+
+    it('selects blocks, applies AI cuts, and restores cut blocks cleanly', () => {
+        const doc = 'Cookie policy\n\nReal paragraph one.\n\nAll rights reserved.';
+        const blocks = selectBlocksForAiClean(doc);
+        expect(blocks).toHaveLength(3);
+
+        const { text, cutItems } = applyParagraphCuts(doc, [
+            { index: 0, reason: 'Cookie banner' },
+            { index: 2, reason: 'Legal boilerplate' }
+        ]);
+        expect(text).toBe('Real paragraph one.');
+        expect(cutItems).toHaveLength(2);
+
+        const restored = restoreCutItem(text, cutItems[0]);
+        expect(restored).toBe('Cookie policy\n\nReal paragraph one.');
+    });
+});
+
+describe('orderPdfItems', () => {
+    it('reads left column top-to-bottom before right column in 2-column PDFs', () => {
+        const item = (str, x, y) => ({ str, width: 40, transform: [1, 0, 0, 1, x, y] });
+        const interleaved = [
+            item('L1', 40, 700), item('R1', 340, 700),
+            item('L2', 40, 680), item('R2', 340, 680),
+            item('L3', 40, 660), item('R3', 340, 660),
+            item('L4', 40, 640), item('R4', 340, 640),
+            item('L5', 40, 620), item('R5', 340, 620),
+            item('L6', 40, 600), item('R6', 340, 600)
+        ];
+        expect(orderPdfItems(interleaved, 600).map(i => i.str)).toEqual([
+            'L1', 'L2', 'L3', 'L4', 'L5', 'L6',
+            'R1', 'R2', 'R3', 'R4', 'R5', 'R6'
+        ]);
     });
 });
 

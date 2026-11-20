@@ -84,7 +84,8 @@ export const DEFAULT_READING = {
     // In-reader behaviour, adjustable from the reader's settings drawer.
     pacerStyle: 'band',
     dimRead: true,        // fade words the pacer has passed
-    rsvpContext: false,   // show the surrounding words under the RSVP flash
+    rsvpContext: true,    // show before and after text above and below the RSVP flash
+    scrollFocalPct: 44,   // vertical position (%) of the reading band in Scroll mode
     countdown: true,      // 3-2-1 before playback starts
     speedRamp: false,     // ease in from 70% of the target over the first quarter
     zen: false            // hide the controls while playing
@@ -113,7 +114,8 @@ export const LIMITS = {
     wordSpacing: [0, 1],
     maxWidthCh: [30, 110],
     paragraphGapEm: [0, 3],
-    bionicStrength: [0.2, 0.8]
+    bionicStrength: [0.2, 0.8],
+    scrollFocalPct: [20, 75]
 };
 
 const byId = (list, id, fallbackId) =>

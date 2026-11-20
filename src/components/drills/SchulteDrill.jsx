@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Grid3x3 } from 'lucide-react';
 import { SCHULTE_SIZE } from '../../lib/drillStats';
 
+const nowMs = () => Date.now();
+
 const shuffled = (n) => {
     const values = Array.from({ length: n }, (_, i) => i + 1);
     for (let i = values.length - 1; i > 0; i--) {
@@ -71,7 +73,7 @@ export default function SchulteDrill({ previousBest, onExit, onFinish }) {
             return;
         }
         if (nextRef.current === total) {
-            setElapsed((Date.now() - startedAtRef.current) / 1000);
+            setElapsed((nowMs() - startedAtRef.current) / 1000);
             setState('done');
             return;
         }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-    MIN_VERIFIED_QUESTIONS, coachSpec, dropGuessableQuestions, extractJson, manualPrompt,
-    passageSpec, pushSpec, verifySpec, youtubeSpec
+    MIN_VERIFIED_QUESTIONS, cleanDocSpec, coachSpec, dropGuessableQuestions, extractJson, manualPrompt,
+    passageSpec, pushSpec, questionsForTextSpec, verifySpec, youtubeSpec
 } from './ai';
 
 describe('extractJson', () => {
@@ -172,5 +172,23 @@ describe('dropGuessableQuestions', () => {
         expect(dropGuessableQuestions(FIVE, null).applied).toBe(false);
         expect(dropGuessableQuestions(FIVE, 'nope').applied).toBe(false);
         expect(dropGuessableQuestions(FIVE, null).questions).toHaveLength(5);
+    });
+});
+
+describe('cleanDocSpec', () => {
+    it('formats numbered blocks and requires cuts array in schema', () => {
+        const spec = cleanDocSpec({ blocks: [{ index: 0, text: 'Cookie banner' }, { index: 1, text: 'Real prose.' }] });
+        expect(spec.prompt).toContain('[0] Cookie banner');
+        expect(spec.prompt).toContain('[1] Real prose.');
+        expect(spec.schema.required).toContain('cuts');
+    });
+});
+
+describe('questionsForTextSpec', () => {
+    it('includes passage title, excerpt, and requires questions', () => {
+        const spec = questionsForTextSpec({ title: 'Chapter 1', text: 'The Romans built aqueducts using gravity.' });
+        expect(spec.prompt).toContain('Chapter 1');
+        expect(spec.prompt).toContain('aqueducts');
+        expect(spec.schema.required).toContain('questions');
     });
 });

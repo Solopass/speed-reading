@@ -326,7 +326,7 @@ function ScanningDrill({ onExit, onFinish, addNotification }) {
         const randomTarget = longWords[Math.floor(Math.random() * longWords.length)].replace(/[^a-zA-Z]/g, '');
         setTargetWord(randomTarget.toLowerCase());
         setMisses(0);
-        startedAtRef.current = Date.now();
+        startedAtRef.current = window.performance.now() / 1000;
     };
 
     const handleWordClick = (word) => {
@@ -338,7 +338,7 @@ function ScanningDrill({ onExit, onFinish, addNotification }) {
         }
         // Wrong clicks are penalised rather than free, otherwise clicking
         // everything at random would beat scanning carefully.
-        const seconds = (Date.now() - startedAtRef.current) / 1000 + misses;
+        const seconds = (window.performance.now() / 1000) - startedAtRef.current + misses;
         onFinish(Math.round(seconds * 10) / 10);
     };
 

@@ -1,18 +1,17 @@
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import {
-    Activity, BookOpen, Brain, ChevronRight, FileText, Play, Sparkles, Upload, Zap
+    Activity, BookOpen, Brain, ChevronRight, Play, Sparkles, Zap
 } from 'lucide-react';
 import { dropGuessableQuestions, passageSpec, pushSpec, verifySpec } from '../lib/ai';
 import { normalizeQuestions } from '../lib/quiz';
-import { splitPassage } from '../lib/protocol';
 import { PUSH_DRILL_PASSAGE } from '../lib/drills';
 import { isPartiallyRead, nextRecallOn, resumePoint } from '../lib/library';
-import { ACCEPT_ATTRIBUTE, SUPPORTED_EXTENSIONS, extractText } from '../lib/importText';
 import ManualAiPanel from '../components/ManualAiPanel';
 import BookShelf from '../components/BookShelf';
-import { BOOK_MIN_WORDS, buildChapters, createBook, isBook } from '../lib/book';
+import { isBook } from '../lib/book';
 
 const SOURCE_LABELS = { ai: 'AI', import: 'Imported', youtube: 'Video', builtin: 'Built-in' };
+const nextId = (prefix) => `${prefix}-${Date.now()}`;
 
 function SectionHeading({ step, icon, title, blurb, badge }) {
     return (
@@ -163,20 +162,13 @@ function SavedPassages({ library, onOpenSaved, onDeleteSaved }) {
 
 function Library({
     library, ai, verifyQuestions, readingWpm = 300, onStartPassage, onStartPushDrill, onOpenSaved, onDeleteSaved,
-    onSaveBook, onOpenChapter, onRemoveBookmark, addNotification
+    onOpenChapter, onRemoveBookmark, addNotification
 }) {
     const useApi = Boolean(ai?.generate);
     const [topic, setTopic] = useState('');
     const [difficulty, setDifficulty] = useState(5);
     const [isGenerating, setIsGenerating] = useState(false);
     const [outputKind, setOutputKind] = useState('passage');
-    const [customText, setCustomText] = useState('');
-    const [importedTitle, setImportedTitle] = useState(null);
-    // The file's own chapters (EPUB), kept until the text is edited by hand.
-    const [importedChapters, setImportedChapters] = useState(null);
-    const [importing, setImporting] = useState(false);
-    const fileRef = useRef(null);
-    const [isDragging, setIsDragging] = useState(false);
 
     // Copy/paste replies wait here for the optional blind check. The API path
     // runs that check automatically; pasting needs a second round trip, so it
@@ -203,7 +195,7 @@ function Library({
             next = { ...data, questions: kept };
         }
         setPendingCheck(null);
-        if (kind === 'push') onStartPushDrill({ ...next, id: `push-${Date.now()}` }, { source: 'ai' });
+        if (kind === 'push') onStartPushDrill({ ...next, id: nextId('push') }, { source: 'ai' });
         else startAiPassage(next);
     };
 
@@ -275,72 +267,6 @@ function Library({
         }
     };
 
-    const handleCustomStart = () => {
-        if (!customText.trim()) return;
-        onStartPassage({
-            id: `custom-${Date.now()}`,
-            title: importedTitle || 'Custom Imported Text',
-            text: customText,
-            questions: []
-        }, { source: 'import' });
-    };
-
-    const handleCustomPush = () => {
-        const sections = splitPassage(customText);
-        if (!sections) {
-            addNotification('Need roughly 150+ words to split into two drill sections.');
-            return;
-        }
-        onStartPushDrill({
-            id: `push-custom-${Date.now()}`,
-            title: importedTitle ? `${importedTitle} (Speed Push)` : 'Custom Speed Push',
-            ...sections,
-            questions: []
-        }, { source: 'import' });
-    };
-
-    // One path for both dropping and picking, so every format behaves the same
-    // however the file arrives.
-    const loadFile = async (file) => {
-        if (!file) return;
-        setImporting(true);
-        try {
-            const { title, text, chapters } = await extractText(file);
-            setCustomText(text);
-            setImportedTitle(title);
-            setImportedChapters(chapters);
-            addNotification(`Loaded ${text.split(/\s+/).length.toLocaleString()} words from ${file.name}.`);
-        } catch (error) {
-            console.error('Import error:', error);
-            setImportedTitle(null);
-            setImportedChapters(null);
-            addNotification(error.message || 'Could not read that file.');
-        } finally {
-            setImporting(false);
-        }
-    };
-
-    const handleDrop = (e) => {
-        e.preventDefault();
-        setIsDragging(false);
-        loadFile(e.dataTransfer.files?.[0]);
-    };
-
-    const wordCount = customText.trim() ? customText.trim().split(/\s+/).length : 0;
-    const canBeBook = wordCount >= BOOK_MIN_WORDS || (importedChapters?.length ?? 0) > 1;
-
-    const handleAddBook = () => {
-        const chapters = buildChapters({ text: customText, chapters: importedChapters });
-        if (chapters.length < 2) {
-            addNotification('Not enough text to split into chapters. Read it as one passage instead.');
-            return;
-        }
-        if (onSaveBook(createBook({ title: importedTitle || 'Imported book', chapters })) === false) return;
-        setCustomText('');
-        setImportedTitle(null);
-        setImportedChapters(null);
-    };
-
     const books = library.filter(isBook);
     const passages = library.filter(item => !isBook(item));
 
@@ -349,8 +275,8 @@ function Library({
             <div>
                 <h1 className="text-3xl font-bold text-white">Library</h1>
                 <p className="text-slate-400 mt-2 max-w-2xl leading-relaxed">
-                    Where your reading material comes from. Three ways in — a ready-made drill, something written for you by an AI, or
-                    your own book, article or PDF. Everything you read is saved below.
+                    Two ways in — a ready-made drill, or something written for you by an AI. To upload and read your own
+                    documents, use the Documents tab. Everything you read is saved below.
                 </p>
             </div>
 
@@ -491,95 +417,6 @@ function Library({
                             onResult={outputKind === 'push' ? acceptPushDrill : acceptPassage}
                         />
                     )}
-                </div>
-            </Card>
-
-            {/* Option 3 — your own material, always offline. */}
-            <Card className={isDragging ? 'border-blue-500 bg-blue-950/10' : ''}>
-                {/* A drop target, not a control: the picker and textarea below are the
-                    keyboard paths, so this adds a shortcut for mouse users. */}
-                {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
-                <div
-                    onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-                    onDragLeave={() => setIsDragging(false)}
-                    onDrop={handleDrop}
-                >
-                    <SectionHeading
-                        step="3" icon={<FileText size={18} />} badge="Works offline"
-                        title="Bring your own reading"
-                        blurb="Train on what you actually need to read. Open a file or paste text straight in — no AI involved at any point."
-                    />
-
-                    <div className="space-y-4">
-                        <div className="flex items-center gap-3 flex-wrap">
-                            <button
-                                onClick={() => fileRef.current?.click()} disabled={importing}
-                                className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white text-sm font-bold px-4 py-2.5 rounded-xl transition-colors"
-                            >
-                                {importing ? <Activity className="animate-spin" size={16} /> : <Upload size={16} />}
-                                {importing ? 'Reading file...' : 'Choose a file'}
-                            </button>
-                            <span className="text-xs text-slate-500">or drop one anywhere in this box</span>
-                            <input
-                                ref={fileRef} type="file" accept={ACCEPT_ATTRIBUTE} className="hidden"
-                                aria-label="Choose a document to import"
-                                onChange={(e) => { loadFile(e.target.files?.[0]); e.target.value = ''; }}
-                            />
-                        </div>
-
-                        <p className="text-[11px] text-slate-600">
-                            {SUPPORTED_EXTENSIONS.join('   ')} — a book chapter or long article works better than a short one.
-                        </p>
-
-                        {importedTitle && (
-                            <div className="text-xs bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-300 truncate">
-                                <span className="text-slate-500">Loaded:</span> {importedTitle}
-                            </div>
-                        )}
-
-                        <textarea
-                            value={customText}
-                            onChange={(e) => { setCustomText(e.target.value); setImportedTitle(null); setImportedChapters(null); }}
-                            placeholder="...or paste text straight in here."
-                            aria-label="Text to read"
-                            className="w-full min-h-[9rem] bg-slate-950 border border-slate-700 rounded-xl p-4 text-white resize-y focus:outline-none focus:border-blue-500 transition-colors text-sm"
-                        />
-
-                        {wordCount > 0 && (
-                            <p className="text-xs text-slate-500">
-                                {wordCount.toLocaleString()} words · about {Math.max(1, Math.round(wordCount / 300))} min at 300 WPM
-                            </p>
-                        )}
-
-                        {canBeBook && (
-                            <button
-                                onClick={handleAddBook}
-                                className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-3.5 rounded-xl transition-colors"
-                            >
-                                Add as a book
-                                <span className="block text-[11px] font-normal text-purple-100/80 mt-0.5">
-                                    {importedChapters?.length > 1 ? 'Uses the file’s own chapters' : 'Split into chapters'} · progress saved per chapter · bookmarks
-                                </span>
-                            </button>
-                        )}
-
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            <button
-                                onClick={handleCustomStart} disabled={!customText.trim()}
-                                className="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white font-bold py-3.5 rounded-xl transition-colors"
-                            >
-                                Read it
-                                <span className="block text-[11px] font-normal text-slate-400 mt-0.5">Straight through, no quiz</span>
-                            </button>
-                            <button
-                                onClick={handleCustomPush} disabled={!customText.trim()}
-                                className="border border-slate-700 hover:border-purple-500 disabled:opacity-40 text-slate-200 font-bold py-3.5 rounded-xl transition-colors"
-                            >
-                                Push drill it
-                                <span className="block text-[11px] font-normal text-slate-500 mt-0.5">Split in two, 1× / 2× / 3×</span>
-                            </button>
-                        </div>
-                    </div>
                 </div>
             </Card>
 

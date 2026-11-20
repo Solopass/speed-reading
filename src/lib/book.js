@@ -120,7 +120,13 @@ export function createBook({ id, title, source = 'import', chapters }) {
         text: null, sectionA: null, sectionB: null,
         questions: [], gistQuestions: [],
         chapters: chapters.map(c => ({
-            title: c.title, text: c.text, words: countWords(c.text), progressIndex: 0, completedAt: null
+            title: c.title,
+            text: c.text,
+            words: countWords(c.text),
+            progressIndex: 0,
+            completedAt: null,
+            questions: Array.isArray(c.questions) ? c.questions : [],
+            gistQuestions: Array.isArray(c.gistQuestions) ? c.gistQuestions : []
         })),
         currentChapter: 0,
         bookmarks: [],
@@ -152,8 +158,8 @@ export function chapterPassage(book, index, resumeFrom = null) {
         title: `${book.title} · ${ch.title}`,
         chapterTitle: ch.title,
         text: ch.text,
-        questions: [],
-        gistQuestions: [],
+        questions: Array.isArray(ch.questions) ? ch.questions : [],
+        gistQuestions: Array.isArray(ch.gistQuestions) ? ch.gistQuestions : [],
         resumeFrom: resumeFrom ?? (ch.progressIndex > 0 && ch.progressIndex < ch.words ? ch.progressIndex : 0)
     };
 }
@@ -202,11 +208,18 @@ export function completeChapter(items, id, index, { wpm = null } = {}) {
 /** The chapter to continue with. */
 export const nextChapterIndex = (book) => Math.min(Math.max(0, book.currentChapter ?? 0), book.chapters.length - 1);
 
-export function addBookmark(items, id, { chapter, index, snippet }) {
+export function addBookmark(items, id, { chapter, index, snippet, note = '' }) {
     return updateBook(items, id, book => ({
         ...book,
         bookmarks: [
-            { id: `bm-${Date.now()}`, chapter, index, snippet: String(snippet ?? '').slice(0, 120), createdAt: todayKey() },
+            {
+                id: `bm-${Date.now()}`,
+                chapter,
+                index,
+                snippet: String(snippet ?? '').slice(0, 120),
+                note: String(note ?? '').trim().slice(0, 280),
+                createdAt: todayKey()
+            },
             ...book.bookmarks.filter(b => !(b.chapter === chapter && Math.abs(b.index - index) < 5))
         ].slice(0, MAX_BOOKMARKS)
     }));
@@ -238,7 +251,9 @@ export function migrateBook(raw) {
                 text: c.text,
                 words,
                 progressIndex: Number.isInteger(c.progressIndex) ? Math.min(Math.max(0, c.progressIndex), words) : 0,
-                completedAt: typeof c.completedAt === 'string' ? c.completedAt : null
+                completedAt: typeof c.completedAt === 'string' ? c.completedAt : null,
+                questions: Array.isArray(c.questions) ? c.questions : [],
+                gistQuestions: Array.isArray(c.gistQuestions) ? c.gistQuestions : []
             };
         });
     if (!chapters.length) return null;
@@ -256,6 +271,7 @@ export function migrateBook(raw) {
                         chapter,
                         index: Math.min(Math.max(0, b.index), Math.max(0, chapters[chapter].words - 1)),
                         snippet: String(b.snippet ?? '').slice(0, 120),
+                        note: typeof b.note === 'string' ? b.note.slice(0, 280) : '',
                         createdAt: typeof b.createdAt === 'string' ? b.createdAt : todayKey()
                     };
                 })

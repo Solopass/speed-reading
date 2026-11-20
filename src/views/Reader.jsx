@@ -1,19 +1,21 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-    Bookmark, Maximize2, Minimize2, Minus, Pause, Play, Plus, RotateCcw, Settings2, SkipBack, SkipForward, Target, Volume2
+    ArrowUpDown, Bookmark, ChevronLeft, ChevronRight, Maximize2, Minimize2, Minus, Pause, Play, Plus, RotateCcw, Settings2, SkipBack, SkipForward, Target, Volume2
 } from 'lucide-react';
 import { normalizeQuestions } from '../lib/quiz';
 import useHotkeys from '../lib/useHotkeys';
 import PacedText from '../components/PacedText';
+import ScrollText from '../components/ScrollText';
 import PassageText from '../components/PassageText';
 import ReadingSurface from '../components/ReadingSurface';
 import ReaderSettings from '../components/ReaderSettings';
 import { focalColorFor, rampFactor } from '../lib/readingStyle';
-import { clampIndex, clock, jump, startCount, wordsCovered } from '../lib/readerNav';
+import { clampIndex, clock, extractSections, jump, startCount, wordsCovered } from '../lib/readerNav';
 import Quiz from '../components/Quiz';
 
 /** Words skipped by the rewind and skip controls. */
 const SKIP_WORDS = 10;
+const WPM_PRESETS = [200, 300, 400, 500, 650, 800, 1000];
 
 const Kbd = ({ children }) => <kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-400 font-mono">{children}</kbd>;
 
@@ -23,7 +25,9 @@ function KeyboardHint() {
             <span><Kbd>space</Kbd> play/pause</span>
             <span><Kbd>↑↓</Kbd> speed</span>
             <span><Kbd>[ ]</Kbd> back/skip {SKIP_WORDS}</span>
+            <span><Kbd>{'{ }'}</Kbd> prev/next sentence</span>
             <span><Kbd>R</Kbd> restart</span>
+            <span><Kbd>Z</Kbd> zen</span>
             <span><Kbd>S</Kbd> settings</span>
             <span><Kbd>B</Kbd> bookmark (books)</span>
             <span><Kbd>F</Kbd> full screen</span>
@@ -64,7 +68,7 @@ function Scrubber({ index, total, onSeek, label }) {
 }
 
 function Reader({
-    passage, settings, reading, patchReading, updateSettings, initialWpm, resumeFrom = 0,
+    passage, book = null, onSelectChapter = null, settings, reading, patchReading, updateSettings, initialWpm, resumeFrom = 0,
     onFinish, onLeave, onExit, onBookmark = null, addNotification
 }) {
     // The baseline test measures your natural pace, so it is always read as
@@ -74,10 +78,11 @@ function Reader({
     const [readWpm, setReadWpm] = useState(initialWpm);
     // Skim runs at its own speed, so trying a skim and switching back does not
     // leave the reading speed at 1,000 WPM.
-    const [skimWpm, setSkimWpm] = useState(() => skimStartWpm(initialWpm));
+    const [skimWpm, setSkimWpm] = useState(() => settings.skimWpm ?? skimStartWpm(initialWpm));
+    const safeResume = Math.max(0, resumeFrom);
     const [isPlaying, setIsPlaying] = useState(false);
-    const [currentIndex, setCurrentIndex] = useState(resumeFrom);
-    const [mode, setMode] = useState(isCalibration ? 'natural' : 'rsvp');
+    const [currentIndex, setCurrentIndex] = useState(safeResume);
+    const [mode, setMode] = useState(isCalibration ? 'natural' : (settings.readerMode || 'rsvp'));
     const [isAudioReady, setIsAudioReady] = useState(false);
     const [quizActive, setQuizActive] = useState(false);
     // Measurement is frozen when the quiz opens; the clock must not keep
@@ -91,10 +96,32 @@ function Reader({
     const [countdown, setCountdown] = useState(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
 
-    const [pacedIndex, setPacedIndex] = useState(0);
+    const [pacedIndex, setPacedIndex] = useState(safeResume);
     const [pacedSeek, setPacedSeek] = useState(null);
+    const [pacedInitialIndex, setPacedInitialIndex] = useState(safeResume);
+    const [wpmMenuOpen, setWpmMenuOpen] = useState(false);
+    const [bookmarkOpen, setBookmarkOpen] = useState(false);
+    const [bookmarkNote, setBookmarkNote] = useState('');
+    const bookmarkInputRef = useRef(null);
+    const wpmMenuRef = useRef(null);
+    const touchStartRef = useRef(null);
+    const lastNonScrollModeRef = useRef(mode === 'scroll' ? 'rsvp' : mode);
+
+    useEffect(() => {
+        if (!wpmMenuOpen) return undefined;
+        const onPointerDown = (e) => {
+            if (!wpmMenuRef.current?.contains(e.target)) setWpmMenuOpen(false);
+        };
+        window.addEventListener('pointerdown', onPointerDown);
+        return () => window.removeEventListener('pointerdown', onPointerDown);
+    }, [wpmMenuOpen]);
+
+    useEffect(() => {
+        if (bookmarkOpen) bookmarkInputRef.current?.focus();
+    }, [bookmarkOpen]);
 
     const isSkim = mode === 'skim';
+    const isScroll = mode === 'scroll';
     const isPacer = mode === 'paced' || mode === 'skim';
     const wpm = isSkim ? skimWpm : readWpm;
     const setWpm = isSkim ? setSkimWpm : setReadWpm;
@@ -103,6 +130,8 @@ function Reader({
         if (!passage?.text) return [];
         return passage.text.trim().split(/\s+/).filter(w => w.length > 0);
     }, [passage]);
+
+    const sections = useMemo(() => (book ? [] : extractSections(passage?.text ?? '')), [book, passage?.text]);
 
     // Validated and shuffled once per passage: a model can return a bad answer
     // index or duplicate options, and re-shuffling on every render would move
@@ -201,41 +230,23 @@ function Reader({
     // lag behind the visual.
     useEffect(() => {
         if (!settings.audioSyncEnabled || !isAudioReady || mode !== 'rsvp' || !isPlaying) return;
+        const synth = window.speechSynthesis;
+        if (!synth) return;
 
         const chunk = words.slice(currentIndex, currentIndex + settings.chunkSize).join(' ');
         if (!chunk) return;
 
         const utterance = new SpeechSynthesisUtterance(chunk);
         utterance.rate = Math.min(4, Math.max(0.5, effectiveWpm / 180));
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(utterance);
+        synth.cancel();
+        synth.speak(utterance);
     }, [currentIndex, isPlaying, isAudioReady, mode, effectiveWpm, words, settings.audioSyncEnabled, settings.chunkSize]);
 
     useEffect(() => {
-        if (!isPlaying || mode !== 'rsvp') window.speechSynthesis.cancel();
+        if (!isPlaying || mode !== 'rsvp') window.speechSynthesis?.cancel();
     }, [isPlaying, mode]);
 
-    useEffect(() => () => window.speechSynthesis.cancel(), []);
-
-    // --- RSVP advance ------------------------------------------------------
-    useEffect(() => {
-        if (!isPlaying || mode !== 'rsvp' || currentIndex >= words.length) return;
-
-        const currentChunk = words.slice(currentIndex, currentIndex + settings.chunkSize);
-        let delayMs = (60000 / effectiveWpm) * settings.chunkSize;
-
-        if (settings.punctuationPacing && currentChunk.length > 0) {
-            const lastWord = currentChunk[currentChunk.length - 1];
-            if (lastWord.endsWith(',')) delayMs += 150;
-            else if (lastWord.endsWith('.') || lastWord.endsWith('!') || lastWord.endsWith('?')) delayMs += 300;
-        }
-
-        timerRef.current = setTimeout(() => {
-            setCurrentIndex(prev => prev + settings.chunkSize);
-        }, delayMs);
-
-        return () => clearTimeout(timerRef.current);
-    }, [isPlaying, currentIndex, effectiveWpm, mode, words, settings.punctuationPacing, settings.chunkSize]);
+    useEffect(() => () => window.speechSynthesis?.cancel(), []);
 
     /**
      * Measured speed over the words actually read. Clamped because a Natural-mode
@@ -256,22 +267,26 @@ function Reader({
         return wordsCovered(countRef.current, cursorIndex);
     }, [mode, cursorIndex, words.length]);
 
-    /**
-     * Switching modes starts the measurement over: each mode counts words on
-     * its own basis, and carrying the elapsed time across a switch would divide
-     * one mode's words by another mode's seconds.
-     */
-    const modeStartedRef = useRef(mode);
-    useEffect(() => {
-        if (modeStartedRef.current === mode) return;
-        modeStartedRef.current = mode;
+    const switchMode = (nextMode) => {
+        if (nextMode === mode) return;
+        pause();
+        setWpmMenuOpen(false);
+        setNaturalStarted(false);
+        if (nextMode !== 'scroll') lastNonScrollModeRef.current = nextMode;
+        const at = clampIndex(cursorIndex, words.length);
         accumulatedMsRef.current = 0;
         runningSinceRef.current = null;
         setElapsedSecs(0);
-        countRef.current = startCount(mode === 'rsvp' ? currentIndex : 0);
-        setPacedIndex(0);
-        setPacedSeek(null);
-    }, [mode, currentIndex]);
+        countRef.current = startCount(at);
+        if (nextMode === 'rsvp') setCurrentIndex(at);
+        else if (nextMode === 'paced' || nextMode === 'skim' || nextMode === 'scroll') {
+            setPacedInitialIndex(at);
+            setPacedIndex(at);
+            setPacedSeek(prev => ({ index: at, nonce: (prev?.nonce ?? 0) + 1 }));
+        }
+        setMode(nextMode);
+        updateSettings?.({ readerMode: nextMode });
+    };
 
     // The live position for jumps. Updated on every render and immediately by
     // each jump, so two jumps in quick succession chain instead of both
@@ -324,10 +339,34 @@ function Reader({
         onFinish({ ...measured, score: null });
     }, [stopClock, wordsRead, questions, onFinish, measuredWpm, elapsedMs, mode, isCalibration]);
 
-    // Completion lives in its own effect so the advance effect doesn't have to
-    // close over a handler it never lists as a dependency.
-    const finishRef = useRef(handleFinishReading);
-    useLayoutEffect(() => { finishRef.current = handleFinishReading; });
+    // --- RSVP advance ------------------------------------------------------
+    useEffect(() => {
+        if (!isPlaying || mode !== 'rsvp' || words.length === 0 || currentIndex >= words.length) return;
+
+        const currentChunk = words.slice(currentIndex, currentIndex + settings.chunkSize);
+        let delayMs = (60000 / effectiveWpm) * settings.chunkSize;
+
+        if (settings.punctuationPacing && currentChunk.length > 0) {
+            const lastWord = currentChunk[currentChunk.length - 1];
+            const avgLen = currentChunk.reduce((s, w) => s + w.length, 0) / currentChunk.length;
+            if (avgLen >= 8) delayMs *= 1.15;
+            if (/[,;:—]$/.test(lastWord)) delayMs += 130;
+            else if (/[.!?]$/.test(lastWord)) delayMs += 260;
+        }
+
+        timerRef.current = setTimeout(() => {
+            const next = currentIndex + settings.chunkSize;
+            if (next >= words.length) {
+                setCurrentIndex(words.length);
+                setIsPlaying(false);
+                handleFinishReading();
+            } else {
+                setCurrentIndex(next);
+            }
+        }, delayMs);
+
+        return () => clearTimeout(timerRef.current);
+    }, [isPlaying, currentIndex, effectiveWpm, mode, words, settings.punctuationPacing, settings.chunkSize, handleFinishReading]);
 
     // The pacer reports completion from its own animation loop; guard against
     // it firing more than once as the final frames settle.
@@ -338,15 +377,8 @@ function Reader({
         if (pacerDoneRef.current) return;
         pacerDoneRef.current = true;
         setIsPlaying(false);
-        finishRef.current();
-    }, []);
-
-    useEffect(() => {
-        if (isPlaying && mode === 'rsvp' && words.length > 0 && currentIndex >= words.length) {
-            setIsPlaying(false);
-            finishRef.current();
-        }
-    }, [isPlaying, mode, currentIndex, words.length]);
+        handleFinishReading();
+    }, [handleFinishReading]);
 
     // --- Play, pause and the countdown --------------------------------------
     useEffect(() => {
@@ -361,6 +393,7 @@ function Reader({
     const togglePlay = () => {
         if (countdown !== null) { setCountdown(null); return; }
         if (isPlaying) { setIsPlaying(false); return; }
+        if (mode === 'rsvp' && words.length > 0 && currentIndex >= words.length) seekTo(0);
         if (reading.countdown) setCountdown(3);
         else setIsPlaying(true);
     };
@@ -372,7 +405,52 @@ function Reader({
 
     const restart = () => { pause(); seekTo(0); };
 
-    const nudgeWpm = (delta) => setWpm(w => Math.min(2000, Math.max(100, w + delta)));
+    const applyWpm = (targetWpm) => {
+        const next = Math.min(2000, Math.max(100, targetWpm));
+        setWpm(next);
+        if (isSkim) {
+            updateSettings?.({ skimWpm: next });
+        } else {
+            updateSettings?.(settings.autoAdaptive ? { readerWpm: next } : { readerWpm: next, baseWpm: next });
+        }
+    };
+
+    const nudgeWpm = (delta) => applyWpm(wpm + delta);
+
+    const seekSentence = (dir) => {
+        if (mode === 'natural' || words.length === 0) return;
+        let idx = clampIndex(cursorRef.current, words.length);
+        if (dir < 0) {
+            idx = Math.max(0, idx - 2);
+            while (idx > 0 && !/[.!?]$/.test(words[idx - 1])) idx--;
+        } else {
+            while (idx < words.length - 1 && !/[.!?]$/.test(words[idx])) idx++;
+            idx = Math.min(words.length - 1, idx + 1);
+        }
+        seekTo(idx);
+    };
+
+    const handleWheelScrub = (e) => {
+        if (isPlaying || (mode !== 'rsvp' && mode !== 'scroll')) return;
+        if (Math.abs(e.deltaY) < 4) return;
+        seekBy(e.deltaY > 0 ? 3 : -3);
+    };
+
+    const handleTouchStart = (e) => {
+        if (isPlaying || e.touches.length !== 1) return;
+        touchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    };
+
+    const handleTouchEnd = (e) => {
+        const start = touchStartRef.current;
+        touchStartRef.current = null;
+        if (!start || isPlaying || e.changedTouches.length !== 1) return;
+        const dx = e.changedTouches[0].clientX - start.x;
+        const dy = e.changedTouches[0].clientY - start.y;
+        if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+            seekBy(dx < 0 ? SKIP_WORDS : -SKIP_WORDS);
+        }
+    };
 
     // You read with your eyes fixed on one point, so reaching for the mouse to
     // pause defeats the exercise.
@@ -384,61 +462,72 @@ function Reader({
         ArrowLeft: () => nudgeWpm(-25),
         '[': () => seekBy(-SKIP_WORDS),
         ']': () => seekBy(SKIP_WORDS),
+        '{': () => seekSentence(-1),
+        '}': () => seekSentence(1),
         r: () => { if (mode !== 'natural') restart(); },
+        z: () => patchReading({ zen: !reading.zen }),
         s: () => openSettings(),
-        b: () => { if (mode !== 'natural') onBookmark?.({ index: cursorRef.current }); },
+        b: () => { if (mode !== 'natural' && onBookmark) { pause(); setBookmarkNote(''); setBookmarkOpen(true); } },
         f: () => toggleFullscreen(),
-        Escape: () => onExit?.()
-    }, !quizActive && !settingsOpen && !isCalibration);
+        Escape: () => { if (bookmarkOpen) setBookmarkOpen(false); else if (wpmMenuOpen) setWpmMenuOpen(false); else onExit?.(); }
+    }, !quizActive && !settingsOpen && !bookmarkOpen && !isCalibration);
 
     const renderRsvpChunk = () => {
-        if (settings.chunkSize === 1) {
-            const word = words[currentIndex];
-            if (!word) return null;
-            const centerIdx = word.length <= 1 ? 0 : Math.max(0, Math.floor(word.length / 2) - 1);
+        const chunkWords = words.slice(currentIndex, currentIndex + settings.chunkSize);
+        if (chunkWords.length === 0) return null;
 
-            const start = word.slice(0, centerIdx);
-            const center = word.charAt(centerIdx);
-            const end = word.slice(centerIdx + 1);
-
-            return (
-                // Equal-width flanks keep the ORP character pinned to the exact
-                // horizontal centre without the halves overlapping it.
-                <div
-                    className="flex items-center justify-center w-full select-none"
-                    style={{ fontSize: 'var(--reading-rsvp-size)', fontFamily: 'var(--reading-font)', lineHeight: 1.1 }}
-                >
-                    <span className="flex-1 text-right whitespace-pre" style={{ opacity: 0.8 }}>{start}</span>
-                    <span className="shrink-0 font-bold" style={{ color: focalColorFor(reading) ?? 'inherit' }}>{center}</span>
-                    <span className="flex-1 text-left whitespace-pre" style={{ opacity: 0.8 }}>{end}</span>
-                </div>
-            );
+        const chunk = chunkWords.join(' ');
+        let centerIdx = chunk.length <= 1 ? 0 : Math.max(0, Math.floor(chunk.length / 2) - 1);
+        // Never land the focal highlight on a space between words in multi-word chunks.
+        if (chunk.charAt(centerIdx) === ' ') {
+            if (centerIdx + 1 < chunk.length && chunk.charAt(centerIdx + 1) !== ' ') centerIdx += 1;
+            else if (centerIdx - 1 >= 0 && chunk.charAt(centerIdx - 1) !== ' ') centerIdx -= 1;
         }
-        const chunk = words.slice(currentIndex, currentIndex + settings.chunkSize).join(' ');
+
+        const start = chunk.slice(0, centerIdx);
+        const center = chunk.charAt(centerIdx);
+        const end = chunk.slice(centerIdx + 1);
+        const scale = settings.chunkSize === 1 ? 1
+            : settings.chunkSize === 2 ? 0.72
+            : settings.chunkSize === 3 ? 0.6
+            : 0.5;
+
         return (
+            // Equal-width flanks keep the ORP character pinned to the exact
+            // horizontal centre without the halves overlapping it, for 1 or more words.
             <div
-                className="w-full text-center select-none font-bold leading-tight px-4"
-                style={{ fontSize: 'calc(var(--reading-rsvp-size) * 0.7)', fontFamily: 'var(--reading-font)' }}
+                className="flex items-center justify-center w-full select-none px-4"
+                style={{
+                    fontSize: scale === 1 ? 'var(--reading-rsvp-size)' : `calc(var(--reading-rsvp-size) * ${scale})`,
+                    fontFamily: 'var(--reading-font)',
+                    lineHeight: 1.15
+                }}
             >
-                {chunk}
+                <span className="flex-1 min-w-0 text-right whitespace-pre" style={{ opacity: 0.8 }}>{start}</span>
+                <span className="shrink-0 font-bold" style={{ color: focalColorFor(reading) ?? 'inherit' }}>{center}</span>
+                <span className="flex-1 min-w-0 text-left whitespace-pre" style={{ opacity: 0.8 }}>{end}</span>
             </div>
         );
     };
 
-    /** The surrounding words, dimmed, under the flash. */
-    const renderRsvpContext = () => {
-        const from = Math.max(0, currentIndex - 6);
-        const to = Math.min(words.length, currentIndex + settings.chunkSize + 6);
-        return (
-            <p className="mt-4 text-sm text-center max-w-xl px-4 leading-relaxed" style={{ color: 'var(--reading-muted)', fontFamily: 'var(--reading-font)' }}>
-                {words.slice(from, to).map((w, i) => {
-                    const at = from + i;
-                    const on = at >= currentIndex && at < currentIndex + settings.chunkSize;
-                    return <span key={at} style={on ? { color: 'var(--reading-fg)', fontWeight: 700 } : undefined}>{w} </span>;
-                })}
-            </p>
-        );
-    };
+    /** The words immediately before and after the flash, shown above and below it. */
+    const CONTEXT_WORDS = 16;
+    const beforeContext = useMemo(() => {
+        const from = Math.max(0, currentIndex - CONTEXT_WORDS);
+        return {
+            hasMore: from > 0,
+            items: words.slice(from, currentIndex).map((word, i) => ({ word, index: from + i }))
+        };
+    }, [words, currentIndex]);
+
+    const afterContext = useMemo(() => {
+        const start = Math.min(words.length, currentIndex + settings.chunkSize);
+        const to = Math.min(words.length, start + CONTEXT_WORDS);
+        return {
+            hasMore: to < words.length,
+            items: words.slice(start, to).map((word, i) => ({ word, index: start + i }))
+        };
+    }, [words, currentIndex, settings.chunkSize]);
 
     if (!passage) return <div className="text-center mt-20 text-slate-400">No passage loaded.</div>;
 
@@ -494,9 +583,107 @@ function Reader({
         </div>
     );
 
+    const renderTimeline = () => {
+        if (isCalibration) return null;
+
+        if (book && book.chapters.length > 1 && Number.isInteger(chapterIndex)) {
+            const totalCh = book.chapters.length;
+            const prevDisabled = chapterIndex <= 0;
+            const nextDisabled = chapterIndex >= totalCh - 1;
+            const jumpChapter = (idx) => {
+                pause();
+                leaveRef.current.finished = true;
+                onSelectChapter?.(idx, { progressIndex: cursorRef.current, mode });
+            };
+            return (
+                <div className="w-full max-w-2xl mt-3 pt-3 border-t border-slate-800/70">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                        <button
+                            type="button"
+                            disabled={prevDisabled}
+                            onClick={() => jumpChapter(chapterIndex - 1)}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-slate-400 hover:text-white disabled:opacity-30 disabled:pointer-events-none px-2 py-1 rounded-lg hover:bg-slate-800/60"
+                        >
+                            <ChevronLeft size={14} /> Prev
+                        </button>
+                        <span className="text-xs font-medium text-slate-400 truncate">
+                            Chapter {chapterIndex + 1} of {totalCh} · <span className="text-slate-200">{book.chapters[chapterIndex]?.title}</span>
+                        </span>
+                        <button
+                            type="button"
+                            disabled={nextDisabled}
+                            onClick={() => jumpChapter(chapterIndex + 1)}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-slate-400 hover:text-white disabled:opacity-30 disabled:pointer-events-none px-2 py-1 rounded-lg hover:bg-slate-800/60"
+                        >
+                            Next <ChevronRight size={14} />
+                        </button>
+                    </div>
+                    <div className="flex gap-1.5 overflow-x-auto pb-1" role="navigation" aria-label="Chapter timeline">
+                        {book.chapters.map((ch, i) => {
+                            const active = i === chapterIndex;
+                            const done = Boolean(ch.completedAt);
+                            return (
+                                <button
+                                    key={i}
+                                    type="button"
+                                    onClick={() => jumpChapter(i)}
+                                    title={`${ch.title} (${ch.words.toLocaleString()} words)`}
+                                    aria-current={active ? 'step' : undefined}
+                                    className={`shrink-0 max-w-[11rem] truncate px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors ${
+                                        active
+                                            ? 'border-purple-500 bg-purple-500/20 text-purple-200'
+                                            : done
+                                                ? 'border-emerald-800/60 bg-emerald-950/30 text-emerald-300 hover:border-emerald-600'
+                                                : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:border-slate-600 hover:text-slate-200'
+                                    }`}
+                                >
+                                    {i + 1}. {ch.title}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+            );
+        }
+
+        if (sections.length === 0 || mode === 'natural') return null;
+
+        let activeSectionIdx = 0;
+        for (let i = 0; i < sections.length; i++) {
+            if (cursorIndex >= sections[i].index) activeSectionIdx = i;
+        }
+
+        return (
+            <div className="w-full max-w-2xl mt-3 pt-3 border-t border-slate-800/70">
+                <div className="flex gap-1.5 overflow-x-auto pb-1 justify-start sm:justify-center" role="navigation" aria-label="Document timeline">
+                    {sections.map((sec, i) => {
+                        const active = i === activeSectionIdx;
+                        return (
+                            <button
+                                key={`${sec.index}-${i}`}
+                                type="button"
+                                onClick={() => seekTo(sec.index)}
+                                title={`Jump to ${sec.title} (word ${sec.index + 1})`}
+                                aria-current={active ? 'step' : undefined}
+                                className={`shrink-0 max-w-[11rem] truncate px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors ${
+                                    active
+                                        ? 'border-purple-500 bg-purple-500/20 text-purple-200'
+                                        : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:border-slate-600 hover:text-slate-200'
+                                }`}
+                            >
+                                {sec.title}
+                            </button>
+                        );
+                    })}
+                </div>
+            </div>
+        );
+    };
+
+    const pctDone = words.length ? Math.round((cursorIndex / words.length) * 100) : 0;
     const status = (
         <p className="text-slate-500 text-sm font-mono text-center">
-            {cursorIndex} / {words.length} · {left} left · {clock(elapsedSecs)} read
+            {pctDone}% · {cursorIndex} / {words.length} · {left} left · {clock(elapsedSecs)} read
             {ramp < 1 && <span className="text-amber-400"> · warming up {Math.round(ramp * 100)}%</span>}
         </p>
     );
@@ -525,7 +712,7 @@ function Reader({
                         ].map(([key, label]) => (
                             <button
                                 key={key}
-                                onClick={() => { pause(); setNaturalStarted(false); setMode(key); }}
+                                onClick={() => switchMode(key)}
                                 className={`px-3 md:px-4 py-2 rounded-lg font-bold text-sm transition-colors whitespace-nowrap ${mode === key ? 'bg-purple-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
                             >
                                 {label}
@@ -546,16 +733,58 @@ function Reader({
                                     {isAudioReady ? 'Audio linked' : 'Link audio'}
                                 </button>
                             )}
-                            <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl overflow-hidden">
-                                <button onClick={() => nudgeWpm(-25)} aria-label="Slower" className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Minus size={16} /></button>
-                                <div className="px-2 md:px-3 font-mono font-bold text-purple-400 min-w-[76px] text-center text-sm">{wpm} WPM</div>
-                                <button onClick={() => nudgeWpm(25)} aria-label="Faster" className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Plus size={16} /></button>
+                            <div className="relative" ref={wpmMenuRef}>
+                                <div className="flex items-center bg-slate-950 border border-slate-800 rounded-xl overflow-hidden">
+                                    <button onClick={() => nudgeWpm(-25)} aria-label="Slower" className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Minus size={16} /></button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setWpmMenuOpen(o => !o)}
+                                        aria-expanded={wpmMenuOpen}
+                                        aria-label="Choose WPM preset"
+                                        title="Click for speed presets"
+                                        className="px-2 md:px-3 py-1.5 font-mono font-bold text-purple-400 hover:text-purple-300 min-w-[76px] text-center text-sm transition-colors"
+                                    >
+                                        {wpm} WPM
+                                    </button>
+                                    <button onClick={() => nudgeWpm(25)} aria-label="Faster" className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Plus size={16} /></button>
+                                </div>
+                                {wpmMenuOpen && (
+                                    <div className="absolute right-0 mt-2 w-36 bg-slate-900 border border-slate-700 rounded-xl shadow-xl p-1.5 z-30 grid grid-cols-1 gap-0.5" role="menu" aria-label="WPM presets">
+                                        {WPM_PRESETS.map(preset => (
+                                            <button
+                                                key={preset}
+                                                type="button"
+                                                role="menuitem"
+                                                onClick={() => { applyWpm(preset); setWpmMenuOpen(false); }}
+                                                className={`text-left px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-colors ${
+                                                    wpm === preset ? 'bg-purple-600 text-white' : 'text-slate-300 hover:bg-slate-800'
+                                                }`}
+                                            >
+                                                {preset} WPM
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
+                            <button
+                                type="button"
+                                onClick={() => switchMode(isScroll ? lastNonScrollModeRef.current : 'scroll')}
+                                aria-pressed={isScroll}
+                                title="Scroll mode — text scrolls up from the bottom"
+                                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-bold transition-colors ${
+                                    isScroll
+                                        ? 'border-purple-500 bg-purple-600 text-white'
+                                        : 'border-slate-800 bg-slate-950 text-slate-300 hover:text-white hover:border-slate-600'
+                                }`}
+                            >
+                                <ArrowUpDown size={15} />
+                                <span className="hidden sm:inline">Scroll</span>
+                            </button>
                         </>
                     )}
                     {onBookmark && mode !== 'natural' && (
                         <button
-                            onClick={() => onBookmark({ index: cursorRef.current })} aria-label="Bookmark this spot" title="Bookmark (B)"
+                            onClick={() => { pause(); setBookmarkNote(''); setBookmarkOpen(true); }} aria-label="Bookmark this spot" title="Bookmark & note (B)"
                             className="p-2.5 rounded-xl border border-slate-800 text-slate-300 hover:text-white hover:border-slate-600 transition-colors"
                         >
                             <Bookmark size={18} />
@@ -579,24 +808,139 @@ function Reader({
 
                 {mode === 'rsvp' ? (
                     <div className="w-full flex flex-col items-center">
-                        <button
-                            type="button"
-                            onClick={togglePlay}
-                            aria-label={isPlaying ? 'Pause reading' : 'Start reading'}
-                            className="h-40 flex items-center justify-center w-full relative overflow-hidden cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 rounded-2xl"
+                        <div
+                            onWheel={handleWheelScrub}
+                            onTouchStart={handleTouchStart}
+                            onTouchEnd={handleTouchEnd}
+                            className="w-full rounded-2xl overflow-hidden flex flex-col items-center"
                             style={{ background: 'var(--reading-bg)', color: 'var(--reading-fg)' }}
                         >
-                            {reading.showFocalGuide && (
-                                <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 pointer-events-none" style={{ background: 'var(--reading-muted)', opacity: 0.35 }} />
+                            {reading.rsvpContext && (
+                                <div
+                                    aria-hidden="true"
+                                    className="h-16 md:h-20 w-full max-w-2xl px-6 pt-3 pb-1 flex items-end justify-center overflow-hidden select-none"
+                                    style={{
+                                        maskImage: 'linear-gradient(to bottom, transparent 0%, black 55%)',
+                                        WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 55%)'
+                                    }}
+                                >
+                                    <p
+                                        className="text-center leading-relaxed"
+                                        style={{
+                                            color: 'var(--reading-muted)',
+                                            fontFamily: 'var(--reading-font)',
+                                            fontSize: 'clamp(0.875rem, calc(var(--reading-prose-size) * 0.85), 1.3rem)'
+                                        }}
+                                    >
+                                        {beforeContext.hasMore && <span className="opacity-50 mr-1">…</span>}
+                                        {beforeContext.items.map(({ word, index }) => (
+                                            // Clicking a word is a mouse shortcut; [ and ] are the keyboard path.
+                                            // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
+                                            <span
+                                                key={index}
+                                                onClick={() => seekTo(index)}
+                                                className="cursor-pointer hover:underline"
+                                            >
+                                                {word}{' '}
+                                            </span>
+                                        ))}
+                                    </p>
+                                </div>
                             )}
-                            {countdown === null && renderRsvpChunk()}
-                        </button>
-                        {reading.rsvpContext && renderRsvpContext()}
+                            <button
+                                type="button"
+                                onClick={togglePlay}
+                                aria-label={isPlaying ? 'Pause reading' : 'Start reading'}
+                                className="h-36 md:h-40 flex items-center justify-center w-full relative overflow-hidden cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 border-y border-slate-800/40"
+                            >
+                                {reading.showFocalGuide && (
+                                    <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 pointer-events-none" style={{ background: 'var(--reading-muted)', opacity: 0.35 }} />
+                                )}
+                                {countdown === null && renderRsvpChunk()}
+                            </button>
+                            {reading.rsvpContext && (
+                                <div
+                                    aria-hidden="true"
+                                    className="h-16 md:h-20 w-full max-w-2xl px-6 pt-1 pb-3 flex items-start justify-center overflow-hidden select-none"
+                                    style={{
+                                        maskImage: 'linear-gradient(to top, transparent 0%, black 55%)',
+                                        WebkitMaskImage: 'linear-gradient(to top, transparent 0%, black 55%)'
+                                    }}
+                                >
+                                    <p
+                                        className="text-center leading-relaxed"
+                                        style={{
+                                            color: 'var(--reading-muted)',
+                                            fontFamily: 'var(--reading-font)',
+                                            fontSize: 'clamp(0.875rem, calc(var(--reading-prose-size) * 0.85), 1.3rem)'
+                                        }}
+                                    >
+                                        {afterContext.items.map(({ word, index }) => (
+                                            // Clicking a word is a mouse shortcut; [ and ] are the keyboard path.
+                                            // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
+                                            <span
+                                                key={index}
+                                                onClick={() => seekTo(index)}
+                                                className="cursor-pointer hover:underline"
+                                            >
+                                                {word}{' '}
+                                            </span>
+                                        ))}
+                                        {afterContext.hasMore && <span className="opacity-50">…</span>}
+                                    </p>
+                                </div>
+                            )}
+                        </div>
 
                         <div className="w-full flex flex-col items-center gap-2 mt-10">
                             <Scrubber index={cursorIndex} total={words.length} onSeek={seekTo} label="Reading position" />
                             {status}
+                            {renderTimeline()}
                             <p className="text-slate-600 text-xs">Target {wpm} WPM · actual pace is measured and recorded</p>
+                            {!isCalibration && <KeyboardHint />}
+                        </div>
+                    </div>
+                ) : isScroll ? (
+                    <div
+                        onWheel={handleWheelScrub}
+                        onTouchStart={handleTouchStart}
+                        onTouchEnd={handleTouchEnd}
+                        className="w-full h-full border border-slate-800/40 rounded-3xl p-5 md:p-10 flex flex-col justify-between"
+                        style={{ background: 'var(--reading-bg)', color: 'var(--reading-fg)' }}
+                    >
+                        <div className="flex items-center justify-between gap-3 border-b pb-3 mb-4" style={{ borderColor: 'var(--reading-muted)' }}>
+                            <h2 className="text-lg md:text-xl font-bold truncate" style={{ color: 'var(--reading-fg)', opacity: 0.95 }}>{passage.title}</h2>
+                            <button
+                                type="button"
+                                onClick={togglePlay}
+                                className="shrink-0 text-xs font-bold px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white transition-colors"
+                            >
+                                {isPlaying ? 'Pause' : 'Start scroll'}
+                            </button>
+                        </div>
+
+                        <ScrollText
+                            text={passage.text}
+                            wpm={effectiveWpm}
+                            isRunning={isPlaying}
+                            bionicReading={settings.bionicReading}
+                            bionicStrength={reading.bionicStrength}
+                            dimRead={reading.dimRead}
+                            focalPct={reading.scrollFocalPct}
+                            initialIndex={pacedInitialIndex}
+                            seek={pacedSeek}
+                            onWordClick={seekTo}
+                            onProgress={setPacedIndex}
+                            onComplete={handlePacerComplete}
+                        />
+
+                        <div className="mt-6 pt-4 border-t border-slate-800 flex flex-col items-center gap-2">
+                            <Scrubber index={cursorIndex} total={words.length} onSeek={seekTo} label="Reading position" />
+                            {status}
+                            {renderTimeline()}
+                            <p className="text-xs text-center" style={{ color: 'var(--reading-muted)' }}>
+                                Text scrolls upward at {effectiveWpm} WPM. Click any word to jump there, or press Space to pause.
+                            </p>
                             {!isCalibration && <KeyboardHint />}
                         </div>
                     </div>
@@ -619,6 +963,7 @@ function Reader({
                             bionicStrength={reading.bionicStrength}
                             pacerStyle={reading.pacerStyle}
                             dimRead={reading.dimRead}
+                            initialIndex={pacedInitialIndex}
                             seek={pacedSeek}
                             onWordClick={seekTo}
                             onProgress={setPacedIndex}
@@ -628,6 +973,7 @@ function Reader({
                         <div className="mt-10 pt-6 border-t border-slate-800 flex flex-col items-center gap-2">
                             <Scrubber index={cursorIndex} total={words.length} onSeek={seekTo} label="Reading position" />
                             {status}
+                            {renderTimeline()}
                             <p className="text-xs text-center" style={{ color: 'var(--reading-muted)' }}>
                                 {isSkim
                                     ? 'Sample, do not read: headings, first lines, names and numbers.'
@@ -684,6 +1030,58 @@ function Reader({
                 reading={reading} patchReading={patchReading}
                 settings={settings} updateSettings={updateSettings}
             />
+
+            {bookmarkOpen && (
+                <div className="fixed inset-0 z-[60] grid place-items-center p-4">
+                    <button aria-label="Close bookmark dialog" className="absolute inset-0 bg-black/50" onClick={() => setBookmarkOpen(false)} />
+                    <form
+                        role="dialog"
+                        aria-label="Add bookmark and note"
+                        onSubmit={(e) => {
+                            e.preventDefault();
+                            onBookmark?.({ index: cursorRef.current, note: bookmarkNote });
+                            setBookmarkOpen(false);
+                            setBookmarkNote('');
+                        }}
+                        className="relative w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl p-5 shadow-2xl space-y-4"
+                    >
+                        <div className="flex items-center gap-2 text-white font-bold">
+                            <Bookmark size={17} className="text-amber-400" />
+                            <span>Save bookmark &amp; note</span>
+                        </div>
+                        <p className="text-xs text-slate-400 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 line-clamp-2">
+                            &ldquo;{words.slice(cursorIndex, cursorIndex + 14).join(' ')}&rdquo;
+                        </p>
+                        <div>
+                            <label htmlFor="bm-note" className="block text-xs font-bold text-slate-400 mb-1.5">Note (optional)</label>
+                            <input
+                                ref={bookmarkInputRef}
+                                id="bm-note"
+                                type="text"
+                                value={bookmarkNote}
+                                onChange={(e) => setBookmarkNote(e.target.value)}
+                                placeholder="Key takeaway, question, or reminder..."
+                                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-purple-500"
+                            />
+                        </div>
+                        <div className="flex justify-end gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setBookmarkOpen(false)}
+                                className="px-4 py-2 rounded-xl text-sm font-medium text-slate-400 hover:text-white"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="submit"
+                                className="px-4 py-2 rounded-xl text-sm font-bold bg-purple-600 hover:bg-purple-500 text-white"
+                            >
+                                Save bookmark
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            )}
         </ReadingSurface>
     );
 }

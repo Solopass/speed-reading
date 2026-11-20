@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-    Activity, BarChart2, BookOpen, Brain, Info, LayoutGrid, Map, Settings, Target, Type, SpellCheck, X, Youtube, Zap
+    Activity, BarChart2, BookOpen, Brain, FileText, Info, LayoutGrid, Map, Settings, Target, Type, SpellCheck, Upload, X, Youtube, Zap
 } from 'lucide-react';
 
 // One list drives the sidebar, the phone tab bar and its "More" sheet, so
@@ -11,6 +11,8 @@ export const NAV_GROUPS = [
         items: [
             { id: 'dashboard', label: 'Dashboard', icon: Activity },
             { id: 'library', label: 'Library', icon: BookOpen },
+            { id: 'documents', label: 'Documents', icon: FileText },
+            { id: 'upload', label: 'Upload', icon: Upload },
             { id: 'tools', label: 'Neuro-Drills', icon: Brain },
             { id: 'vocab', label: 'Vocabulary', icon: SpellCheck },
             { id: 'plans', label: 'Plans', icon: Map }

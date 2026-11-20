@@ -132,13 +132,14 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                             <Chips label="Focal letter colour" options={FOCAL_COLORS} value={reading.focalColorId} onChange={(id) => set({ focalColorId: id })} />
                         </div>
                         <Switch label="Centre guide" hint="A faint line through the focal letter." checked={reading.showFocalGuide} onChange={(v) => set({ showFocalGuide: v })} />
-                        <Switch label="Show surrounding words" hint="The sentence around the flash, dimmed, so you keep your place." checked={reading.rsvpContext} onChange={(v) => set({ rsvpContext: v })} />
+                        <Switch label="Show surrounding words" hint="Before and after text above and below the flash, so you keep your place." checked={reading.rsvpContext} onChange={(v) => set({ rsvpContext: v })} />
                         <Switch label="Pause at punctuation" hint="A beat after commas and full stops." checked={settings.punctuationPacing} onChange={(v) => updateSettings({ punctuationPacing: v })} />
                     </Section>
 
-                    <Section title="Pacer (Paced and Skim)">
+                    <Section title="Pacer, Scroll & Prose">
                         <Chips label="Pacer style" options={PACER_STYLES} value={reading.pacerStyle} onChange={(id) => set({ pacerStyle: id })} />
                         <Switch label="Fade words already passed" checked={reading.dimRead} onChange={(v) => set({ dimRead: v })} />
+                        <Slider id="rs-scroll-focal" label="Scroll focal position" value={reading.scrollFocalPct} range={LIMITS.scrollFocalPct} step={2} onChange={(v) => set({ scrollFocalPct: v })} format={(v) => `${v}%`} />
                         <Switch label="Bionic bold" hint="Bolds the start of each word." checked={settings.bionicReading} onChange={(v) => updateSettings({ bionicReading: v })} />
                         {settings.bionicReading && (
                             <Slider id="rs-bionic" label="Bold amount" value={reading.bionicStrength} range={LIMITS.bionicStrength} step={0.05} onChange={(v) => set({ bionicStrength: v })} format={(v) => `${Math.round(v * 100)}%`} />

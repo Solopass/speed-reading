@@ -14,8 +14,8 @@ import { createBackup, downloadBackup, readBackup } from './lib/backup';
 import { DEFAULT_READING, normalizeReading } from './lib/readingStyle';
 import { STEP_KINDS, migratePlans, removePlan, upsertPlan } from './lib/plans';
 import {
-    createEntry, findEntry, migrateLibrary, recallQueue, recordAttempt,
-    recordProgress, removeEntry, resumePoint, toPassage, upsertEntry
+    addPassageBookmark, createEntry, findEntry, migrateLibrary, recallQueue, recordAttempt,
+    recordProgress, removeEntry, removePassageBookmark, resumePoint, toPassage, upsertEntry
 } from './lib/library';
 import { dueItems, migrateVocab } from './lib/vocab';
 import {
@@ -24,6 +24,7 @@ import {
 import { pickNextAction } from './lib/nextAction';
 import { DEFAULT_THEME, applyTheme, resolveTheme } from './lib/theme';
 import usePersistentState from './lib/usePersistentState';
+import { loadLibraryIdb, saveLibraryIdb } from './lib/idbLibrary';
 import { PhoneHeader, PhoneTabBar, Sidebar } from './components/AppNav';
 import Toasts from './components/Toasts';
 import Library from './views/Library';
@@ -43,6 +44,8 @@ const VideoSummary = lazy(() => import('./views/VideoSummary'));
 const ReadingEnvironment = lazy(() => import('./views/ReadingEnvironment'));
 const SettingsPanel = lazy(() => import('./views/SettingsPanel'));
 const Vocabulary = lazy(() => import('./views/Vocabulary'));
+const Documents = lazy(() => import('./views/Documents'));
+const Upload = lazy(() => import('./views/Upload'));
 
 const DEFAULT_SETTINGS = {
     reading: DEFAULT_READING,
@@ -50,7 +53,10 @@ const DEFAULT_SETTINGS = {
     ...DEFAULT_AI_SETTINGS,
     verifyQuestions: true,
     baseWpm: 300,
+    readerWpm: null,
+    skimWpm: null,
     chunkSize: 1,
+    readerMode: 'rsvp',
     font: 'font-sans',
     theme: DEFAULT_THEME,
     autoAdaptive: true,
@@ -91,7 +97,44 @@ export default function App() {
     const [settings, setSettings] = usePersistentState('speedReadSettings', migrateSettings, () => ({ ...DEFAULT_SETTINGS }), onSaveError);
     const [userStats, setUserStats] = usePersistentState('speedReadStats', migrateStats, () => ({ ...DEFAULT_STATS }), onSaveError);
     const [sessionHistory, setSessionHistory] = usePersistentState('speedReadHistory', (raw) => migrateHistory(raw ?? []), [], onSaveError);
-    const [library, setLibrary] = usePersistentState('speedReadLibrary', (raw) => migrateLibrary(raw ?? []), [], onSaveError);
+    const [library, setLibrary] = useState(() => {
+        try {
+            const raw = localStorage.getItem('speedReadLibrary');
+            return raw ? migrateLibrary(JSON.parse(raw)) : [];
+        } catch {
+            return [];
+        }
+    });
+    const libraryReadyRef = useRef(false);
+
+    useEffect(() => {
+        let cancelled = false;
+        loadLibraryIdb().then((stored) => {
+            if (cancelled) return;
+            libraryReadyRef.current = true;
+            if (stored !== null) {
+                setLibrary(migrateLibrary(stored));
+            } else {
+                setLibrary(prev => {
+                    if (prev.length > 0) saveLibraryIdb(prev);
+                    return prev;
+                });
+            }
+        });
+        return () => { cancelled = true; };
+    }, []);
+
+    useEffect(() => {
+        if (!libraryReadyRef.current) return;
+        saveLibraryIdb(library);
+        try {
+            const json = JSON.stringify(library);
+            if (json.length * 2 < 3_000_000) localStorage.setItem('speedReadLibrary', json);
+            else localStorage.removeItem('speedReadLibrary');
+        } catch {
+            // IndexedDB is the primary store; ignore localStorage quota overflow.
+        }
+    }, [library]);
     const [plans, setPlans] = usePersistentState('speedReadPlans', (raw) => migratePlans(raw ?? []), [], onSaveError);
     const [drills, setDrills] = usePersistentState('speedReadDrills', (raw) => migrateDrills(raw ?? []), [], onSaveError);
     const [vocab, setVocab] = usePersistentState('speedReadVocab', migrateVocab, [], onSaveError);
@@ -100,6 +143,7 @@ export default function App() {
     // Set when a passage is opened purely to re-test retention, so the result
     // is recorded against the spaced schedule rather than as a fresh read.
     const [isRecall, setIsRecall] = useState(false);
+    const [returnView, setReturnView] = useState('library');
 
     // --- Theme ---------------------------------------------------------------
     const [prefersDark, setPrefersDark] = useState(() => prefersDarkQuery()?.matches ?? true);
@@ -157,7 +201,9 @@ export default function App() {
     useEffect(() => {
         if (settings.aiProvider !== 'local') return undefined;
         const controller = new AbortController();
-        setLocalAi(prev => ({ ...prev, status: 'checking' }));
+        queueMicrotask(() => {
+            if (!controller.signal.aborted) setLocalAi(prev => ({ ...prev, status: 'checking' }));
+        });
         listModels(settings.ollamaUrl, { signal: controller.signal })
             .then(models => setLocalAi({ status: 'ready', models }))
             .catch(error => {
@@ -182,10 +228,11 @@ export default function App() {
         return entry;
     };
 
-    const startPassage = (passageData, { source = 'import', save = true, recall = false } = {}) => {
+    const startPassage = (passageData, { source = 'import', save = true, recall = false, returnTo = 'library' } = {}) => {
         const entry = save ? saveToLibrary(passageData, source) : null;
         setActivePassage({ ...passageData, id: entry?.id ?? passageData.id });
         setIsRecall(recall);
+        setReturnView(returnTo);
         setCurrentView('reader');
     };
 
@@ -195,46 +242,46 @@ export default function App() {
      */
     const startBaseline = (index = 0, { fresh = true } = {}) => {
         const passage = CALIBRATION_PASSAGES[Math.min(index, CALIBRATION_PASSAGES.length - 1)];
-        startPassage({ ...passage, baselineFresh: fresh }, { save: false });
+        startPassage({ ...passage, baselineFresh: fresh }, { save: false, returnTo: 'dashboard' });
     };
 
     /** Opens one chapter of a book, at its saved position or at `resumeFrom` (a bookmark). */
-    const openBookChapter = (bookId, chapterIndex, resumeFrom = null) => {
+    const openBookChapter = (bookId, chapterIndex, resumeFrom = null, returnTo = 'library') => {
         const book = findEntry(library, bookId);
         if (!isBook(book) || !book.chapters[chapterIndex]) return;
         setActivePassage(chapterPassage(book, chapterIndex, resumeFrom));
         setIsRecall(false);
+        setReturnView(returnTo);
         setCurrentView('reader');
     };
 
-    /**
-     * Books live in the library's localStorage key, which shares a ~5 MB
-     * browser limit with everything else. A book that would push the library
-     * near it is refused up front: a failed write would stop every later
-     * library save, not just the book's.
-     */
+    /** Books and documents live in IndexedDB so large EPUBs and PDFs are not capped by localStorage. */
     const saveBook = (book) => {
-        const size = JSON.stringify(upsertEntry(library, book)).length * 2; // UTF-16 bytes
-        if (size > 4_000_000) {
-            addNotification(`That book is too big to store with your library (${(size / 1e6).toFixed(1)} MB of about 4). Delete another book first.`);
-            return false;
-        }
         setLibrary(prev => upsertEntry(prev, book));
         addNotification(`Added "${book.title}" as a book: ${book.chapters.length} chapters.`, 'success');
         return true;
     };
 
-    const bookmarkHere = ({ index }) => {
+    const bookmarkHere = ({ index, note = '' }) => {
         const p = activePassage;
-        if (!p?.bookId) return;
-        setLibrary(prev => addBookmark(prev, p.bookId, { chapter: p.chapterIndex, index, snippet: snippetAt(p.text, index) }));
-        addNotification('Bookmarked.', 'success');
+        if (!p || p.isCalibration) return;
+        const snippet = snippetAt(p.text ?? '', index);
+        if (p.bookId) {
+            setLibrary(prev => addBookmark(prev, p.bookId, { chapter: p.chapterIndex, index, snippet, note }));
+            addNotification(note.trim() ? 'Bookmark & note saved.' : 'Bookmarked.', 'success');
+            return;
+        }
+        if (p.id) {
+            setLibrary(prev => addPassageBookmark(prev, p.id, { index, snippet, note }));
+            addNotification(note.trim() ? 'Bookmark & note saved.' : 'Bookmarked.', 'success');
+        }
     };
 
-    const startPushDrill = (drillPassage, { source = 'builtin', save = true } = {}) => {
+    const startPushDrill = (drillPassage, { source = 'builtin', save = true, returnTo = 'library' } = {}) => {
         const entry = save ? saveToLibrary(drillPassage, source, 'push') : null;
         setActivePassage({ ...drillPassage, id: entry?.id ?? drillPassage.id });
         setIsRecall(false);
+        setReturnView(returnTo);
         setCurrentView('push');
     };
 
@@ -242,12 +289,14 @@ export default function App() {
      * Reopens a stored passage. A retention re-test goes straight to the
      * questions — re-reading first would measure nothing.
      */
-    const openSaved = (id, { recall = false } = {}) => {
+    const openSaved = (id, { recall = false, returnTo = 'library', resumeAt = null } = {}) => {
         const entry = findEntry(library, id);
         if (!entry) return;
-        if (isBook(entry)) { openBookChapter(id, nextChapterIndex(entry)); return; }
-        setActivePassage(toPassage(entry));
+        if (isBook(entry)) { openBookChapter(id, nextChapterIndex(entry), resumeAt, returnTo); return; }
+        const passage = toPassage(entry);
+        setActivePassage(resumeAt !== null ? { ...passage, resumeFrom: resumeAt } : passage);
         setIsRecall(recall);
+        setReturnView(returnTo);
         if (recall) setCurrentView('recall');
         else setCurrentView(entry.kind === 'push' ? 'push' : 'reader');
     };
@@ -323,15 +372,53 @@ export default function App() {
         addNotification('Removed from library.');
     };
 
+    const updateDocumentText = (id, nextText) => {
+        const words = nextText.trim() ? nextText.trim().split(/\s+/).length : 0;
+        setLibrary(prev => prev.map(item => (item.id === id && !isBook(item)
+            ? { ...item, text: nextText, words, progressIndex: Math.min(item.progressIndex ?? 0, words) }
+            : item)));
+        addNotification('Document updated.', 'success');
+    };
+
+    const updateChapterText = (bookId, chapterIndex, nextText) => {
+        const words = nextText.trim() ? nextText.trim().split(/\s+/).length : 0;
+        setLibrary(prev => prev.map(item => {
+            if (item.id !== bookId || !isBook(item) || !item.chapters[chapterIndex]) return item;
+            const chapters = item.chapters.map((ch, idx) => (idx === chapterIndex
+                ? { ...ch, text: nextText, words, progressIndex: Math.min(ch.progressIndex ?? 0, words) }
+                : ch));
+            return { ...item, chapters, words: chapters.reduce((s, c) => s + c.words, 0) };
+        }));
+        addNotification('Chapter updated.', 'success');
+    };
+
+    const updateDocumentQuestions = (id, { questions = [], gistQuestions = [] }) => {
+        setLibrary(prev => prev.map(item => (item.id === id && !isBook(item)
+            ? { ...item, questions, gistQuestions }
+            : item)));
+        addNotification(`Saved ${questions.length} comprehension question${questions.length === 1 ? '' : 's'}.`, 'success');
+    };
+
+    const updateChapterQuestions = (bookId, chapterIndex, { questions = [], gistQuestions = [] }) => {
+        setLibrary(prev => prev.map(item => {
+            if (item.id !== bookId || !isBook(item) || !item.chapters[chapterIndex]) return item;
+            const chapters = item.chapters.map((ch, idx) => (idx === chapterIndex
+                ? { ...ch, questions, gistQuestions }
+                : ch));
+            return { ...item, chapters };
+        }));
+        addNotification(`Saved ${questions.length} chapter question${questions.length === 1 ? '' : 's'}.`, 'success');
+    };
+
     // Leaving part-way through stores the resume point without marking the
     // passage finished.
     const handleReaderLeave = ({ passageId, progressIndex, chapterIndex = null, mode = null }) => {
         if (!passageId) return;
         if (chapterIndex !== null) {
-            // Natural mode has no position to save; the pacers can only move the
-            // place forward (they restart at 0 on a mode switch); RSVP may rewind it.
+            // Natural mode has no position to save; RSVP, Paced and Skim all
+            // resume from the saved word and may rewind it.
             if (mode === 'natural') return;
-            setLibrary(prev => recordChapterProgress(prev, passageId, chapterIndex, progressIndex ?? 0, { allowBackward: mode === 'rsvp' }));
+            setLibrary(prev => recordChapterProgress(prev, passageId, chapterIndex, progressIndex ?? 0, { allowBackward: true }));
             return;
         }
         if (!progressIndex) return;
@@ -396,6 +483,10 @@ export default function App() {
             };
         });
 
+        if (session.scored && !isSkim && !isBaseline && settings.autoAdaptive) {
+            setSettings(prev => ({ ...prev, readerWpm: null }));
+        }
+
         const bookChapter = activePassage?.bookId ? activePassage : null;
         if (bookChapter && isSkim) {
             // A skim samples the chapter; it does not finish it.
@@ -456,6 +547,16 @@ export default function App() {
     const focus = FOCUS_VIEWS.has(currentView);
     const badges = { dashboard: recallDue.length, vocab: vocabDue };
     const activeOpeningWpm = settings.autoAdaptive ? userStats.targetWpm : settings.baseWpm;
+    const readerOpeningWpm = settings.readerWpm ?? activeOpeningWpm;
+    const activeBook = activePassage?.bookId ? findEntry(library, activePassage.bookId) : null;
+
+    const selectBookChapter = (chapterIndex, { progressIndex = 0, mode = 'rsvp' } = {}) => {
+        if (!activeBook || !activeBook.chapters[chapterIndex]) return;
+        if (mode !== 'natural' && Number.isInteger(activePassage?.chapterIndex)) {
+            setLibrary(prev => recordChapterProgress(prev, activeBook.id, activePassage.chapterIndex, progressIndex, { allowBackward: true }));
+        }
+        openBookChapter(activeBook.id, chapterIndex, null, returnView);
+    };
 
     return (
         <div className={`h-screen bg-slate-950 text-slate-200 ${settings.font} flex overflow-hidden selection:bg-purple-500/30`}>
@@ -481,10 +582,12 @@ export default function App() {
                                 onStart={() => navigate('library')}
                             />
                         )}
-                        {currentView === 'library' && <Library library={library} ai={ai} verifyQuestions={settings.verifyQuestions} readingWpm={activeOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onOpenSaved={openSaved} onDeleteSaved={deleteSaved} onSaveBook={saveBook} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} addNotification={addNotification} />}
+                        {currentView === 'library' && <Library library={library} ai={ai} verifyQuestions={settings.verifyQuestions} readingWpm={activeOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onOpenSaved={openSaved} onDeleteSaved={deleteSaved} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} addNotification={addNotification} />}
+                        {currentView === 'documents' && <Documents ai={ai} verifyQuestions={settings.verifyQuestions} library={library} readingWpm={readerOpeningWpm} onOpenSaved={(id, opts) => openSaved(id, { ...opts, returnTo: 'documents' })} onDeleteSaved={deleteSaved} onUpdateDocumentText={updateDocumentText} onUpdateChapterText={updateChapterText} onUpdateDocumentQuestions={updateDocumentQuestions} onUpdateChapterQuestions={updateChapterQuestions} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} onRemovePassageBookmark={(id, bmId) => setLibrary(prev => removePassageBookmark(prev, id, bmId))} onOpenUpload={() => navigate('upload')} addNotification={addNotification} />}
+                        {currentView === 'upload' && <Upload ai={ai} library={library} readingWpm={readerOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onSaveBook={saveBook} onSavePassage={(p) => saveToLibrary(p, 'import')} onOpenSaved={(id) => openSaved(id, { returnTo: 'documents' })} onDeleteSaved={deleteSaved} onOpenDocuments={() => navigate('documents')} addNotification={addNotification} />}
                         {currentView === 'recall' && <RecallCheck passage={activePassage} onDone={finishRecall} onExit={() => exitFocus('dashboard')} />}
-                        {currentView === 'push' && <SpeedPush reading={reading} patchReading={patchReading} updateSettings={updateSettings} passage={activePassage} targetWpm={activeOpeningWpm} intensity={userStats.pushIntensity} settings={settings} onFinish={finishSession} onExit={() => exitFocus('library')} />}
-                        {currentView === 'reader' && <Reader passage={activePassage} settings={settings} reading={reading} patchReading={patchReading} updateSettings={updateSettings} initialWpm={activeOpeningWpm} resumeFrom={activePassage?.bookId ? activePassage.resumeFrom : isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id))} onFinish={finishSession} onLeave={handleReaderLeave} onBookmark={activePassage?.bookId ? bookmarkHere : null} onExit={() => exitFocus(activePassage?.isCalibration ? 'dashboard' : 'library')} addNotification={addNotification} />}
+                        {currentView === 'push' && <SpeedPush reading={reading} patchReading={patchReading} updateSettings={updateSettings} passage={activePassage} targetWpm={activeOpeningWpm} intensity={userStats.pushIntensity} settings={settings} onFinish={finishSession} onExit={() => exitFocus(returnView)} />}
+                        {currentView === 'reader' && <Reader key={activePassage?.id + ':' + (activePassage?.chapterIndex ?? '')} passage={activePassage} book={activeBook} onSelectChapter={activeBook ? selectBookChapter : null} settings={settings} reading={reading} patchReading={patchReading} updateSettings={updateSettings} initialWpm={readerOpeningWpm} resumeFrom={activePassage?.resumeFrom ?? (isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id)))} onFinish={finishSession} onLeave={handleReaderLeave} onBookmark={!activePassage?.isCalibration ? bookmarkHere : null} onExit={() => exitFocus(activePassage?.isCalibration ? 'dashboard' : returnView)} addNotification={addNotification} />}
                         {currentView === 'tools' && <Tools drills={drills} adaptiveStart={settings.autoAdaptive} onDrillComplete={handleDrillComplete} addNotification={addNotification} />}
                         {currentView === 'vocab' && <Vocabulary vocab={vocab} setVocab={setVocab} library={library} ai={ai} addNotification={addNotification} />}
                         {currentView === 'analytics' && <Analytics history={sessionHistory} drills={drills} stats={userStats} theme={theme} />}

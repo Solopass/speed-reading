@@ -22,57 +22,225 @@ export const isSupported = (name) => SUPPORTED_EXTENSIONS.includes(extensionOf(n
 export const titleFromFilename = (name = '') =>
     String(name).replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || 'Imported text';
 
+// Invisible, control, replacement, and Private Use Area characters that render
+// as tofu boxes or break word splitting / focal-letter alignment in RSVP.
+// eslint-disable-next-line no-control-regex
+const JUNK_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u00AD\u200B-\u200D\u2060\uFEFF\uFFFD\uE000-\uF8FF]/g;
+const ASTRAL_PUA_RE = /[\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/gu;
+const LEADING_BULLET_RE = /^\s*[•▪▫●○■□◆◇❖➤➢➔►◄★☆✓✔✕✖†‡§¶]+\s*/;
+const DIVIDER_LINE_RE = /^[\s*\-_=~•·|—–]+$/;
+const PAGE_NUMBER_RE = /^(?:page\s*\d{1,4}(?:\s*(?:of|\/)\s*\d{1,4})?|[-–—]\s*\d{1,4}\s*[-–—]|\d{1,4}\s*\/\s*\d{1,4})$/i;
+const STRAY_SYMBOL_TOKEN_RE = /(^|\s)[|~^_\\`*=<>[\]{}•▪▫●○■□◆◇❖➤➢➔►◄★☆✓✔✕✖†‡§¶]+(?=\s|$)/g;
+
 /**
- * Paragraph structure is what the reader renders and what the pacer measures
- * lines from, so blank lines are preserved while runs of whitespace inside a
- * paragraph are collapsed.
+ * Strips common Markdown syntax (frontmatter, links, images, emphasis, code
+ * fences, heading hashes, blockquote markers) while preserving paragraph breaks.
  */
-export function normalizeText(raw) {
+export function stripMarkdown(raw) {
     return String(raw)
-        // NFKC folds the compatibility characters that document extraction
-        // produces: non-breaking spaces become ordinary ones, and the ligatures
-        // PDFs are full of (fi, fl) decompose back into letters.
+        .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '')
+        .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+        .replace(/^```[^\n]*$/gm, '')
+        .replace(/`([^`]+)`/g, '$1')
+        .replace(/^#{1,6}\s+/gm, '')
+        .replace(/^\s*>\s?/gm, '')
+        .replace(/(\*\*|__)(.*?)\1/g, '$2')
+        .replace(/(\*|_)(.*?)\1/g, '$2');
+}
+
+const URL_RE = /https?:\/\/\S+/gi;
+const CITATION_RE = /\[\d+(?:[\s,\-–]+\d+)*\]/g;
+
+/**
+ * Scrubs extraction artifacts and returns both the cleaned text and counts of
+ * what was removed so the Upload UI can show a summary and offer undo.
+ */
+export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations = false } = {}) {
+    const stats = { junkChars: 0, rejoinedHyphens: 0, pageNumbers: 0, dotLeaders: 0 };
+    let scrubbed = String(raw)
         .normalize('NFKC')
+        .replace(JUNK_CHARS_RE, () => { stats.junkChars += 1; return ''; })
+        .replace(ASTRAL_PUA_RE, () => { stats.junkChars += 1; return ''; })
         .replace(/\r\n?/g, '\n')
-        .split('\n')
-        .map(line => line.replace(/[ \t]+/g, ' ').trim())
+        .replace(/([A-Za-z]{2,})-[ \t]*\n[ \t]*([a-z]{2,})/g, (_, a, b) => {
+            stats.rejoinedHyphens += 1;
+            return `${a}${b}`;
+        });
+
+    if (stripUrls) scrubbed = scrubbed.replace(URL_RE, '');
+    if (stripCitations) scrubbed = scrubbed.replace(CITATION_RE, '');
+    if (stripUrls || stripCitations) scrubbed = scrubbed.replace(/[ \t]+([,.;:!?])/g, '$1');
+
+    const rawLines = scrubbed.split('\n');
+    const multiLine = rawLines.length > 2;
+    const cuts = [];
+
+    const text = rawLines
+        .map((line, lineIdx) => {
+            let clean = line
+                .replace(LEADING_BULLET_RE, '')
+                .replace(/\.{4,}/g, () => { stats.dotLeaders += 1; return ' '; })
+                .replace(STRAY_SYMBOL_TOKEN_RE, '$1')
+                .replace(/[ \t]+/g, ' ')
+                .trim();
+            if (!clean) return '';
+            if (DIVIDER_LINE_RE.test(clean)) {
+                cuts.push({ id: `det-${lineIdx}-div`, index: lineIdx, text: clean, reason: 'Divider', source: 'auto' });
+                return '';
+            }
+            if (multiLine && (PAGE_NUMBER_RE.test(clean) || /^\d{1,4}$/.test(clean))) {
+                stats.pageNumbers += 1;
+                cuts.push({ id: `det-${lineIdx}-pg`, index: lineIdx, text: clean, reason: 'Page number', source: 'auto' });
+                return '';
+            }
+            return clean;
+        })
         .join('\n')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
+
+    return { text, stats, cuts };
+}
+
+/**
+ * Picks blocks for AI cleanup: all paragraphs for normal documents (<= maxBlocks),
+ * or front/back matter + suspect short/noisy blocks for long books.
+ */
+export function selectBlocksForAiClean(text, maxBlocks = 60) {
+    const paragraphs = String(text ?? '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+    if (paragraphs.length <= maxBlocks) {
+        return paragraphs.map((p, index) => ({ index, text: p }));
+    }
+
+    const picked = new Map();
+    const edge = 15;
+    for (let i = 0; i < Math.min(edge, paragraphs.length); i++) picked.set(i, paragraphs[i]);
+    for (let i = Math.max(edge, paragraphs.length - edge); i < paragraphs.length; i++) picked.set(i, paragraphs[i]);
+
+    for (let i = edge; i < paragraphs.length - edge && picked.size < maxBlocks; i++) {
+        const p = paragraphs[i];
+        const words = p.split(/\s+/).length;
+        const noisy = /https?:\/\/|copyright|all rights reserved|table of contents|\bISBN\b/i.test(p)
+            || (words <= 6 && !/[.!?]$/.test(p));
+        if (noisy) picked.set(i, p);
+    }
+
+    return [...picked.entries()].sort((a, b) => a[0] - b[0]).map(([index, p]) => ({ index, text: p }));
+}
+
+/** Applies AI cut indices to paragraph-separated text, returning new text and cut items for diff review. */
+export function applyParagraphCuts(text, cuts = []) {
+    const paragraphs = String(text ?? '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+    const byIndex = new Map();
+    for (const c of cuts) {
+        if (Number.isInteger(c?.index) && c.index >= 0 && c.index < paragraphs.length && !byIndex.has(c.index)) {
+            byIndex.set(c.index, String(c.reason || 'Clutter').trim().slice(0, 60));
+        }
+    }
+    const kept = [];
+    const cutItems = [];
+    paragraphs.forEach((p, idx) => {
+        if (byIndex.has(idx)) {
+            cutItems.push({ id: `ai-${Date.now()}-${idx}`, index: idx, text: p, reason: `AI: ${byIndex.get(idx)}`, source: 'ai' });
+        } else {
+            kept.push(p);
+        }
+    });
+    return { text: kept.join('\n\n'), cutItems };
+}
+
+/** Reinserts a previously cut item back into the document text at its original paragraph position. */
+export function restoreCutItem(text, cutItem) {
+    const paragraphs = String(text ?? '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+    const at = Math.max(0, Math.min(paragraphs.length, Number.isInteger(cutItem?.index) ? cutItem.index : paragraphs.length));
+    paragraphs.splice(at, 0, cutItem.text);
+    return paragraphs.join('\n\n');
+}
+
+/**
+ * Paragraph structure is what the reader renders and what the pacer measures
+ * lines from, so blank lines are preserved while runs of whitespace inside a
+ * paragraph are collapsed and extraction artifacts are scrubbed.
+ */
+export function normalizeText(raw, options = {}) {
+    return normalizeTextWithStats(raw, options).text;
 }
 
 const BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, dd, dt, figcaption';
 
+const BOILERPLATE_SELECTOR = 'script, style, noscript, nav, header, footer, aside, svg, form, button, dialog, [role="navigation"], [role="banner"], [role="contentinfo"], [aria-hidden="true"]';
+
+function pickArticleRoot(doc) {
+    const candidates = [...doc.querySelectorAll('article, main, [role="main"]')];
+    let best = null;
+    let bestWords = 0;
+    for (const el of candidates) {
+        const words = (el.textContent || '').trim().split(/\s+/).filter(Boolean).length;
+        if (words >= 60 && words > bestWords) {
+            best = el;
+            bestWords = words;
+        }
+    }
+    if (best) return best;
+
+    // Fallback: pick the container with the most paragraph prose.
+    let bestContainer = doc.body ?? doc.documentElement;
+    let bestScore = 0;
+    for (const container of doc.querySelectorAll('div, section')) {
+        const pChars = [...container.querySelectorAll(':scope > p')]
+            .reduce((sum, p) => sum + p.textContent.trim().length, 0);
+        if (pChars > bestScore) {
+            bestScore = pChars;
+            bestContainer = container;
+        }
+    }
+    return bestContainer;
+}
+
 /**
  * Pulls prose out of an HTML document. Block elements become paragraphs, so the
- * result keeps the shape the reader needs; textContent alone would run the
- * whole document into a single block.
+ * result keeps the shape the reader needs; prefers <article>/<main> or the
+ * richest paragraph container so navigation/banners are skipped.
  */
 export function extractFromHtml(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
-    doc.querySelectorAll('script, style, noscript, nav, header, footer, aside, svg').forEach(el => el.remove());
+    doc.querySelectorAll(BOILERPLATE_SELECTOR).forEach(el => el.remove());
 
-    const blocks = [...doc.querySelectorAll(BLOCK_SELECTOR)]
+    const root = pickArticleRoot(doc);
+    const blocks = [...(root?.querySelectorAll(BLOCK_SELECTOR) ?? [])]
         // Skip wrappers whose text is already covered by a nested block.
         .filter(el => !el.querySelector(BLOCK_SELECTOR))
         .map(el => el.textContent.trim())
         .filter(Boolean);
 
-    const text = blocks.length ? blocks.join('\n\n') : (doc.body?.textContent ?? '');
+    const text = blocks.length ? blocks.join('\n\n') : (root?.textContent ?? '');
     return {
         title: doc.querySelector('title')?.textContent?.trim() || null,
         // The first heading names the chapter when this is one EPUB spine file.
-        heading: doc.querySelector('h1, h2, h3')?.textContent?.replace(/\s+/g, ' ').trim() || null,
+        heading: root?.querySelector('h1, h2, h3')?.textContent?.replace(/\s+/g, ' ').trim()
+            || doc.querySelector('h1, h2, h3')?.textContent?.replace(/\s+/g, ' ').trim()
+            || null,
         text: normalizeText(text)
     };
 }
 
-async function readPlain(file) {
-    return { title: null, text: normalizeText(await file.text()) };
+async function readPlain(file, options) {
+    const rawText = await file.text();
+    const { text, stats, cuts } = normalizeTextWithStats(rawText, options);
+    return { title: null, text, rawText, stats, cuts };
 }
 
-async function readHtml(file) {
-    return extractFromHtml(await file.text());
+async function readMarkdown(file, options) {
+    const rawText = await file.text();
+    const { text, stats, cuts } = normalizeTextWithStats(stripMarkdown(rawText), options);
+    return { title: null, text, rawText, stats, cuts };
+}
+
+async function readHtml(file, options) {
+    const res = extractFromHtml(await file.text());
+    const { text, stats, cuts } = normalizeTextWithStats(res.text, options);
+    return { ...res, text, rawText: res.text, stats, cuts };
 }
 
 const decode = (bytes) => new TextDecoder('utf-8').decode(bytes);
@@ -122,7 +290,7 @@ async function readEpub(file) {
 }
 
 /** DOCX is also a zip; the prose lives in word/document.xml as <w:t> runs. */
-async function readDocx(file) {
+async function readDocx(file, options) {
     const { unzipSync } = await import('fflate');
     const zip = unzipSync(new Uint8Array(await file.arrayBuffer()));
 
@@ -131,12 +299,118 @@ async function readDocx(file) {
 
     const doc = new DOMParser().parseFromString(decode(documentXml), 'application/xml');
     const paragraphs = [...doc.getElementsByTagName('w:p')]
-        .map(p => [...p.getElementsByTagName('w:t')].map(t => t.textContent).join(''))
-        .map(line => line.trim())
+        .map(p => {
+            const text = [...p.getElementsByTagName('w:t')].map(t => t.textContent).join('').trim();
+            if (!text) return '';
+            const style = p.getElementsByTagName('w:pStyle')[0]?.getAttribute('w:val') ?? '';
+            if (/^(Heading1|Title)$/i.test(style)) return `# ${text}`;
+            if (/^Heading[2-3]$/i.test(style)) return `## ${text}`;
+            return text;
+        })
         .filter(Boolean);
 
     if (!paragraphs.length) throw new Error('That .docx appears to contain no text.');
-    return { title: null, text: normalizeText(paragraphs.join('\n\n')) };
+    const rawText = paragraphs.join('\n\n');
+    const { text, stats, cuts } = normalizeTextWithStats(rawText, options);
+    return { title: null, text, rawText, stats, cuts };
+}
+
+const headerKey = (line) => line.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/**
+ * Removes running headers and footers that repeat across many PDF pages
+ * (including odd/even alternating headers or headers with changing page numbers).
+ */
+export function stripRepeatedHeadersFooters(pages) {
+    if (!Array.isArray(pages) || pages.length < 3) return pages ?? [];
+
+    const splitPages = pages.map(p => String(p).split('\n').map(l => l.trim()).filter(Boolean));
+    const counts = new Map();
+
+    for (const lines of splitPages) {
+        if (lines.length === 0) continue;
+        const seenOnPage = new Set();
+        for (const candidate of [lines[0], lines[lines.length - 1]]) {
+            if (!candidate || candidate.length > 100) continue;
+            const key = headerKey(candidate);
+            if (!key || seenOnPage.has(key)) continue;
+            seenOnPage.add(key);
+            counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+    }
+
+    const threshold = Math.max(3, Math.ceil(pages.length * 0.35));
+    const repeated = new Set([...counts.entries()].filter(([, n]) => n >= threshold).map(([k]) => k));
+    if (repeated.size === 0) return pages;
+
+    return splitPages.map(lines => {
+        const next = [...lines];
+        if (next.length && next[0].length <= 100 && repeated.has(headerKey(next[0]))) next.shift();
+        if (next.length && next[next.length - 1].length <= 100 && repeated.has(headerKey(next[next.length - 1]))) next.pop();
+        return next.join('\n\n');
+    });
+}
+
+/**
+ * Reorders PDF text items into reading order. When a page uses a two-column
+ * layout, reads the left column top-to-bottom before the right column.
+ */
+export function orderPdfItems(items, pageWidth = 600) {
+    const textItems = items.filter(it => it && 'str' in it && it.str.trim() && Array.isArray(it.transform));
+    if (textItems.length < 8) return items;
+
+    const mid = pageWidth * 0.5;
+    const left = textItems.filter(it => it.transform[4] < mid - 12);
+    const right = textItems.filter(it => it.transform[4] >= mid + 8);
+    const spanning = textItems.filter(it => {
+        const x = it.transform[4];
+        const w = it.width ?? 0;
+        return x < mid - 12 && x + w > mid + 20;
+    });
+
+    const isTwoCol = left.length >= 6 && right.length >= 6 && spanning.length < 3;
+    const byYThenX = (a, b) => {
+        const dy = b.transform[5] - a.transform[5];
+        if (Math.abs(dy) > 3) return dy;
+        return a.transform[4] - b.transform[4];
+    };
+
+    if (!isTwoCol) return [...textItems].sort(byYThenX);
+    return [...left].sort(byYThenX).concat([...right].sort(byYThenX));
+}
+
+async function pdfOutlineChapters(pdf, cleanPages) {
+    try {
+        const outline = await pdf.getOutline();
+        if (!Array.isArray(outline) || outline.length < 2) return null;
+
+        const entries = [];
+        for (const item of outline) {
+            if (!item?.title || !item.dest) continue;
+            const dest = typeof item.dest === 'string'
+                ? await pdf.getDestination(item.dest).catch(() => null)
+                : item.dest;
+            const ref = Array.isArray(dest) ? dest[0] : null;
+            if (!ref) continue;
+            const pageIndex = await pdf.getPageIndex(ref).catch(() => -1);
+            if (pageIndex >= 0 && pageIndex < cleanPages.length) {
+                entries.push({ title: item.title.trim(), pageIndex });
+            }
+        }
+        if (entries.length < 2) return null;
+
+        entries.sort((a, b) => a.pageIndex - b.pageIndex);
+        const chapters = [];
+        for (let i = 0; i < entries.length; i++) {
+            const start = entries[i].pageIndex;
+            const end = i + 1 < entries.length ? entries[i + 1].pageIndex : cleanPages.length;
+            const text = normalizeText(cleanPages.slice(start, Math.max(start + 1, end)).join('\n\n'));
+            if (text) chapters.push({ title: entries[i].title, text });
+        }
+        return chapters.length >= 2 ? chapters : null;
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -144,7 +418,7 @@ async function readDocx(file) {
  * paragraphs from vertical gaps: a large jump means a new paragraph, a small
  * one a wrapped line.
  */
-async function readPdf(file) {
+async function readPdf(file, options = {}) {
     const pdfjs = await import('pdfjs-dist');
     pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
@@ -152,42 +426,60 @@ async function readPdf(file) {
     const pages = [];
 
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+        options.onProgress?.({ page: pageNumber, totalPages: pdf.numPages });
         const page = await pdf.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: 1 });
         const content = await page.getTextContent();
+        const ordered = orderPdfItems(content.items, viewport.width);
 
         let text = '';
         let lastY = null;
-        for (const item of content.items) {
+        for (const item of ordered) {
             if (!('str' in item)) continue;
             const y = item.transform[5];
             if (lastY !== null) {
                 const gap = Math.abs(lastY - y);
                 if (gap > 14) text += '\n\n';
-                else if (gap > 2) text += ' ';
+                else if (gap > 2 && !/\s$/.test(text) && !/^[\s,.;:!?)\]]/.test(item.str)) text += ' ';
             }
             text += item.str;
             lastY = y;
         }
         pages.push(text);
+        if (pageNumber % 4 === 0) await new Promise(r => setTimeout(r, 0));
     }
 
-    const text = normalizeText(pages.join('\n\n'));
-    if (!text) throw new Error('No text found in that PDF. Scanned pages need OCR first.');
+    const strippedPages = stripRepeatedHeadersFooters(pages);
+    const removedHeaders = pages.reduce((n, p, i) => (p !== strippedPages[i] ? n + 1 : n), 0);
+    const rawText = pages.join('\n\n');
+    const { text, stats, cuts } = normalizeTextWithStats(strippedPages.join('\n\n'), options);
+    if (!text) {
+        throw new Error(`This PDF (${pdf.numPages} page${pdf.numPages === 1 ? '' : 's'}) appears to be scanned images with no selectable text. Run OCR (e.g. Adobe, macOS Preview, or ocrmypdf) first, then re-upload.`);
+    }
 
-    return { title: (await pdf.getMetadata().catch(() => null))?.info?.Title?.trim() || null, text };
+    const chapters = await pdfOutlineChapters(pdf, strippedPages);
+    return {
+        title: (await pdf.getMetadata().catch(() => null))?.info?.Title?.trim() || null,
+        text,
+        rawText,
+        chapters,
+        cuts,
+        stats: { ...stats, repeatedHeaders: removedHeaders }
+    };
 }
 
 const READERS = {
-    '.txt': readPlain, '.text': readPlain, '.md': readPlain, '.markdown': readPlain,
+    '.txt': readPlain, '.text': readPlain,
+    '.md': readMarkdown, '.markdown': readMarkdown,
     '.html': readHtml, '.htm': readHtml,
     '.epub': readEpub, '.docx': readDocx, '.pdf': readPdf
 };
 
 /**
- * Returns { title, text } for a supported file, or throws with a message meant
- * to be shown to the user.
+ * Returns { title, text, chapters } for a supported file, or throws with a
+ * message meant to be shown to the user.
  */
-export async function extractText(file) {
+export async function extractText(file, options = {}) {
     if (!file) throw new Error('No file given.');
 
     const extension = extensionOf(file.name);
@@ -196,11 +488,14 @@ export async function extractText(file) {
         throw new Error(`Cannot read ${extension || 'that file'}. Supported: ${SUPPORTED_EXTENSIONS.join(', ')}.`);
     }
 
-    const { title, text, chapters = null } = await reader(file);
-    if (!text || text.split(/\s+/).length < 10) {
+    const { title, text, chapters = null, rawText = null, stats = null, cuts = [] } = await reader(file, options);
+    const cleaned = (options.stripUrls || options.stripCitations)
+        ? normalizeText(text, options)
+        : text;
+    if (!cleaned || cleaned.split(/\s+/).length < 10) {
         throw new Error('That file did not contain enough readable text.');
     }
 
-    // `chapters` is null unless the format carries its own (EPUB).
-    return { title: title || titleFromFilename(file.name), text, chapters };
+    // `chapters` is null unless the format carries its own (EPUB or PDF outline).
+    return { title: title || titleFromFilename(file.name), text: cleaned, chapters, rawText, stats, cuts };
 }
