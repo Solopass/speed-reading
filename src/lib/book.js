@@ -120,7 +120,13 @@ export function createBook({ id, title, source = 'import', chapters }) {
         text: null, sectionA: null, sectionB: null,
         questions: [], gistQuestions: [],
         chapters: chapters.map(c => ({
-            title: c.title, text: c.text, words: countWords(c.text), progressIndex: 0, completedAt: null
+            title: c.title,
+            text: c.text,
+            words: countWords(c.text),
+            progressIndex: 0,
+            completedAt: null,
+            questions: Array.isArray(c.questions) ? c.questions : [],
+            gistQuestions: Array.isArray(c.gistQuestions) ? c.gistQuestions : []
         })),
         currentChapter: 0,
         bookmarks: [],
@@ -152,8 +158,8 @@ export function chapterPassage(book, index, resumeFrom = null) {
         title: `${book.title} · ${ch.title}`,
         chapterTitle: ch.title,
         text: ch.text,
-        questions: [],
-        gistQuestions: [],
+        questions: Array.isArray(ch.questions) ? ch.questions : [],
+        gistQuestions: Array.isArray(ch.gistQuestions) ? ch.gistQuestions : [],
         resumeFrom: resumeFrom ?? (ch.progressIndex > 0 && ch.progressIndex < ch.words ? ch.progressIndex : 0)
     };
 }
@@ -245,7 +251,9 @@ export function migrateBook(raw) {
                 text: c.text,
                 words,
                 progressIndex: Number.isInteger(c.progressIndex) ? Math.min(Math.max(0, c.progressIndex), words) : 0,
-                completedAt: typeof c.completedAt === 'string' ? c.completedAt : null
+                completedAt: typeof c.completedAt === 'string' ? c.completedAt : null,
+                questions: Array.isArray(c.questions) ? c.questions : [],
+                gistQuestions: Array.isArray(c.gistQuestions) ? c.gistQuestions : []
             };
         });
     if (!chapters.length) return null;

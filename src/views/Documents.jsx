@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
 import {
-    Activity, Bookmark, BookOpen, ChevronRight, Download, FileText, Play, Search, Sparkles, Upload, X
+    Activity, Bookmark, BookOpen, Brain, ChevronRight, Download, FileText, Play, Search, Sparkles, Upload, X
 } from 'lucide-react';
-import { cleanDocSpec } from '../lib/ai';
+import { cleanDocSpec, dropGuessableQuestions, questionsForTextSpec, verifySpec } from '../lib/ai';
+import { normalizeQuestions } from '../lib/quiz';
 import { applyParagraphCuts, restoreCutItem, selectBlocksForAiClean } from '../lib/importText';
 import { isPartiallyRead, resumePoint } from '../lib/library';
 import { isBook } from '../lib/book';
@@ -40,9 +41,9 @@ function exportNotesMarkdown(books, passages) {
     URL.revokeObjectURL(url);
 }
 
-function AiCleanModal({ doc, ai, onSave, onClose, addNotification }) {
+function AiCleanModal({ target, ai, onSave, onClose, addNotification }) {
     const useApi = Boolean(ai?.generate);
-    const [draftText, setDraftText] = useState(doc.text ?? '');
+    const [draftText, setDraftText] = useState(target.text ?? '');
     const [cuts, setCuts] = useState([]);
     const [cleaning, setCleaning] = useState(false);
 
@@ -84,20 +85,20 @@ function AiCleanModal({ doc, ai, onSave, onClose, addNotification }) {
     };
 
     const restoreAll = () => {
-        setDraftText(doc.text ?? '');
+        setDraftText(target.text ?? '');
         setCuts([]);
     };
 
-    const changed = draftText !== (doc.text ?? '');
+    const changed = draftText !== (target.text ?? '');
 
     return (
         <div className="fixed inset-0 z-[60] grid place-items-center p-4">
             <button aria-label="Close AI clean dialog" className="absolute inset-0 bg-black/60" onClick={onClose} />
-            <div role="dialog" aria-label={`Clean ${doc.title}`} className="relative w-full max-w-2xl max-h-[85vh] bg-slate-900 border border-slate-700 rounded-3xl p-6 shadow-2xl flex flex-col gap-4 overflow-y-auto">
+            <div role="dialog" aria-label={`Clean ${target.title}`} className="relative w-full max-w-2xl max-h-[85vh] bg-slate-900 border border-slate-700 rounded-3xl p-6 shadow-2xl flex flex-col gap-4 overflow-y-auto">
                 <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                         <h2 className="text-lg font-bold text-white truncate flex items-center gap-2">
-                            <Sparkles size={17} className="text-purple-400 shrink-0" /> AI Clean: {doc.title}
+                            <Sparkles size={17} className="text-purple-400 shrink-0" /> AI Clean: {target.title}
                         </h2>
                         <p className="text-xs text-slate-400 mt-1">
                             Runs only when you click it. Inspect every cut below and restore anything important before saving.
@@ -133,7 +134,7 @@ function AiCleanModal({ doc, ai, onSave, onClose, addNotification }) {
                         <button
                             type="button"
                             disabled={!changed}
-                            onClick={() => { onSave(doc.id, draftText); onClose(); }}
+                            onClick={() => { onSave(draftText); onClose(); }}
                             className="px-4 py-2 rounded-xl text-sm font-bold bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white"
                         >
                             Save changes
@@ -145,7 +146,116 @@ function AiCleanModal({ doc, ai, onSave, onClose, addNotification }) {
     );
 }
 
-function UploadedPassages({ passages, wpm, onOpenSaved, onDeleteSaved, onRemovePassageBookmark, onCleanDoc }) {
+function QuizModal({ target, ai, verifyQuestions, onSave, onClose, addNotification }) {
+    const useApi = Boolean(ai?.generate);
+    const [generating, setGenerating] = useState(false);
+    const [pendingCheck, setPendingCheck] = useState(null);
+
+    const spec = useMemo(() => questionsForTextSpec({ title: target.title, text: target.text }), [target.title, target.text]);
+
+    const saveQuiz = (questions, gistQuestions = []) => {
+        if (questions.length === 0) {
+            addNotification('Could not extract valid questions from that reply.');
+            return;
+        }
+        onSave({ questions, gistQuestions });
+        onClose();
+    };
+
+    const runGenerate = async () => {
+        if (!useApi) return;
+        setGenerating(true);
+        try {
+            const reply = await ai.generate({ prompt: spec.prompt, schema: spec.schema });
+            let questions = normalizeQuestions(reply?.questions);
+            const gistQuestions = normalizeQuestions(reply?.gistQuestions);
+
+            if (verifyQuestions && questions.length > 0) {
+                try {
+                    const check = verifySpec({ questions });
+                    const blind = await ai.generate({ prompt: check.prompt, schema: check.schema });
+                    const { questions: kept, dropped } = dropGuessableQuestions(questions, blind?.answers);
+                    if (dropped > 0) addNotification(`Dropped ${dropped} guessable question${dropped === 1 ? '' : 's'}.`);
+                    questions = kept;
+                } catch {
+                    // Keep questions if blind check fails.
+                }
+            }
+            saveQuiz(questions, gistQuestions);
+        } catch (error) {
+            addNotification(error.message || 'Quiz generation failed.');
+        } finally {
+            setGenerating(false);
+        }
+    };
+
+    const acceptManual = (reply) => {
+        const questions = normalizeQuestions(reply?.questions);
+        const gistQuestions = normalizeQuestions(reply?.gistQuestions);
+        if (questions.length === 0) throw new Error('No valid questions found in that reply.');
+        if (verifyQuestions) {
+            setPendingCheck({ questions, gistQuestions });
+            return;
+        }
+        saveQuiz(questions, gistQuestions);
+    };
+
+    return (
+        <div className="fixed inset-0 z-[60] grid place-items-center p-4">
+            <button aria-label="Close quiz generator" className="absolute inset-0 bg-black/60" onClick={onClose} />
+            <div role="dialog" aria-label={`Quiz for ${target.title}`} className="relative w-full max-w-2xl max-h-[85vh] bg-slate-900 border border-slate-700 rounded-3xl p-6 shadow-2xl flex flex-col gap-4 overflow-y-auto">
+                <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                        <h2 className="text-lg font-bold text-white truncate flex items-center gap-2">
+                            <Brain size={17} className="text-emerald-400 shrink-0" /> Quiz: {target.title}
+                        </h2>
+                        <p className="text-xs text-slate-400 mt-1">
+                            Generates 5 blind-checked comprehension questions so reading this adjusts your adaptive target WPM.
+                        </p>
+                    </div>
+                    <button type="button" onClick={onClose} aria-label="Close" className="p-1.5 text-slate-400 hover:text-white"><X size={18} /></button>
+                </div>
+
+                {useApi ? (
+                    <button
+                        type="button"
+                        onClick={runGenerate}
+                        disabled={generating}
+                        className="inline-flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-bold px-4 py-3 rounded-xl transition-colors"
+                    >
+                        {generating ? <Activity className="animate-spin" size={16} /> : <Brain size={16} />}
+                        {generating ? `Writing quiz on ${ai.label}…` : 'Generate 5-question quiz'}
+                    </button>
+                ) : pendingCheck ? (
+                    <div className="space-y-3">
+                        <div className="flex items-center justify-between gap-2 bg-emerald-950/20 border border-emerald-900/60 rounded-xl p-3 text-xs text-emerald-300">
+                            <span>Got {pendingCheck.questions.length} questions. Optional blind check:</span>
+                            <button
+                                type="button"
+                                onClick={() => saveQuiz(pendingCheck.questions, pendingCheck.gistQuestions)}
+                                className="px-3 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold"
+                            >
+                                Skip &amp; save
+                            </button>
+                        </div>
+                        <ManualAiPanel
+                            spec={verifySpec({ questions: pendingCheck.questions })}
+                            addNotification={addNotification}
+                            onResult={(blind) => {
+                                const { questions: kept } = dropGuessableQuestions(pendingCheck.questions, blind?.answers);
+                                saveQuiz(kept, pendingCheck.gistQuestions);
+                            }}
+                        />
+                    </div>
+                ) : (
+                    <ManualAiPanel spec={spec} addNotification={addNotification} onResult={acceptManual} />
+                )}
+            </div>
+        </div>
+    );
+}
+
+function UploadedPassages({ passages, wpm, onOpenSaved, onDeleteSaved, onRemovePassageBookmark, onCleanDoc, onQuizDoc }) {
     if (passages.length === 0) return null;
 
     return (
@@ -172,6 +282,9 @@ function UploadedPassages({ passages, wpm, onOpenSaved, onDeleteSaved, onRemoveP
                                         {item.kind === 'push' && (
                                             <span className="text-[10px] font-bold uppercase tracking-wider bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded">Push</span>
                                         )}
+                                        {item.questions?.length > 0 && (
+                                            <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-500/15 text-emerald-300 px-1.5 py-0.5 rounded">{item.questions.length}Q</span>
+                                        )}
                                         {item.completedAt && !partial && (
                                             <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-500/15 text-emerald-300 px-1.5 py-0.5 rounded">Done</span>
                                         )}
@@ -190,14 +303,24 @@ function UploadedPassages({ passages, wpm, onOpenSaved, onDeleteSaved, onRemoveP
                                 </div>
                                 <div className="flex gap-2 shrink-0 flex-wrap">
                                     {item.text && (
-                                        <button
-                                            type="button"
-                                            onClick={() => onCleanDoc(item)}
-                                            title="Clean clutter with AI and review cuts"
-                                            className="border border-slate-700 hover:border-purple-500 text-slate-300 hover:text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5"
-                                        >
-                                            <Sparkles size={13} className="text-purple-400" /> AI Clean
-                                        </button>
+                                        <>
+                                            <button
+                                                type="button"
+                                                onClick={() => onCleanDoc(item)}
+                                                title="Clean clutter with AI and review cuts"
+                                                className="border border-slate-700 hover:border-purple-500 text-slate-300 hover:text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5"
+                                            >
+                                                <Sparkles size={13} className="text-purple-400" /> AI Clean
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => onQuizDoc(item)}
+                                                title="Generate comprehension quiz"
+                                                className="border border-slate-700 hover:border-emerald-500 text-slate-300 hover:text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5"
+                                            >
+                                                <Brain size={13} className="text-emerald-400" /> {item.questions?.length ? 'Re-quiz' : 'Add quiz'}
+                                            </button>
+                                        </>
                                     )}
                                     <button
                                         type="button"
@@ -260,11 +383,13 @@ function UploadedPassages({ passages, wpm, onOpenSaved, onDeleteSaved, onRemoveP
 }
 
 export default function Documents({
-    ai, library, readingWpm = 300, onOpenSaved, onDeleteSaved, onUpdateDocumentText,
+    ai, verifyQuestions = true, library, readingWpm = 300, onOpenSaved, onDeleteSaved,
+    onUpdateDocumentText, onUpdateChapterText, onUpdateDocumentQuestions, onUpdateChapterQuestions,
     onOpenChapter, onRemoveBookmark, onRemovePassageBookmark, onOpenUpload, addNotification
 }) {
     const [query, setQuery] = useState('');
-    const [cleaningDoc, setCleaningDoc] = useState(null);
+    const [cleaningTarget, setCleaningTarget] = useState(null);
+    const [quizTarget, setQuizTarget] = useState(null);
     const books = library.filter(isBook);
     const importedPassages = library.filter(item => !isBook(item) && item.source === 'import');
     const totalItems = books.length + importedPassages.length;
@@ -345,6 +470,20 @@ export default function Documents({
                         onOpenChapter={(bookId, chIdx, resumeAt) => onOpenChapter(bookId, chIdx, resumeAt, 'documents')}
                         onRemoveBookmark={onRemoveBookmark}
                         onDelete={onDeleteSaved}
+                        onCleanChapter={(book, chIdx) => setCleaningTarget({
+                            kind: 'chapter',
+                            bookId: book.id,
+                            chapterIndex: chIdx,
+                            title: `${book.title} · ${book.chapters[chIdx].title}`,
+                            text: book.chapters[chIdx].text
+                        })}
+                        onQuizChapter={(book, chIdx) => setQuizTarget({
+                            kind: 'chapter',
+                            bookId: book.id,
+                            chapterIndex: chIdx,
+                            title: `${book.title} · ${book.chapters[chIdx].title}`,
+                            text: book.chapters[chIdx].text
+                        })}
                     />
                     <UploadedPassages
                         passages={filteredPassages}
@@ -352,7 +491,8 @@ export default function Documents({
                         onOpenSaved={(id, opts) => onOpenSaved(id, { ...opts, returnTo: 'documents' })}
                         onDeleteSaved={onDeleteSaved}
                         onRemovePassageBookmark={onRemovePassageBookmark}
-                        onCleanDoc={setCleaningDoc}
+                        onCleanDoc={(doc) => setCleaningTarget({ kind: 'doc', id: doc.id, title: doc.title, text: doc.text })}
+                        onQuizDoc={(doc) => setQuizTarget({ kind: 'doc', id: doc.id, title: doc.title, text: doc.text })}
                     />
                     {q && filteredBooks.length === 0 && filteredPassages.length === 0 && (
                         <p className="text-sm text-slate-500 text-center py-6">No documents match &ldquo;{query}&rdquo;.</p>
@@ -360,12 +500,27 @@ export default function Documents({
                 </>
             )}
 
-            {cleaningDoc && (
+            {cleaningTarget && (
                 <AiCleanModal
-                    doc={cleaningDoc}
+                    target={cleaningTarget}
                     ai={ai}
-                    onSave={onUpdateDocumentText}
-                    onClose={() => setCleaningDoc(null)}
+                    onSave={(nextText) => (cleaningTarget.kind === 'chapter'
+                        ? onUpdateChapterText(cleaningTarget.bookId, cleaningTarget.chapterIndex, nextText)
+                        : onUpdateDocumentText(cleaningTarget.id, nextText))}
+                    onClose={() => setCleaningTarget(null)}
+                    addNotification={addNotification}
+                />
+            )}
+
+            {quizTarget && (
+                <QuizModal
+                    target={quizTarget}
+                    ai={ai}
+                    verifyQuestions={verifyQuestions}
+                    onSave={(qData) => (quizTarget.kind === 'chapter'
+                        ? onUpdateChapterQuestions(quizTarget.bookId, quizTarget.chapterIndex, qData)
+                        : onUpdateDocumentQuestions(quizTarget.id, qData))}
+                    onClose={() => setQuizTarget(null)}
                     addNotification={addNotification}
                 />
             )}

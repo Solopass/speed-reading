@@ -269,3 +269,29 @@ ${listed}`,
         shape: '{"cuts": [{"index": number, "reason": string}]}'
     };
 }
+
+/**
+ * Generates comprehension + gist questions for an existing uploaded document
+ * or book chapter, using up to ~1,200 words so local models stay fast.
+ */
+export function questionsForTextSpec({ title, text }) {
+    const words = String(text ?? '').trim().split(/\s+/).filter(Boolean);
+    const excerpt = words.length > 1200 ? `${words.slice(0, 1200).join(' ')}…` : words.join(' ');
+    return {
+        label: 'document quiz',
+        prompt: `Write comprehension questions for the following passage titled "${title || 'Document'}". Base every question strictly on the text below.
+
+${QUIZ_INSTRUCTIONS}
+
+${GIST_INSTRUCTIONS}
+
+PASSAGE:
+${excerpt}`,
+        schema: {
+            type: 'OBJECT',
+            properties: { questions: QUESTION_SCHEMA, gistQuestions: GIST_SCHEMA },
+            required: ['questions']
+        },
+        shape: `{${QUESTIONS_SHAPE}, ${GIST_SHAPE}}`
+    };
+}

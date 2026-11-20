@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     MIN_VERIFIED_QUESTIONS, cleanDocSpec, coachSpec, dropGuessableQuestions, extractJson, manualPrompt,
-    passageSpec, pushSpec, verifySpec, youtubeSpec
+    passageSpec, pushSpec, questionsForTextSpec, verifySpec, youtubeSpec
 } from './ai';
 
 describe('extractJson', () => {
@@ -181,5 +181,14 @@ describe('cleanDocSpec', () => {
         expect(spec.prompt).toContain('[0] Cookie banner');
         expect(spec.prompt).toContain('[1] Real prose.');
         expect(spec.schema.required).toContain('cuts');
+    });
+});
+
+describe('questionsForTextSpec', () => {
+    it('includes passage title, excerpt, and requires questions', () => {
+        const spec = questionsForTextSpec({ title: 'Chapter 1', text: 'The Romans built aqueducts using gravity.' });
+        expect(spec.prompt).toContain('Chapter 1');
+        expect(spec.prompt).toContain('aqueducts');
+        expect(spec.schema.required).toContain('questions');
     });
 });

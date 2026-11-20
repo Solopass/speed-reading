@@ -380,6 +380,36 @@ export default function App() {
         addNotification('Document updated.', 'success');
     };
 
+    const updateChapterText = (bookId, chapterIndex, nextText) => {
+        const words = nextText.trim() ? nextText.trim().split(/\s+/).length : 0;
+        setLibrary(prev => prev.map(item => {
+            if (item.id !== bookId || !isBook(item) || !item.chapters[chapterIndex]) return item;
+            const chapters = item.chapters.map((ch, idx) => (idx === chapterIndex
+                ? { ...ch, text: nextText, words, progressIndex: Math.min(ch.progressIndex ?? 0, words) }
+                : ch));
+            return { ...item, chapters, words: chapters.reduce((s, c) => s + c.words, 0) };
+        }));
+        addNotification('Chapter updated.', 'success');
+    };
+
+    const updateDocumentQuestions = (id, { questions = [], gistQuestions = [] }) => {
+        setLibrary(prev => prev.map(item => (item.id === id && !isBook(item)
+            ? { ...item, questions, gistQuestions }
+            : item)));
+        addNotification(`Saved ${questions.length} comprehension question${questions.length === 1 ? '' : 's'}.`, 'success');
+    };
+
+    const updateChapterQuestions = (bookId, chapterIndex, { questions = [], gistQuestions = [] }) => {
+        setLibrary(prev => prev.map(item => {
+            if (item.id !== bookId || !isBook(item) || !item.chapters[chapterIndex]) return item;
+            const chapters = item.chapters.map((ch, idx) => (idx === chapterIndex
+                ? { ...ch, questions, gistQuestions }
+                : ch));
+            return { ...item, chapters };
+        }));
+        addNotification(`Saved ${questions.length} chapter question${questions.length === 1 ? '' : 's'}.`, 'success');
+    };
+
     // Leaving part-way through stores the resume point without marking the
     // passage finished.
     const handleReaderLeave = ({ passageId, progressIndex, chapterIndex = null, mode = null }) => {
@@ -553,7 +583,7 @@ export default function App() {
                             />
                         )}
                         {currentView === 'library' && <Library library={library} ai={ai} verifyQuestions={settings.verifyQuestions} readingWpm={activeOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onOpenSaved={openSaved} onDeleteSaved={deleteSaved} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} addNotification={addNotification} />}
-                        {currentView === 'documents' && <Documents ai={ai} library={library} readingWpm={readerOpeningWpm} onOpenSaved={(id, opts) => openSaved(id, { ...opts, returnTo: 'documents' })} onDeleteSaved={deleteSaved} onUpdateDocumentText={updateDocumentText} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} onRemovePassageBookmark={(id, bmId) => setLibrary(prev => removePassageBookmark(prev, id, bmId))} onOpenUpload={() => navigate('upload')} addNotification={addNotification} />}
+                        {currentView === 'documents' && <Documents ai={ai} verifyQuestions={settings.verifyQuestions} library={library} readingWpm={readerOpeningWpm} onOpenSaved={(id, opts) => openSaved(id, { ...opts, returnTo: 'documents' })} onDeleteSaved={deleteSaved} onUpdateDocumentText={updateDocumentText} onUpdateChapterText={updateChapterText} onUpdateDocumentQuestions={updateDocumentQuestions} onUpdateChapterQuestions={updateChapterQuestions} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} onRemovePassageBookmark={(id, bmId) => setLibrary(prev => removePassageBookmark(prev, id, bmId))} onOpenUpload={() => navigate('upload')} addNotification={addNotification} />}
                         {currentView === 'upload' && <Upload ai={ai} library={library} readingWpm={readerOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onSaveBook={saveBook} onSavePassage={(p) => saveToLibrary(p, 'import')} onOpenSaved={(id) => openSaved(id, { returnTo: 'documents' })} onDeleteSaved={deleteSaved} onOpenDocuments={() => navigate('documents')} addNotification={addNotification} />}
                         {currentView === 'recall' && <RecallCheck passage={activePassage} onDone={finishRecall} onExit={() => exitFocus('dashboard')} />}
                         {currentView === 'push' && <SpeedPush reading={reading} patchReading={patchReading} updateSettings={updateSettings} passage={activePassage} targetWpm={activeOpeningWpm} intensity={userStats.pushIntensity} settings={settings} onFinish={finishSession} onExit={() => exitFocus(returnView)} />}

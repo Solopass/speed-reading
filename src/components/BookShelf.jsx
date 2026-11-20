@@ -1,9 +1,9 @@
-import { Bookmark, BookOpen, Check, ChevronRight, Play, Trash2, X } from 'lucide-react';
+import { Bookmark, BookOpen, Brain, Check, ChevronRight, Play, Sparkles, Trash2, X } from 'lucide-react';
 import { bookProgress, nextChapterIndex } from '../lib/book';
 
 const minutes = (words, wpm) => Math.max(1, Math.round(words / Math.max(100, wpm)));
 
-function BookCard({ book, wpm, onOpenChapter, onRemoveBookmark, onDelete }) {
+function BookCard({ book, wpm, onOpenChapter, onRemoveBookmark, onDelete, onCleanChapter, onQuizChapter }) {
     const progress = bookProgress(book);
     const next = nextChapterIndex(book);
     const nextChapter = book.chapters[next];
@@ -50,19 +50,46 @@ function BookCard({ book, wpm, onOpenChapter, onRemoveBookmark, onDelete }) {
                     {book.chapters.map((ch, i) => {
                         const started = !ch.completedAt && ch.progressIndex > 0;
                         return (
-                            <li key={i}>
+                            <li key={i} className="flex items-center gap-1">
                                 <button
                                     onClick={() => onOpenChapter(book.id, i)}
-                                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left text-sm transition-colors hover:bg-slate-800/70 ${i === next && !finished ? 'bg-purple-500/10' : ''}`}
+                                    className={`flex-1 min-w-0 flex items-center gap-3 px-3 py-2 rounded-lg text-left text-sm transition-colors hover:bg-slate-800/70 ${i === next && !finished ? 'bg-purple-500/10' : ''}`}
                                 >
                                     <span className="w-5 shrink-0 text-center">
                                         {ch.completedAt ? <Check size={14} className="text-emerald-400 inline" /> : <span className="text-[11px] text-slate-600 font-mono">{i + 1}</span>}
                                     </span>
                                     <span className={`flex-1 truncate ${ch.completedAt ? 'text-slate-500' : 'text-slate-200'}`}>{ch.title}</span>
+                                    {ch.questions?.length > 0 && (
+                                        <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-500/15 text-emerald-300 px-1.5 py-0.5 rounded shrink-0">
+                                            {ch.questions.length}Q
+                                        </span>
+                                    )}
                                     <span className="text-[11px] text-slate-500 font-mono shrink-0">
                                         {started ? `${Math.round((ch.progressIndex / ch.words) * 100)}% · ` : ''}{minutes(ch.words, wpm)}m
                                     </span>
                                 </button>
+                                {onCleanChapter && (
+                                    <button
+                                        type="button"
+                                        onClick={() => onCleanChapter(book, i)}
+                                        title={`AI Clean ${ch.title}`}
+                                        aria-label={`AI Clean ${ch.title}`}
+                                        className="p-2 text-slate-500 hover:text-purple-400 rounded-lg hover:bg-slate-800/70 transition-colors shrink-0"
+                                    >
+                                        <Sparkles size={13} />
+                                    </button>
+                                )}
+                                {onQuizChapter && (
+                                    <button
+                                        type="button"
+                                        onClick={() => onQuizChapter(book, i)}
+                                        title={`Generate quiz for ${ch.title}`}
+                                        aria-label={`Generate quiz for ${ch.title}`}
+                                        className="p-2 text-slate-500 hover:text-emerald-400 rounded-lg hover:bg-slate-800/70 transition-colors shrink-0"
+                                    >
+                                        <Brain size={13} />
+                                    </button>
+                                )}
                             </li>
                         );
                     })}
@@ -101,7 +128,7 @@ function BookCard({ book, wpm, onOpenChapter, onRemoveBookmark, onDelete }) {
 }
 
 /** Imported books, with per-chapter progress and bookmarks. */
-export default function BookShelf({ books, wpm, onOpenChapter, onRemoveBookmark, onDelete }) {
+export default function BookShelf({ books, wpm, onOpenChapter, onRemoveBookmark, onDelete, onCleanChapter, onQuizChapter }) {
     if (books.length === 0) return null;
     return (
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-7">
@@ -117,7 +144,11 @@ export default function BookShelf({ books, wpm, onOpenChapter, onRemoveBookmark,
             </div>
             <div className="space-y-3">
                 {books.map(book => (
-                    <BookCard key={book.id} book={book} wpm={wpm} onOpenChapter={onOpenChapter} onRemoveBookmark={onRemoveBookmark} onDelete={onDelete} />
+                    <BookCard
+                        key={book.id} book={book} wpm={wpm}
+                        onOpenChapter={onOpenChapter} onRemoveBookmark={onRemoveBookmark} onDelete={onDelete}
+                        onCleanChapter={onCleanChapter} onQuizChapter={onQuizChapter}
+                    />
                 ))}
             </div>
         </div>
