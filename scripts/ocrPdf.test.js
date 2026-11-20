@@ -10,16 +10,22 @@ function mockReq({ url = '/api/ocr-pdf', method = 'GET', chunks = [] } = {}) {
     queueMicrotask(() => {
         for (const c of chunks) req.emit('data', c);
         req.emit('end');
+        req.emit('close');
     });
     return req;
 }
 
 function mockRes() {
-    const res = { statusCode: 200, headers: {}, body: '', writableEnded: false };
+    const res = new EventEmitter();
+    res.statusCode = 200;
+    res.headers = {};
+    res.body = '';
+    res.writableEnded = false;
     res.setHeader = (k, v) => { res.headers[k] = v; };
     res.end = (data) => {
         res.writableEnded = true;
         res.body = typeof data === 'string' ? data : Buffer.from(data ?? '').toString('utf8');
+        res.emit('finish');
     };
     return res;
 }
@@ -51,4 +57,22 @@ describe('ocrPdf', () => {
         expect(res.statusCode).toBe(400);
         expect(JSON.parse(res.body).error).toMatch(/valid PDF/i);
     });
+
+    it('does not abort OCR when req closes normally after body upload', async () => {
+        const minPdf = Buffer.from(
+            '%PDF-1.4\n1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n' +
+            '2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n' +
+            '3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>endobj\n' +
+            'xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n' +
+            'trailer<< /Size 4 /Root 1 0 R >>\nstartxref\n184\n%%EOF\n'
+        );
+        const req = mockReq({ method: 'POST', chunks: [minPdf] });
+        const res = mockRes();
+        await new Promise((resolve) => {
+            res.on('finish', resolve);
+            ocrPdfMiddleware(req, res, () => {});
+        });
+        expect(res.statusCode).toBe(200);
+        expect(res.body.startsWith('%PDF-')).toBe(true);
+    }, 15000);
 });

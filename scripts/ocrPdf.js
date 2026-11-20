@@ -169,7 +169,9 @@ export function ocrPdfMiddleware(req, res, next) {
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), OCR_TIMEOUT_MS);
-    req.on('close', () => {
+    req.setTimeout?.(0);
+    res.setTimeout?.(0);
+    res.on('close', () => {
         if (!res.writableEnded) controller.abort();
     });
 
