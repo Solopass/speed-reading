@@ -115,7 +115,7 @@ export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations 
         .replace(JUNK_CHARS_RE, () => { stats.junkChars += 1; return ''; })
         .replace(ASTRAL_PUA_RE, () => { stats.junkChars += 1; return ''; })
         .replace(/\r\n?/g, '\n')
-        .replace(/([A-Za-z]{2,})-[ \t]*\n[ \t]*([a-z]{2,})/g, (_, a, b) => {
+        .replace(/(\p{L}{2,})-[ \t]*\n[ \t]*(\p{Ll}{2,})/gu, (_, a, b) => {
             stats.rejoinedHyphens += 1;
             return keepHyphen(a, b) ? `${a}-${b}` : `${a}${b}`;
         });
@@ -400,9 +400,11 @@ export function selectBlocksForRepair(text, maxBlocks = 40) {
     const picked = [];
     for (let i = 0; i < paras.length && picked.length < maxBlocks; i++) {
         const p = paras[i];
-        const split = i + 1 < paras.length && !ENDS_CLEANLY_RE.test(p) && /^\p{Ll}/u.test(paras[i + 1]) && p.split(/\s+/).length > 4;
+        if (p.length > 2000) continue;
+        const canMerge = i + 1 < paras.length && !ENDS_CLEANLY_RE.test(p) && /^\p{Ll}/u.test(paras[i + 1]) && p.split(/\s+/).length > 4;
+        const split = canMerge && p.length + paras[i + 1].length <= 2500;
         if (split || garbleScore(p) > 0.12) {
-            picked.push({ index: i, text: p.slice(0, 1500), next: split ? paras[i + 1].slice(0, 300) : null });
+            picked.push({ index: i, text: p, next: split ? paras[i + 1] : null });
         }
     }
     return picked;
@@ -912,10 +914,10 @@ export function joinPdfPages(pages) {
     let out = '';
     for (const page of pages.map(p => String(p).trim()).filter(Boolean)) {
         if (!out) { out = page; continue; }
-        const continues = !/[.!?:;"'”’)\]]$/.test(out) && /^[a-z(“"'‘]/.test(page);
+        const continues = !/[.!?:;"'”’)\]]$/.test(out) && /^[\p{Ll}(“"'‘]/u.test(page);
         // A word hyphenated across the break joins with a newline, which the
         // normaliser's hyphen rejoin then turns back into one word.
-        const hyphenated = /[A-Za-z]{2,}-$/.test(out) && /^[a-z]{2,}/.test(page);
+        const hyphenated = /\p{L}{2,}-$/u.test(out) && /^\p{Ll}{2,}/u.test(page);
         out += hyphenated ? '\n' : continues ? ' ' : '\n\n';
         out += page;
     }

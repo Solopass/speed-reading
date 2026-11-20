@@ -261,6 +261,20 @@ describe('orderPdfItems', () => {
         expect(cleaned).not.toMatch(/^iv$/m);
         expect(cleaned).not.toMatch(/^xii$/m);
     });
+
+    it('rejoins hyphenated non-ASCII words across line breaks', () => {
+        expect(normalizeText('coöp-\neration and naï-\nve ideas')).toBe('coöperation and naïve ideas');
+    });
+
+    it('does not truncate long next paragraphs in selectBlocksForRepair', async () => {
+        const { selectBlocksForRepair } = await import('./importText');
+        const p1 = 'The river carried silt down from the hills every spring';
+        const p2 = `and ${'farmers waited patiently for the floods to recede '.repeat(8).trim()}.`;
+        expect(p2.length).toBeGreaterThan(300);
+        const picked = selectBlocksForRepair(`${p1}\n\n${p2}`);
+        expect(picked).toHaveLength(1);
+        expect(picked[0].next).toBe(p2);
+    });
 });
 
 // extractFromHtml needs DOMParser, so it is covered by the browser checks
