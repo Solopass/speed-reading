@@ -34,7 +34,7 @@ const DIVIDER_LINE_RE = /^[\s*\-_=~•·|—–]+$/;
 const PAGE_NUMBER_RE = /^(?:page\s*\d{1,4}(?:\s*(?:of|\/)\s*\d{1,4})?|[-–—]\s*\d{1,4}\s*[-–—]|\d{1,4}\s*\/\s*\d{1,4}|\|\s*\d{1,4}|\d{1,4}\s*\|)$/i;
 const ROMAN_PAGE_RE = /^[ivxlcdm]{1,7}$/;
 const TOC_LINE_RE = /^.{3,80}\s+\d{1,4}$/;
-const STRAY_SYMBOL_TOKEN_RE = /(^|\s)[|~^_\\`*=<>[\]{}•▪▫●○■□◆◇❖➤➢➔►◄★☆✓✔✕✖†‡§¶]+(?=\s|$)/g;
+const STRAY_SYMBOL_TOKEN_RE = /(^|\s)[|~^_\\`*[{}•▪▫●○■□◆◇❖➤➢➔►◄★☆✓✔✕✖†‡§¶\]]+(?=\s|$)/g;
 
 /**
  * Strips common Markdown syntax (frontmatter, links, images, emphasis, code
@@ -183,8 +183,11 @@ export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations 
         const keptBlocks = [];
         blocks.forEach((blk, idx) => {
             const lines = blk.split('\n').map(l => l.trim()).filter(Boolean);
-            const tocHits = lines.filter(l => TOC_LINE_RE.test(l)).length;
-            if (lines.length >= 4 && tocHits >= Math.ceil(lines.length * 0.75)) {
+            const tocNums = lines
+                .filter(l => TOC_LINE_RE.test(l))
+                .map(l => Number(l.match(/(\d{1,4})$/)?.[1] ?? 0));
+            const increasing = tocNums.filter((n, i) => i === 0 || n >= tocNums[i - 1]).length;
+            if (lines.length >= 4 && tocNums.length >= Math.ceil(lines.length * 0.75) && increasing >= tocNums.length - 1) {
                 cuts.push({ id: `det-toc-${idx}`, index: idx, text: blk, reason: 'Table of contents', source: 'auto' });
             } else {
                 keptBlocks.push(blk);
@@ -923,7 +926,13 @@ function sortReadingOrder(items) {
     // Group into lines first (transitive) so slightly tilted OCR baselines stay in X order.
     const byYDesc = [...items].sort((a, b) => b.transform[5] - a.transform[5]);
     const lines = [];
+    const dropCaps = [];
     for (const it of byYDesc) {
+        const fs = Math.abs(it.transform[3] || it.transform[0] || 10);
+        if (it.str.trim().length === 1 && fs >= 20) {
+            dropCaps.push({ it, fs });
+            continue;
+        }
         const y = it.transform[5];
         const lastLine = lines[lines.length - 1];
         if (lastLine && Math.abs(lastLine.y - y) <= 4) {
@@ -932,6 +941,14 @@ function sortReadingOrder(items) {
             lines.push({ y, items: [it] });
         }
     }
+    // Re-attach large drop-cap initials to the top line they start beside.
+    for (const { it, fs } of dropCaps) {
+        const topEdge = it.transform[5] + fs * 0.72;
+        const target = lines.find(l => Math.abs(l.y - topEdge) <= fs * 0.5 && it.transform[4] <= Math.min(...l.items.map(x => x.transform[4])));
+        if (target) target.items.push({ ...it, transform: [...it.transform.slice(0, 5), target.y] });
+        else lines.push({ y: it.transform[5], items: [it] });
+    }
+    lines.sort((a, b) => b.y - a.y);
     return lines.flatMap(l => l.items.sort((a, b) => a.transform[4] - b.transform[4]));
 }
 

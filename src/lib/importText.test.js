@@ -210,6 +210,17 @@ describe('orderPdfItems', () => {
         ];
         expect(orderPdfItems(tilted, 600).slice(0, 3).map(i => i.str)).toEqual(['hello', 'world', 'again']);
     });
+
+    it('attaches large drop-cap initials to the first line instead of lower lines', () => {
+        const dropCap = { str: 'W', width: 31, transform: [36, 0, 0, 36, 60, 674] };
+        const page = [
+            dropCap,
+            item('hen', 92, 700, 22), item('the', 120, 700, 20), item('king', 148, 700, 24),
+            item('spoke', 92, 686, 30), item('to', 130, 686, 14), item('all', 150, 686, 16),
+            item('people', 60, 672, 35), item('here.', 102, 672, 28)
+        ];
+        expect(assemblePdfPageText(orderPdfItems(page, 600)).startsWith('When the king')).toBe(true);
+    });
 });
 
 // extractFromHtml needs DOMParser, so it is covered by the browser checks
