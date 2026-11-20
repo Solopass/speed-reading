@@ -11,11 +11,18 @@ import ReadingSurface from '../components/ReadingSurface';
 import ReaderSettings from '../components/ReaderSettings';
 import { focalColorFor, rampFactor } from '../lib/readingStyle';
 import { clampIndex, clock, extractSections, jump, startCount, wordsCovered } from '../lib/readerNav';
+import { buildChunks, chunkIndexAt, joinFlashWords, pauseAfter, tokenize, wordWeights } from '../lib/chunker';
 import Quiz from '../components/Quiz';
 
 /** Words skipped by the rewind and skip controls. */
 const SKIP_WORDS = 10;
 const WPM_PRESETS = [200, 300, 400, 500, 650, 800, 1000];
+/** Flash text size for multi-word groups, relative to the single-word size, by "words per flash". */
+const MULTI_SCALE = { 2: 0.78, 3: 0.68, 4: 0.6, 5: 0.56 };
+/** Height of the flash box: fixed per setting so one- and two-line groups do not shift the page. */
+const flashBoxHeight = (chunkSize) => (chunkSize > 1
+    ? `max(9rem, calc(var(--reading-rsvp-size) * ${((MULTI_SCALE[Math.min(chunkSize, 5)] ?? 0.56) * 2.4 + 0.35).toFixed(2)}))`
+    : 'max(9rem, calc(var(--reading-rsvp-size) * 1.6))');
 
 const Kbd = ({ children }) => <kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-400 font-mono">{children}</kbd>;
 
@@ -139,6 +146,22 @@ function Reader({
 
     const sections = useMemo(() => (book ? [] : extractSections(passage?.text ?? '')), [book, passage?.text]);
 
+    // RSVP flashes follow phrase and sentence boundaries rather than fixed
+    // slices (see chunker.js). Indices are the same as `words`.
+    const smartChunks = settings.smartChunks !== false;
+    const chunks = useMemo(
+        () => buildChunks(passage?.text ?? '', { maxWords: settings.chunkSize, smart: smartChunks }),
+        [passage?.text, settings.chunkSize, smartChunks]
+    );
+    const gaps = useMemo(() => tokenize(passage?.text ?? '').map(t => t.gap), [passage?.text]);
+    const weights = useMemo(() => wordWeights(words), [words]);
+    /** End (exclusive) of the flash that starts at word `index`. */
+    const flashEnd = useCallback((index) => {
+        if (index >= words.length) return words.length;
+        const c = chunks[chunkIndexAt(chunks, index)];
+        return c && c.end > index ? c.end : index + 1;
+    }, [chunks, words.length]);
+
     // Validated and shuffled once per passage: a model can return a bad answer
     // index or duplicate options, and re-shuffling on every render would move
     // the options under the reader's cursor.
@@ -239,14 +262,14 @@ function Reader({
         const synth = window.speechSynthesis;
         if (!synth) return;
 
-        const chunk = words.slice(currentIndex, currentIndex + settings.chunkSize).join(' ');
+        const chunk = words.slice(currentIndex, flashEnd(currentIndex)).join(' ');
         if (!chunk) return;
 
         const utterance = new SpeechSynthesisUtterance(chunk);
         utterance.rate = Math.min(4, Math.max(0.5, effectiveWpm / 180));
         synth.cancel();
         synth.speak(utterance);
-    }, [currentIndex, isPlaying, isAudioReady, mode, effectiveWpm, words, settings.audioSyncEnabled, settings.chunkSize]);
+    }, [currentIndex, isPlaying, isAudioReady, mode, effectiveWpm, words, settings.audioSyncEnabled, flashEnd]);
 
     useEffect(() => {
         if (!isPlaying || mode !== 'rsvp') window.speechSynthesis?.cancel();
@@ -303,7 +326,15 @@ function Reader({
     /** Jump to a word, in RSVP or the pacers. */
     const seekTo = useCallback((target) => {
         if (mode === 'natural' || words.length === 0) return;
-        const to = clampIndex(target, words.length);
+        let to = clampIndex(target, words.length);
+        // A jump in RSVP lands on the start of the phrase holding that word.
+        // A small step forward that stays inside the current group moves on to
+        // the next group instead of snapping back (the wheel steps 3 words).
+        if (mode === 'rsvp' && to < words.length && chunks.length) {
+            const from = cursorRef.current;
+            const start = chunks[chunkIndexAt(chunks, to)].start;
+            to = to > from && start <= from ? flashEnd(from) : start;
+        }
         countRef.current = jump(countRef.current, cursorRef.current, to);
         cursorRef.current = to;
         if (mode === 'rsvp') setCurrentIndex(to);
@@ -311,7 +342,7 @@ function Reader({
             setPacedIndex(to);
             setPacedSeek(prev => ({ index: to, nonce: (prev?.nonce ?? 0) + 1 }));
         }
-    }, [mode, words.length]);
+    }, [mode, words.length, chunks, flashEnd]);
 
     const seekBy = useCallback((delta) => seekTo(cursorRef.current + delta), [seekTo]);
 
@@ -363,19 +394,17 @@ function Reader({
     useEffect(() => {
         if (!isPlaying || mode !== 'rsvp' || words.length === 0 || currentIndex >= words.length) return;
 
-        const currentChunk = words.slice(currentIndex, currentIndex + settings.chunkSize);
-        let delayMs = (60000 / effectiveWpm) * settings.chunkSize;
-
-        if (settings.punctuationPacing && currentChunk.length > 0) {
-            const lastWord = currentChunk[currentChunk.length - 1];
-            const avgLen = currentChunk.reduce((s, w) => s + w.length, 0) / currentChunk.length;
-            if (avgLen >= 8) delayMs *= 1.15;
-            if (/[,;:—]["'”’)\]]*$/.test(lastWord)) delayMs += 130;
-            else if (/[.!?]["'”’)\]]*$/.test(lastWord)) delayMs += 260;
-        }
+        const end = flashEnd(currentIndex);
+        const wordMs = 60000 / effectiveWpm;
+        // Long words get a little more time and short ones a little less; the
+        // weights average 1 over the passage, so the average speed is unchanged.
+        let units = 0;
+        for (let i = currentIndex; i < end; i++) units += weights[i] ?? 1;
+        let delayMs = wordMs * units;
+        if (settings.punctuationPacing) delayMs += wordMs * pauseAfter(words[end - 1], gaps[end - 1] ?? 0, words[end]);
 
         timerRef.current = setTimeout(() => {
-            const next = currentIndex + settings.chunkSize;
+            const next = end;
             if (next >= words.length) {
                 setCurrentIndex(words.length);
                 setIsPlaying(false);
@@ -387,7 +416,7 @@ function Reader({
         }, delayMs);
 
         return () => clearTimeout(timerRef.current);
-    }, [isPlaying, currentIndex, effectiveWpm, mode, words, settings.punctuationPacing, settings.chunkSize]);
+    }, [isPlaying, currentIndex, effectiveWpm, mode, words, settings.punctuationPacing, flashEnd, weights, gaps]);
 
     // The pacer reports completion from its own animation loop; guard against
     // it firing more than once as the final frames settle.
@@ -494,24 +523,48 @@ function Reader({
     }, !quizActive && !settingsOpen && !bookmarkOpen && !isCalibration);
 
     const renderRsvpChunk = () => {
-        const chunkWords = words.slice(currentIndex, currentIndex + settings.chunkSize);
+        const chunkWords = words.slice(currentIndex, flashEnd(currentIndex));
         if (chunkWords.length === 0) return null;
 
-        const chunk = chunkWords.join(' ');
-        let centerIdx = chunk.length <= 1 ? 0 : Math.max(0, Math.floor(chunk.length / 2) - 1);
-        // Never land the focal highlight on a space between words in multi-word chunks.
-        if (chunk.charAt(centerIdx) === ' ') {
-            if (centerIdx + 1 < chunk.length && chunk.charAt(centerIdx + 1) !== ' ') centerIdx += 1;
-            else if (centerIdx - 1 >= 0 && chunk.charAt(centerIdx - 1) !== ' ') centerIdx -= 1;
+        if (settings.chunkSize > 1) {
+            // A phrase is taken in as a whole, centred on the fixation point.
+            // The size follows the setting, not the current group, so the text
+            // does not grow and shrink between flashes; a group too wide for
+            // one line wraps into two balanced lines instead of being clipped.
+            const scale = MULTI_SCALE[Math.min(settings.chunkSize, 5)] ?? 0.56;
+            return (
+                <div className="w-full select-none px-5 md:px-8 flex items-center justify-center">
+                    <p
+                        className="text-center m-0"
+                        style={{
+                            fontSize: `calc(var(--reading-rsvp-size) * ${scale})`,
+                            fontFamily: 'var(--reading-font)',
+                            lineHeight: 1.2,
+                            wordSpacing: 'calc(0.08em + var(--reading-word-spacing, 0em))',
+                            letterSpacing: 'var(--reading-letter-spacing, 0)',
+                            textWrap: 'balance',
+                            overflowWrap: 'anywhere',
+                            maxWidth: '100%'
+                        }}
+                    >
+                        {joinFlashWords(chunkWords)}
+                    </p>
+                </div>
+            );
         }
+
+        const chunk = chunkWords[0];
+        // Optimal recognition point: a little left of centre, skipping any
+        // opening quote or bracket so "“Hello" pivots on the word itself.
+        const lead = chunk.match(/^[^\p{L}\p{N}]*/u)[0].length;
+        const coreLen = [...chunk.slice(lead).replace(/[^\p{L}\p{N}]+$/u, '')].length;
+        const orp = coreLen <= 1 ? 0 : coreLen <= 5 ? 1 : coreLen <= 9 ? 2 : coreLen <= 13 ? 3 : 4;
+        const centerIdx = Math.min(chunk.length - 1, lead + orp);
 
         const start = chunk.slice(0, centerIdx);
         const center = chunk.charAt(centerIdx);
         const end = chunk.slice(centerIdx + 1);
-        const scale = settings.chunkSize === 1 ? 1
-            : settings.chunkSize === 2 ? 0.72
-            : settings.chunkSize === 3 ? 0.6
-            : 0.5;
+        const scale = 1;
 
         return (
             // Equal-width flanks keep the ORP character pinned to the exact
@@ -542,13 +595,13 @@ function Reader({
     }, [words, currentIndex]);
 
     const afterContext = useMemo(() => {
-        const start = Math.min(words.length, currentIndex + settings.chunkSize);
+        const start = flashEnd(currentIndex);
         const to = Math.min(words.length, start + CONTEXT_WORDS);
         return {
             hasMore: to < words.length,
             items: words.slice(start, to).map((word, i) => ({ word, index: start + i }))
         };
-    }, [words, currentIndex, settings.chunkSize]);
+    }, [words, currentIndex, flashEnd]);
 
     if (!passage) return <div className="text-center mt-20 text-slate-400">No passage loaded.</div>;
 
@@ -872,7 +925,8 @@ function Reader({
                                 type="button"
                                 onClick={togglePlay}
                                 aria-label={isPlaying ? 'Pause reading' : 'Start reading'}
-                                className="h-36 md:h-40 flex items-center justify-center w-full relative overflow-hidden cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 border-y border-slate-800/40"
+                                className="flex items-center justify-center w-full relative overflow-hidden cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 border-y border-slate-800/40"
+                                style={{ height: flashBoxHeight(settings.chunkSize) }}
                             >
                                 {reading.showFocalGuide && (
                                     <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 pointer-events-none" style={{ background: 'var(--reading-muted)', opacity: 0.35 }} />

@@ -63,6 +63,13 @@ Working and verified:
   refused up front rather than breaking every later save.
 - **Speed push controls** — the reader's settings drawer, pacer styles,
   countdown, zen mode and full screen also work in the push drill.
+- **Phrase-grouped flashes** — with 2-5 words per flash, RSVP groups follow
+  phrases instead of fixed slices: never across a sentence end or heading,
+  preferably at commas and before conjunctions, never ending on "the" or "of",
+  balanced within a sentence and shorter when the words are long. Timing
+  follows word length (averaging out to the chosen WPM) with a beat at
+  punctuation; groups are centred and wrap to two balanced lines. Import
+  cleanup closes up stray punctuation ("word ,"), spaced ellipses and dashes.
 - **Vocabulary ranked by real word frequency** — the top 20,000 English words
   from wordfreq (CC BY-SA 4.0, see `src/data/WORDFREQ-NOTICE.md`), loaded only
   when the Vocabulary page opens.

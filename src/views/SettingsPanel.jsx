@@ -443,7 +443,8 @@ function SettingsPanel({ settings, updateSettings, apiKeyPresent, ai, localAi, o
                         className="w-full accent-purple-500 h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer"
                     />
                     <p className="text-xs text-slate-500 mt-2">
-                        More than one word per flash turns off the red focal letter, since there is no single centre to mark.
+                        With more than one word, flashes are grouped by phrase (3-5 words at a setting of 5) and centred
+                        as a whole, so there is no single focal letter. Turn grouping off in the reader settings for fixed slices.
                     </p>
                 </div>
 

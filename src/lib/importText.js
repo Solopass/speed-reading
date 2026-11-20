@@ -80,6 +80,9 @@ const CITATION_RE = /\[\d+(?:[\s,\-–]+\d+)*\]/g;
 export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations = false, stripPageNumbers = false } = {}) {
     const stats = { junkChars: 0, rejoinedHyphens: 0, pageNumbers: 0, dotLeaders: 0 };
     let scrubbed = String(raw)
+        // Superscript footnote markers right after punctuation ("end.¹"). NFKC
+        // would turn them into plain digits glued to the word ("end.1").
+        .replace(/([.,;:!?"'”’])[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g, '$1')
         .normalize('NFKC')
         .replace(JUNK_CHARS_RE, () => { stats.junkChars += 1; return ''; })
         .replace(ASTRAL_PUA_RE, () => { stats.junkChars += 1; return ''; })
@@ -104,6 +107,15 @@ export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations 
                 .replace(/\.{4,}/g, () => { stats.dotLeaders += 1; return ' '; })
                 .replace(STRAY_SYMBOL_TOKEN_RE, '$1')
                 .replace(/[ \t]+/g, ' ')
+                // Extraction spacing that leaves punctuation as a word of its own,
+                // which the reader would flash alone: "word ," / "( this )" / ". . ."
+                .replace(/(?<=[\p{L}\p{N}])\s?\.\s\.\s\.(?!\S)/gu, '…')
+                .replace(/(?<=[\p{L}\p{N}%"”’)])[ ]+([,;)\]”’]+)(?=\s|$)/gu, '$1')
+                .replace(/(?<=\p{L}{2})[ ]+([.!?])(?=[ ]+[\p{Lu}"“‘]|$)/gu, '$1')
+                .replace(/(^|\s)([([“‘])[ ]+(?=[\p{L}\p{N}])/gu, '$1$2')
+                // A spaced hyphen or double hyphen between words is a dash.
+                // Between numbers it is a minus or a range ("5 - 3", "10 - 20"), so left alone.
+                .replace(/(?<=\p{L}{2}[,.;:!?"”’)]?)[ ](?:--?|–)[ ](?=[\p{L}"“‘(]\p{L})/gu, ' — ')
                 .trim();
             if (!clean) return '';
             if (DIVIDER_LINE_RE.test(clean)) {

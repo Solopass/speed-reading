@@ -126,7 +126,15 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
 
                     <Section title="Flash (RSVP)">
                         <Slider id="rs-rsvp" label="Word size" value={reading.rsvpSizePx} range={LIMITS.rsvpSizePx} step={2} onChange={(v) => set({ rsvpSizePx: v })} format={(v) => `${v}px`} />
-                        <Slider id="rs-chunk" label="Words per flash" value={settings.chunkSize} range={[1, 5]} step={1} onChange={(v) => updateSettings({ chunkSize: v })} />
+                        <Slider id="rs-chunk" label={settings.chunkSize > 1 && settings.smartChunks !== false ? 'Words per flash (up to)' : 'Words per flash'} value={settings.chunkSize} range={[1, 5]} step={1} onChange={(v) => updateSettings({ chunkSize: v })} />
+                        {settings.chunkSize > 1 && (
+                            <Switch
+                                label="Group by phrase"
+                                hint="Flashes follow phrases and never run across a sentence end; off gives fixed slices."
+                                checked={settings.smartChunks !== false}
+                                onChange={(v) => updateSettings({ smartChunks: v })}
+                            />
+                        )}
                         <div>
                             <div className="text-sm text-slate-300 mb-1.5">Focal letter</div>
                             <Chips label="Focal letter colour" options={FOCAL_COLORS} value={reading.focalColorId} onChange={(id) => set({ focalColorId: id })} />

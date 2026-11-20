@@ -57,6 +57,7 @@ const DEFAULT_SETTINGS = {
     readerWpm: null,
     skimWpm: null,
     chunkSize: 1,
+    smartChunks: true,
     readerMode: 'rsvp',
     font: 'font-sans',
     theme: DEFAULT_THEME,

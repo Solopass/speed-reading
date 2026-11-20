@@ -80,6 +80,37 @@ describe('chaptersFromHeadings', () => {
     });
 });
 
+describe('extraction spacing', () => {
+    it('reattaches punctuation and brackets left as separate words', () => {
+        expect(normalizeText('word , and ( this ) too .')).toBe('word, and (this) too.');
+        expect(normalizeText('Wow ! Really ?')).toBe('Wow! Really?');
+    });
+
+    it('turns spaced dots and spaced hyphens between words into an ellipsis and a dash', () => {
+        expect(normalizeText('wait . . . what')).toBe('wait… what');
+        expect(normalizeText('He came -- then left')).toBe('He came — then left');
+        expect(normalizeText('He came - then left')).toBe('He came — then left');
+    });
+
+    it('leaves hyphenated words, number ranges and list dashes alone', () => {
+        expect(normalizeText('a well-known fact')).toBe('a well-known fact');
+        expect(normalizeText('pages 10 - 20')).toBe('pages 10 - 20');
+        expect(normalizeText('- item one')).toBe('- item one');
+    });
+
+    it('leaves code, formulas and single-letter ranges alone', () => {
+        expect(normalizeText('Run git add . now')).toBe('Run git add . now');
+        expect(normalizeText('a ? b : c')).toBe('a ? b : c');
+        expect(normalizeText('x - y and pages i - iv')).toBe('x - y and pages i - iv');
+        expect(normalizeText('(a+b)² here')).toBe('(a+b)2 here');
+    });
+
+    it('drops superscript footnote markers after punctuation', () => {
+        expect(normalizeText('The end.¹ Next one')).toBe('The end. Next one');
+        expect(normalizeText('area in m²')).toBe('area in m2');
+    });
+});
+
 describe('decodeTextBytes', () => {
     it('reads UTF-8, Windows-1252 and UTF-16', () => {
         expect(decodeTextBytes(new TextEncoder().encode('café'))).toBe('café');
