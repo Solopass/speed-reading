@@ -32,7 +32,7 @@ const ASTRAL_PUA_RE = /[\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/gu;
 const LEADING_BULLET_RE = /^\s*[•▪▫●○■□◆◇❖➤➢➔►◄★☆✓✔✕✖†‡§¶]+\s*/;
 const DIVIDER_LINE_RE = /^[\s*\-_=~•·|—–]+$/;
 const PAGE_NUMBER_RE = /^(?:page\s*\d{1,4}(?:\s*(?:of|\/)\s*\d{1,4})?|[-–—]\s*\d{1,4}\s*[-–—]|\d{1,4}\s*\/\s*\d{1,4}|\|\s*\d{1,4}|\d{1,4}\s*\|)$/i;
-const ROMAN_PAGE_RE = /^[ivxlcdm]{1,7}$/;
+const ROMAN_PAGE_RE = /^(?=[ivxlcdm])m{0,4}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})$/;
 const TOC_LINE_RE = /^.{3,80}\s+\d{1,4}$/;
 const STRAY_SYMBOL_TOKEN_RE = /(^|\s)[|~^_\\`*[{}•▪▫●○■□◆◇❖➤➢➔►◄★☆✓✔✕✖†‡§¶\]]+(?=\s|$)/g;
 
@@ -957,7 +957,8 @@ function sortReadingOrder(items) {
  * a real empty vertical gutter exists down the middle of the page.
  */
 export function orderPdfItems(items, pageWidth = 600) {
-    const textItems = items.filter(it => it && 'str' in it && it.str.trim() && Array.isArray(it.transform));
+    const validItems = items.filter(it => it && 'str' in it && it.str.length > 0 && Array.isArray(it.transform));
+    const textItems = validItems.filter(it => it.str.trim());
     if (textItems.length < 8) return items;
 
     const itemWidth = (it) => {
@@ -982,19 +983,42 @@ export function orderPdfItems(items, pageWidth = 600) {
 
     const left = [];
     const right = [];
+    const gutter = [];
+    let leftCount = 0;
+    let rightCount = 0;
     let gutterHits = 0;
 
-    for (const it of textItems) {
+    for (const it of validItems) {
         const x = it.transform[4];
         const endX = x + itemWidth(it);
-        if (x < gutterRight && endX > gutterLeft) gutterHits += 1;
-        else if (endX <= gutterLeft) left.push(it);
-        else if (x >= gutterRight) right.push(it);
+        const nonEmpty = Boolean(it.str.trim());
+        if (x < gutterRight && endX > gutterLeft) {
+            gutter.push(it);
+            if (nonEmpty) gutterHits += 1;
+        } else if (endX <= gutterLeft) {
+            left.push(it);
+            if (nonEmpty) leftCount += 1;
+        } else {
+            right.push(it);
+            if (nonEmpty) rightCount += 1;
+        }
     }
 
-    const isTwoCol = gutterHits <= 2 && left.length >= 8 && right.length >= 8;
-    if (!isTwoCol) return sortReadingOrder(textItems);
-    return sortReadingOrder(left).concat(sortReadingOrder(right));
+    const isTwoCol = gutterHits <= 2 && leftCount >= 8 && rightCount >= 8;
+    if (!isTwoCol) return sortReadingOrder(validItems);
+
+    const colTopY = Math.max(...left.map(i => i.transform[5]), ...right.map(i => i.transform[5]));
+    const colBottomY = Math.min(...left.map(i => i.transform[5]), ...right.map(i => i.transform[5]));
+    const topGutter = [];
+    const bottomGutter = [];
+    for (const it of gutter) {
+        const y = it.transform[5];
+        if (y > colTopY + 4) topGutter.push(it);
+        else if (y < colBottomY - 4) bottomGutter.push(it);
+        else if (it.transform[4] + itemWidth(it) * 0.5 < mid) left.push(it);
+        else right.push(it);
+    }
+    return sortReadingOrder(topGutter).concat(sortReadingOrder(left), sortReadingOrder(right), sortReadingOrder(bottomGutter));
 }
 
 /**
@@ -1025,7 +1049,7 @@ export function assemblePdfPageText(ordered) {
                 text += '\n';
             } else if (lastEndX !== null) {
                 const xGap = x - lastEndX;
-                if (xGap > Math.max(1.5, fontSize * 0.14) && !/\s$/.test(text) && !/^[\s,.;:!?)\]]/.test(item.str)) {
+                if (xGap > Math.max(1.0, fontSize * 0.10) && !/\s$/.test(text) && !/^[\s,.;:!?)\]]/.test(item.str)) {
                     text += ' ';
                 }
             }

@@ -221,6 +221,46 @@ describe('orderPdfItems', () => {
         ];
         expect(assemblePdfPageText(orderPdfItems(page, 600)).startsWith('When the king')).toBe(true);
     });
+
+    it('keeps centered titles and footers that cross the gutter in 2-column PDFs', () => {
+        const twoColWithTitle = [
+            item('Centered Title', 200, 740, 200),
+            item('L1', 40, 700), item('R1', 340, 700),
+            item('L2', 40, 680), item('R2', 340, 680),
+            item('L3', 40, 660), item('R3', 340, 660),
+            item('L4', 40, 640), item('R4', 340, 640),
+            item('L5', 40, 620), item('R5', 340, 620),
+            item('L6', 40, 600), item('R6', 340, 600),
+            item('L7', 40, 580), item('R7', 340, 580),
+            item('L8', 40, 560), item('R8', 340, 560),
+            item('Centered Footer', 200, 520, 200)
+        ];
+        expect(orderPdfItems(twoColWithTitle, 600).map(i => i.str)).toEqual([
+            'Centered Title',
+            'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8',
+            'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8',
+            'Centered Footer'
+        ]);
+    });
+
+    it('preserves explicit space items and tight word gaps so words do not glue together', () => {
+        const page = [
+            item('this', 60, 700, 20), item(' ', 80, 700, 1), item('book', 81, 700, 22),
+            item('was', 104.2, 700, 18), item('born', 123.4, 700, 22),
+            item('in', 147, 700, 10), item('a', 160, 700, 8), item('quiet', 171, 700, 25), item('town.', 200, 700, 25)
+        ];
+        expect(assemblePdfPageText(orderPdfItems(page, 600))).toBe('this book was born in a quiet town.');
+    });
+
+    it('preserves Roman-letter English words while stripping actual Roman page numbers', () => {
+        const raw = 'iv\n\nHe asked what she\ndid\nwhen things looked\nmild\nand\ncivil\n\nxii';
+        const cleaned = normalizeText(raw, { stripPageNumbers: true });
+        expect(cleaned).toContain('did');
+        expect(cleaned).toContain('mild');
+        expect(cleaned).toContain('civil');
+        expect(cleaned).not.toMatch(/^iv$/m);
+        expect(cleaned).not.toMatch(/^xii$/m);
+    });
 });
 
 // extractFromHtml needs DOMParser, so it is covered by the browser checks
