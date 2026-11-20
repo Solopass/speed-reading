@@ -362,23 +362,32 @@ export function stripRepeatedHeadersFooters(pages) {
 }
 
 /**
- * Reorders PDF text items into reading order. When a page uses a two-column
- * layout, reads the left column top-to-bottom before the right column.
+ * Reorders PDF text items into reading order. Only splits into two columns when
+ * a real empty vertical gutter exists down the middle of the page.
  */
 export function orderPdfItems(items, pageWidth = 600) {
     const textItems = items.filter(it => it && 'str' in it && it.str.trim() && Array.isArray(it.transform));
     if (textItems.length < 8) return items;
 
     const mid = pageWidth * 0.5;
-    const left = textItems.filter(it => it.transform[4] < mid - 12);
-    const right = textItems.filter(it => it.transform[4] >= mid + 8);
-    const spanning = textItems.filter(it => {
+    const gutterPad = Math.max(10, pageWidth * 0.025);
+    const gutterLeft = mid - gutterPad;
+    const gutterRight = mid + gutterPad;
+
+    const left = [];
+    const right = [];
+    let gutterHits = 0;
+
+    for (const it of textItems) {
         const x = it.transform[4];
         const w = it.width ?? 0;
-        return x < mid - 12 && x + w > mid + 20;
-    });
+        const endX = x + w;
+        if (x < gutterRight && endX > gutterLeft) gutterHits += 1;
+        else if (endX <= gutterLeft) left.push(it);
+        else if (x >= gutterRight) right.push(it);
+    }
 
-    const isTwoCol = left.length >= 6 && right.length >= 6 && spanning.length < 3;
+    const isTwoCol = gutterHits <= 2 && left.length >= 8 && right.length >= 8;
     const byYThenX = (a, b) => {
         const dy = b.transform[5] - a.transform[5];
         if (Math.abs(dy) > 3) return dy;
@@ -387,6 +396,44 @@ export function orderPdfItems(items, pageWidth = 600) {
 
     if (!isTwoCol) return [...textItems].sort(byYThenX);
     return [...left].sort(byYThenX).concat([...right].sort(byYThenX));
+}
+
+/**
+ * Reconstructs prose from ordered pdf.js text items, inserting spaces for
+ * horizontal word gaps on the same line and newlines for wrapped/paragraph breaks.
+ */
+export function assemblePdfPageText(ordered) {
+    let text = '';
+    let lastY = null;
+    let lastEndX = null;
+
+    for (const item of ordered) {
+        if (!item || !('str' in item) || !Array.isArray(item.transform)) continue;
+        const x = item.transform[4];
+        const y = item.transform[5];
+        const fontSize = Math.abs(item.transform[3] || item.transform[0] || 10);
+        const width = (typeof item.width === 'number' && item.width > 0)
+            ? item.width
+            : item.str.length * fontSize * 0.45;
+
+        if (lastY !== null) {
+            const yGap = Math.abs(lastY - y);
+            if (yGap > 14) {
+                text += '\n\n';
+            } else if (yGap > 4) {
+                text += '\n';
+            } else if (lastEndX !== null) {
+                const xGap = x - lastEndX;
+                if (xGap > Math.max(1.5, fontSize * 0.14) && !/\s$/.test(text) && !/^[\s,.;:!?)\]]/.test(item.str)) {
+                    text += ' ';
+                }
+            }
+        }
+        text += item.str;
+        lastY = y;
+        lastEndX = x + width;
+    }
+    return text;
 }
 
 async function pdfOutlineChapters(pdf, cleanPages) {
@@ -441,21 +488,7 @@ async function readPdf(file, options = {}) {
         const viewport = page.getViewport({ scale: 1 });
         const content = await page.getTextContent();
         const ordered = orderPdfItems(content.items, viewport.width);
-
-        let text = '';
-        let lastY = null;
-        for (const item of ordered) {
-            if (!('str' in item)) continue;
-            const y = item.transform[5];
-            if (lastY !== null) {
-                const gap = Math.abs(lastY - y);
-                if (gap > 14) text += '\n\n';
-                else if (gap > 2 && !/\s$/.test(text) && !/^[\s,.;:!?)\]]/.test(item.str)) text += ' ';
-            }
-            text += item.str;
-            lastY = y;
-        }
-        pages.push(text);
+        pages.push(assemblePdfPageText(ordered));
         if (pageNumber % 4 === 0) await new Promise(r => setTimeout(r, 0));
     }
 
