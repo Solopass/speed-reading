@@ -58,10 +58,15 @@ export const findEntry = (items, id) => items.find(i => i.id === id) ?? null;
 export const removeEntry = (items, id) => items.filter(i => i.id !== id);
 
 /** Records how far through a passage you got, without marking it finished. */
-export function recordProgress(items, id, progressIndex) {
+/**
+ * Saves where you stopped. By default the furthest point wins; `allowBackward`
+ * saves the actual stopping point, for readers that resume from the saved word
+ * (so restarting or rewinding and then leaving resumes where you really were).
+ */
+export function recordProgress(items, id, progressIndex, { allowBackward = false } = {}) {
     return items.map(item => (
         item.id === id
-            ? { ...item, progressIndex: Math.max(item.progressIndex, progressIndex), lastReadAt: todayKey() }
+            ? { ...item, progressIndex: allowBackward ? Math.max(0, progressIndex) : Math.max(item.progressIndex, progressIndex), lastReadAt: todayKey() }
             : item
     ));
 }

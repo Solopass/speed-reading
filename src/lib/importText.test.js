@@ -76,7 +76,7 @@ describe('normalizeText', () => {
 
     it('removes dot leaders, divider lines, standalone page numbers, and stray symbols', () => {
         const dirty = 'Chapter 1 ........ 12\n---\n• First point | ok\nPage 12\n42\n***\nSecond point.';
-        expect(normalizeText(dirty)).toBe('Chapter 1 12\n\nFirst point ok\n\nSecond point.');
+        expect(normalizeText(dirty, { stripPageNumbers: true })).toBe('Chapter 1 12\n\nFirst point ok\n\nSecond point.');
     });
 });
 
@@ -116,7 +116,7 @@ describe('stripMarkdown and optional filters', () => {
 
     it('reports cleaning stats via normalizeTextWithStats', () => {
         const raw = 'speed-\nreading\u00AD\nPage 1\nChapter 1 ........ 5';
-        const { text, stats, cuts } = normalizeTextWithStats(raw);
+        const { text, stats, cuts } = normalizeTextWithStats(raw, { stripPageNumbers: true });
         expect(text).toBe('speedreading\n\nChapter 1 5');
         expect(stats.rejoinedHyphens).toBe(1);
         expect(stats.junkChars).toBe(1);

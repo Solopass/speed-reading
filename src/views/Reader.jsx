@@ -117,7 +117,13 @@ function Reader({
     }, [wpmMenuOpen]);
 
     useEffect(() => {
-        if (bookmarkOpen) bookmarkInputRef.current?.focus();
+        if (!bookmarkOpen) return undefined;
+        bookmarkInputRef.current?.focus();
+        // The reader's shortcuts are off while the dialog is open, so it
+        // needs its own Escape to close.
+        const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); setBookmarkOpen(false); } };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
     }, [bookmarkOpen]);
 
     const isSkim = mode === 'skim';
@@ -324,10 +330,18 @@ function Reader({
         if (!finished) leave?.({ passageId, chapterIndex: chapter, progressIndex: at, mode: leaveRef.current.mode });
     }, []);
 
-    const handleFinishReading = useCallback(() => {
+    /**
+     * Ends the reading. `atIndex` is where the cursor finished: the RSVP and
+     * pacer completion paths pass the end of the passage, because the visible
+     * cursor state still lags one flash or one frame behind at that moment.
+     */
+    const handleFinishReading = useCallback((atIndex = null) => {
         stopClock();
+        const covered = mode === 'natural'
+            ? words.length
+            : Number.isInteger(atIndex) ? wordsCovered(countRef.current, atIndex) : wordsRead();
         const measured = {
-            wpm: measuredWpm(wordsRead()), words: wordsRead(), elapsedMs: elapsedMs(),
+            wpm: measuredWpm(covered), words: covered, elapsedMs: elapsedMs(),
             mode: isCalibration ? 'natural' : mode
         };
         if (questions.length > 0) {
@@ -337,7 +351,13 @@ function Reader({
         }
         leaveRef.current.finished = true;
         onFinish({ ...measured, score: null });
-    }, [stopClock, wordsRead, questions, onFinish, measuredWpm, elapsedMs, mode, isCalibration]);
+    }, [stopClock, wordsRead, words.length, questions, onFinish, measuredWpm, elapsedMs, mode, isCalibration]);
+
+    // Timers and the pacer call the latest finish handler through a ref, so
+    // their effects do not restart every time the parent re-renders (which
+    // recreated the handler and reset the RSVP flash timer mid-word).
+    const finishRef = useRef(handleFinishReading);
+    useLayoutEffect(() => { finishRef.current = handleFinishReading; });
 
     // --- RSVP advance ------------------------------------------------------
     useEffect(() => {
@@ -359,14 +379,15 @@ function Reader({
             if (next >= words.length) {
                 setCurrentIndex(words.length);
                 setIsPlaying(false);
-                handleFinishReading();
+                // The last chunk has just been shown, so the whole rest counts.
+                finishRef.current(words.length);
             } else {
                 setCurrentIndex(next);
             }
         }, delayMs);
 
         return () => clearTimeout(timerRef.current);
-    }, [isPlaying, currentIndex, effectiveWpm, mode, words, settings.punctuationPacing, settings.chunkSize, handleFinishReading]);
+    }, [isPlaying, currentIndex, effectiveWpm, mode, words, settings.punctuationPacing, settings.chunkSize]);
 
     // The pacer reports completion from its own animation loop; guard against
     // it firing more than once as the final frames settle.
@@ -377,8 +398,8 @@ function Reader({
         if (pacerDoneRef.current) return;
         pacerDoneRef.current = true;
         setIsPlaying(false);
-        handleFinishReading();
-    }, [handleFinishReading]);
+        finishRef.current(words.length);
+    }, [words.length]);
 
     // --- Play, pause and the countdown --------------------------------------
     useEffect(() => {
@@ -1008,7 +1029,7 @@ function Reader({
                                 <PassageText text={passage.text} bionicReading={settings.bionicReading} reading={reading} />
 
                                 <div className="mt-12 pt-8 border-t border-slate-800 flex flex-col items-center gap-3">
-                                    <button onClick={handleFinishReading} className="bg-purple-600 hover:bg-purple-500 text-white px-8 py-4 rounded-xl font-bold transition-all">
+                                    <button onClick={() => handleFinishReading()} className="bg-purple-600 hover:bg-purple-500 text-white px-8 py-4 rounded-xl font-bold transition-all">
                                         Finished Reading
                                     </button>
                                     <p className="text-xs" style={{ color: 'var(--reading-muted)' }}>{words.length} words</p>

@@ -25,6 +25,7 @@ import { pickNextAction } from './lib/nextAction';
 import { DEFAULT_THEME, applyTheme, resolveTheme } from './lib/theme';
 import usePersistentState from './lib/usePersistentState';
 import { loadLibraryIdb, saveLibraryIdb } from './lib/idbLibrary';
+import { remapWordIndex } from './lib/readerNav';
 import { PhoneHeader, PhoneTabBar, Sidebar } from './components/AppNav';
 import Toasts from './components/Toasts';
 import Library from './views/Library';
@@ -106,6 +107,7 @@ export default function App() {
         }
     });
     const libraryReadyRef = useRef(false);
+    const latestLibraryRef = useRef(null);
 
     useEffect(() => {
         let cancelled = false;
@@ -126,15 +128,27 @@ export default function App() {
 
     useEffect(() => {
         if (!libraryReadyRef.current) return;
-        saveLibraryIdb(library);
-        try {
-            const json = JSON.stringify(library);
-            if (json.length * 2 < 3_000_000) localStorage.setItem('speedReadLibrary', json);
-            else localStorage.removeItem('speedReadLibrary');
-        } catch {
-            // IndexedDB is the primary store; ignore localStorage quota overflow.
+        // localStorage keeps a copy while the library is small enough, as a
+        // fallback if IndexedDB is unavailable. A large library is only
+        // dropped from it once IndexedDB has confirmed the write; if that write
+        // fails the user is warned instead of silently losing the library.
+        let json = null;
+        try { json = JSON.stringify(library); } catch { json = null; }
+        const small = json !== null && json.length * 2 < 3_000_000;
+        if (small) {
+            try { localStorage.setItem('speedReadLibrary', json); } catch { /* IndexedDB is the primary store */ }
         }
-    }, [library]);
+        latestLibraryRef.current = library;
+        saveLibraryIdb(library).then((ok) => {
+            if (!ok) { onSaveError('speedReadLibrary'); return; }
+            // Coalesced writes share one promise; only the newest library may
+            // clear the fallback, or a stale "large" save would remove the copy
+            // a newer, small library just wrote.
+            if (!small && latestLibraryRef.current === library) {
+                try { localStorage.removeItem('speedReadLibrary'); } catch { /* nothing to clean up */ }
+            }
+        });
+    }, [library, onSaveError]);
     const [plans, setPlans] = usePersistentState('speedReadPlans', (raw) => migratePlans(raw ?? []), [], onSaveError);
     const [drills, setDrills] = usePersistentState('speedReadDrills', (raw) => migrateDrills(raw ?? []), [], onSaveError);
     const [vocab, setVocab] = usePersistentState('speedReadVocab', migrateVocab, [], onSaveError);
@@ -372,11 +386,21 @@ export default function App() {
         addNotification('Removed from library.');
     };
 
+    // Edited text (AI Clean) shifts word numbers, so the saved place and every
+    // bookmark are moved to the same words in the new text.
     const updateDocumentText = (id, nextText) => {
         const words = nextText.trim() ? nextText.trim().split(/\s+/).length : 0;
-        setLibrary(prev => prev.map(item => (item.id === id && !isBook(item)
-            ? { ...item, text: nextText, words, progressIndex: Math.min(item.progressIndex ?? 0, words) }
-            : item)));
+        setLibrary(prev => prev.map(item => {
+            if (item.id !== id || isBook(item)) return item;
+            const remap = (i) => Math.min(remapWordIndex(item.text, nextText, i), Math.max(0, words - 1));
+            return {
+                ...item,
+                text: nextText,
+                words,
+                progressIndex: item.progressIndex > 0 ? remap(item.progressIndex) : 0,
+                bookmarks: (item.bookmarks ?? []).map(bm => ({ ...bm, index: remap(bm.index) }))
+            };
+        }));
         addNotification('Document updated.', 'success');
     };
 
@@ -384,10 +408,17 @@ export default function App() {
         const words = nextText.trim() ? nextText.trim().split(/\s+/).length : 0;
         setLibrary(prev => prev.map(item => {
             if (item.id !== bookId || !isBook(item) || !item.chapters[chapterIndex]) return item;
+            const old = item.chapters[chapterIndex];
+            const remap = (i) => Math.min(remapWordIndex(old.text, nextText, i), Math.max(0, words - 1));
             const chapters = item.chapters.map((ch, idx) => (idx === chapterIndex
-                ? { ...ch, text: nextText, words, progressIndex: Math.min(ch.progressIndex ?? 0, words) }
+                ? { ...ch, text: nextText, words, progressIndex: ch.progressIndex > 0 ? remap(ch.progressIndex) : 0 }
                 : ch));
-            return { ...item, chapters, words: chapters.reduce((s, c) => s + c.words, 0) };
+            return {
+                ...item,
+                chapters,
+                words: chapters.reduce((s, c) => s + c.words, 0),
+                bookmarks: (item.bookmarks ?? []).map(bm => (bm.chapter === chapterIndex ? { ...bm, index: remap(bm.index) } : bm))
+            };
         }));
         addNotification('Chapter updated.', 'success');
     };
@@ -421,8 +452,10 @@ export default function App() {
             setLibrary(prev => recordChapterProgress(prev, passageId, chapterIndex, progressIndex ?? 0, { allowBackward: true }));
             return;
         }
-        if (!progressIndex) return;
-        setLibrary(prev => recordProgress(prev, passageId, progressIndex));
+        // Every mode except Natural resumes from the saved word, so save where
+        // the reader actually stopped, rewinds and restarts included.
+        if (mode === 'natural') return;
+        setLibrary(prev => recordProgress(prev, passageId, progressIndex ?? 0, { allowBackward: true }));
     };
 
     const exitFocus = (to) => {

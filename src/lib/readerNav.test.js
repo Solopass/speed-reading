@@ -48,3 +48,22 @@ describe('extractSections', () => {
         expect(extractSections('Just a short sentence.')).toEqual([]);
     });
 });
+
+describe('remapWordIndex', () => {
+    it('follows a word after earlier paragraphs are cut', async () => {
+        const { remapWordIndex } = await import('./readerNav');
+        const oldText = 'Copyright 2020 all rights reserved\n\nThe river carried silt to the plain every spring.\n\nFarmers waited for the flood.';
+        const newText = 'The river carried silt to the plain every spring.\n\nFarmers waited for the flood.';
+        const oldIndex = oldText.split(/\s+/).indexOf('Farmers');
+        expect(remapWordIndex(oldText, newText, oldIndex)).toBe(newText.split(/\s+/).indexOf('Farmers'));
+    });
+
+    it('falls back to a proportional spot when the words themselves were cut', async () => {
+        const { remapWordIndex } = await import('./readerNav');
+        const oldText = 'a b c d e f g h i j';
+        const newText = 'k l m n o';
+        expect(remapWordIndex(oldText, newText, 8)).toBe(4);
+        expect(remapWordIndex(oldText, '', 3)).toBe(0);
+        expect(remapWordIndex(oldText, oldText, 3)).toBe(3);
+    });
+});

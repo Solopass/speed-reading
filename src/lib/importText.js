@@ -43,10 +43,31 @@ export function stripMarkdown(raw) {
         .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
         .replace(/^```[^\n]*$/gm, '')
         .replace(/`([^`]+)`/g, '$1')
+        .replace(/^\s*\[[^\]]+\]:\s*\S+.*$/gm, '')          // reference link definitions
+        .replace(/\[([^\]]+)\]\[[^\]]*\]/g, '$1')            // reference-style links
+        .replace(/<\/?[a-zA-Z][^>]*>/g, '')                   // inline HTML tags
         .replace(/^#{1,6}\s+/gm, '')
         .replace(/^\s*>\s?/gm, '')
-        .replace(/(\*\*|__)(.*?)\1/g, '$2')
-        .replace(/(\*|_)(.*?)\1/g, '$2');
+        .replace(/^\s*[-*+]\s+/gm, '')                       // list bullets
+        // Emphasis only where it opens and closes at word boundaries, so
+        // snake_case_names and 2*3*4 are left alone.
+        .replace(/(^|[^\w*])(\*\*|__)(?=\S)(.+?)(?<=\S)\2(?![\w*])/g, '$1$3')
+        .replace(/(^|[^\w*])(\*|_)(?=\S)(.+?)(?<=\S)\2(?![\w*])/g, '$1$3');
+}
+
+/** Markdown paragraphs tagged with heading level (1 for #, 2 for ## and ###), for chapter splitting. */
+function markdownParagraphs(raw) {
+    return String(raw)
+        .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '')
+        // Headings become paragraphs of their own even without blank lines around them.
+        .replace(/^(#{1,6}[ \t]+.*)$/gm, '\n$1\n')
+        .split(/\n\s*\n/)
+        .map(block => {
+            const match = block.trim().match(/^(#{1,6})[ \t]+(.*)$/);
+            const level = match ? (match[1].length === 1 ? 1 : match[1].length <= 3 ? 2 : 0) : 0;
+            return { text: normalizeText(stripMarkdown(block.trim())), level };
+        })
+        .filter(p => p.text);
 }
 
 const URL_RE = /https?:\/\/\S+/gi;
@@ -56,7 +77,7 @@ const CITATION_RE = /\[\d+(?:[\s,\-–]+\d+)*\]/g;
  * Scrubs extraction artifacts and returns both the cleaned text and counts of
  * what was removed so the Upload UI can show a summary and offer undo.
  */
-export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations = false } = {}) {
+export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations = false, stripPageNumbers = false } = {}) {
     const stats = { junkChars: 0, rejoinedHyphens: 0, pageNumbers: 0, dotLeaders: 0 };
     let scrubbed = String(raw)
         .normalize('NFKC')
@@ -89,7 +110,9 @@ export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations 
                 cuts.push({ id: `det-${lineIdx}-div`, index: lineIdx, text: clean, reason: 'Divider', source: 'auto' });
                 return '';
             }
-            if (multiLine && (PAGE_NUMBER_RE.test(clean) || /^\d{1,4}$/.test(clean))) {
+            // Only PDFs have page furniture. In any other format a line that is
+            // just "1" or "12" is far more likely a chapter number to keep.
+            if (stripPageNumbers && multiLine && (PAGE_NUMBER_RE.test(clean) || /^\d{1,4}$/.test(clean))) {
                 stats.pageNumbers += 1;
                 cuts.push({ id: `det-${lineIdx}-pg`, index: lineIdx, text: clean, reason: 'Page number', source: 'auto' });
                 return '';
@@ -194,8 +217,13 @@ function pickArticleRoot(doc) {
     }
     if (best) return best;
 
-    // Fallback: pick the container with the most paragraph prose.
-    let bestContainer = doc.body ?? doc.documentElement;
+    // Fallback: the container with the most paragraph prose, but only when it
+    // really holds most of the page's prose. Articles that spread paragraphs
+    // over several sibling wrappers would otherwise lose every wrapper but one.
+    const body = doc.body ?? doc.documentElement;
+    const proseIn = (el) => [...el.querySelectorAll('p')].reduce((sum, p) => sum + p.textContent.trim().length, 0);
+    const totalProse = proseIn(body);
+    let bestContainer = body;
     let bestScore = 0;
     for (const container of doc.querySelectorAll('div, section')) {
         const pChars = [...container.querySelectorAll(':scope > p')]
@@ -205,19 +233,23 @@ function pickArticleRoot(doc) {
             bestContainer = container;
         }
     }
-    return bestContainer;
+    return totalProse > 0 && proseIn(bestContainer) >= totalProse * 0.6 ? bestContainer : body;
 }
+
+/** Light cleanup for EPUB chapters: they have no site furniture, and <header> often holds the chapter title. */
+const EPUB_BOILERPLATE_SELECTOR = 'script, style, noscript, svg, nav, [epub\\:type="pagebreak"]';
 
 /**
  * Pulls prose out of an HTML document. Block elements become paragraphs, so the
  * result keeps the shape the reader needs; prefers <article>/<main> or the
  * richest paragraph container so navigation/banners are skipped.
  */
-export function extractFromHtml(html) {
+export function extractFromHtml(html, { article = true } = {}) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
-    doc.querySelectorAll(BOILERPLATE_SELECTOR).forEach(el => el.remove());
+    doc.querySelectorAll(article ? BOILERPLATE_SELECTOR : EPUB_BOILERPLATE_SELECTOR).forEach(el => el.remove());
 
-    const root = pickArticleRoot(doc);
+    // A web page needs its article found; an EPUB chapter file is the content.
+    const root = article ? pickArticleRoot(doc) : (doc.body ?? doc.documentElement);
     const blocks = [...(root?.querySelectorAll(BLOCK_SELECTOR) ?? [])]
         // Skip wrappers whose text is already covered by a nested block.
         .filter(el => !el.querySelector(BLOCK_SELECTOR))
@@ -235,20 +267,41 @@ export function extractFromHtml(html) {
     };
 }
 
+/**
+ * Decodes a text file. Most are UTF-8, but older Windows files are often
+ * Windows-1252 and some editors save UTF-16; decoding those as UTF-8 turned
+ * every accented letter into a replacement character, which the scrubber then
+ * deleted ("café" became "caf").
+ */
+export function decodeTextBytes(bytes) {
+    const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (b[0] === 0xFF && b[1] === 0xFE) return new TextDecoder('utf-16le').decode(b.subarray(2));
+    if (b[0] === 0xFE && b[1] === 0xFF) return new TextDecoder('utf-16be').decode(b.subarray(2));
+    try {
+        return new TextDecoder('utf-8', { fatal: true }).decode(b);
+    } catch {
+        return new TextDecoder('windows-1252').decode(b);
+    }
+}
+
+async function readTextFile(file) {
+    return decodeTextBytes(new Uint8Array(await file.arrayBuffer()));
+}
+
 async function readPlain(file, options) {
-    const rawText = await file.text();
+    const rawText = await readTextFile(file);
     const { text, stats, cuts } = normalizeTextWithStats(rawText, options);
     return { title: null, text, rawText, stats, cuts };
 }
 
 async function readMarkdown(file, options) {
-    const rawText = await file.text();
+    const rawText = await readTextFile(file);
     const { text, stats, cuts } = normalizeTextWithStats(stripMarkdown(rawText), options);
-    return { title: null, text, rawText, stats, cuts };
+    return { title: null, text, rawText, stats, cuts, chapters: chaptersFromHeadings(markdownParagraphs(rawText), options) };
 }
 
 async function readHtml(file, options) {
-    const res = extractFromHtml(await file.text());
+    const res = extractFromHtml(await readTextFile(file));
     const { text, stats, cuts } = normalizeTextWithStats(res.text, options);
     return { ...res, text, rawText: res.text, stats, cuts };
 }
@@ -260,7 +313,7 @@ const decode = (bytes) => new TextDecoder('utf-8').decode(bytes);
  * reading order. Following the spine matters — zip entry order is arbitrary, so
  * reading files as they appear can shuffle the chapters.
  */
-async function readEpub(file) {
+async function readEpub(file, options = {}) {
     const { unzipSync } = await import('fflate');
     const zip = unzipSync(new Uint8Array(await file.arrayBuffer()));
 
@@ -286,16 +339,23 @@ async function readEpub(file) {
         .map(href => new URL(href, `file:///${baseDir}`).pathname.replace(/^\//, ''))
         .map(path => zip[path] ?? zip[decodeURIComponent(path)])
         .filter(Boolean)
-        .map(bytes => extractFromHtml(decode(bytes)))
+        .map(bytes => extractFromHtml(decode(bytes), { article: false }))
         .filter(ch => ch.text);
 
     if (!chapters.length) throw new Error('No readable chapters found in that EPUB.');
 
+    const rawText = chapters.map(ch => ch.text).join('\n\n');
+    const { text, stats, cuts } = normalizeTextWithStats(rawText, options);
     return {
         title: opf.querySelector('metadata title')?.textContent?.trim() || null,
-        text: normalizeText(chapters.map(ch => ch.text).join('\n\n')),
+        text,
+        rawText,
+        stats,
+        cuts,
         // Kept separate as well, so book mode can use the file's own chapters.
-        chapters: chapters.map((ch, i) => ({ title: ch.heading || `Chapter ${i + 1}`, text: ch.text }))
+        chapters: chapters
+            .map((ch, i) => ({ title: ch.heading || `Chapter ${i + 1}`, text: normalizeText(ch.text, options) }))
+            .filter(ch => ch.text)
     };
 }
 
@@ -310,19 +370,60 @@ async function readDocx(file, options) {
     const doc = new DOMParser().parseFromString(decode(documentXml), 'application/xml');
     const paragraphs = [...doc.getElementsByTagName('w:p')]
         .map(p => {
-            const text = [...p.getElementsByTagName('w:t')].map(t => t.textContent).join('').trim();
-            if (!text) return '';
+            const text = docxParagraphText(p);
+            if (!text) return null;
             const style = p.getElementsByTagName('w:pStyle')[0]?.getAttribute('w:val') ?? '';
-            if (/^(Heading1|Title)$/i.test(style)) return `# ${text}`;
-            if (/^Heading[2-3]$/i.test(style)) return `## ${text}`;
-            return text;
+            const level = /^(Heading1|Title)$/i.test(style) ? 1 : /^Heading[23]$/i.test(style) ? 2 : 0;
+            return { text, level };
         })
         .filter(Boolean);
 
     if (!paragraphs.length) throw new Error('That .docx appears to contain no text.');
-    const rawText = paragraphs.join('\n\n');
+    const rawText = paragraphs.map(p => p.text).join('\n\n');
     const { text, stats, cuts } = normalizeTextWithStats(rawText, options);
-    return { title: null, text, rawText, stats, cuts };
+    return { title: null, text, rawText, stats, cuts, chapters: chaptersFromHeadings(paragraphs, options) };
+}
+
+/**
+ * A Word paragraph's text in document order. Tabs and line breaks are their
+ * own elements, not characters inside <w:t>, so reading only <w:t> glued the
+ * words either side of them together.
+ */
+function docxParagraphText(p) {
+    let out = '';
+    for (const el of p.getElementsByTagName('*')) {
+        const name = el.nodeName;
+        if (name === 'w:t') out += el.textContent;
+        else if (name === 'w:tab' || name === 'w:br' || name === 'w:cr') out += ' ';
+        else if (name === 'w:noBreakHyphen') out += '-';
+    }
+    return out.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Chapters from heading-tagged paragraphs ({ text, level }), splitting on the
+ * top heading level that occurs at least twice. Null when there are not enough
+ * headings to be worth it; book mode then falls back to its own detection.
+ */
+export function chaptersFromHeadings(paragraphs, options = {}) {
+    const level = [1, 2].find(l => paragraphs.filter(p => p.level === l).length >= 2);
+    if (!level) return null;
+    const chapters = [];
+    let current = null;
+    for (const p of paragraphs) {
+        if (p.level === level) {
+            if (current) chapters.push(current);
+            current = { title: p.text.slice(0, 120), parts: [p.text] };
+        } else {
+            if (!current) current = { title: 'Opening', parts: [] };
+            current.parts.push(p.text);
+        }
+    }
+    if (current) chapters.push(current);
+    const result = chapters
+        .map(c => ({ title: c.title, text: normalizeText(c.parts.join('\n\n'), options) }))
+        .filter(c => c.text);
+    return result.length >= 2 ? result : null;
 }
 
 const headerKey = (line) => line.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -334,13 +435,17 @@ const headerKey = (line) => line.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim(
 export function stripRepeatedHeadersFooters(pages) {
     if (!Array.isArray(pages) || pages.length < 3) return pages ?? [];
 
-    const splitPages = pages.map(p => String(p).split('\n').map(l => l.trim()).filter(Boolean));
+    // Lines are kept with their blank separators, so stripping a header or
+    // footer leaves the page's own line and paragraph breaks exactly as they were.
+    const splitPages = pages.map(p => String(p).split('\n'));
+    const firstLine = (lines) => lines.find(l => l.trim()) ?? '';
+    const lastLine = (lines) => [...lines].reverse().find(l => l.trim()) ?? '';
     const counts = new Map();
 
     for (const lines of splitPages) {
-        if (lines.length === 0) continue;
         const seenOnPage = new Set();
-        for (const candidate of [lines[0], lines[lines.length - 1]]) {
+        for (const raw of [firstLine(lines), lastLine(lines)]) {
+            const candidate = raw.trim();
             if (!candidate || candidate.length > 100) continue;
             const key = headerKey(candidate);
             if (!key || seenOnPage.has(key)) continue;
@@ -353,12 +458,35 @@ export function stripRepeatedHeadersFooters(pages) {
     const repeated = new Set([...counts.entries()].filter(([, n]) => n >= threshold).map(([k]) => k));
     if (repeated.size === 0) return pages;
 
+    const isRepeated = (line) => line.trim().length <= 100 && repeated.has(headerKey(line));
     return splitPages.map(lines => {
         const next = [...lines];
-        if (next.length && next[0].length <= 100 && repeated.has(headerKey(next[0]))) next.shift();
-        if (next.length && next[next.length - 1].length <= 100 && repeated.has(headerKey(next[next.length - 1]))) next.pop();
-        return next.join('\n\n');
+        const first = next.findIndex(l => l.trim());
+        if (first !== -1 && isRepeated(next[first])) next.splice(first, 1);
+        let last = next.length - 1;
+        while (last >= 0 && !next[last].trim()) last -= 1;
+        if (last >= 0 && isRepeated(next[last])) next.splice(last, 1);
+        return next.join('\n').trim();
     });
+}
+
+/**
+ * Joins page texts. A paragraph that runs over a page break (the page ends
+ * mid-sentence and the next starts in lower case) is joined with a space
+ * instead of being split into two paragraphs.
+ */
+export function joinPdfPages(pages) {
+    let out = '';
+    for (const page of pages.map(p => String(p).trim()).filter(Boolean)) {
+        if (!out) { out = page; continue; }
+        const continues = !/[.!?:;"'”’)\]]$/.test(out) && /^[a-z(“"'‘]/.test(page);
+        // A word hyphenated across the break joins with a newline, which the
+        // normaliser's hyphen rejoin then turns back into one word.
+        const hyphenated = /[A-Za-z]{2,}-$/.test(out) && /^[a-z]{2,}/.test(page);
+        out += hyphenated ? '\n' : continues ? ' ' : '\n\n';
+        out += page;
+    }
+    return out;
 }
 
 function sortReadingOrder(items) {
@@ -461,8 +589,9 @@ async function pdfOutlineChapters(pdf, cleanPages, options = {}) {
                 ? await pdf.getDestination(item.dest).catch(() => null)
                 : item.dest;
             const ref = Array.isArray(dest) ? dest[0] : null;
-            if (!ref) continue;
-            const pageIndex = await pdf.getPageIndex(ref).catch(() => -1);
+            if (ref === null || ref === undefined) continue;
+            // Some PDFs give the page as a plain 0-based number instead of a reference.
+            const pageIndex = Number.isInteger(ref) ? ref : await pdf.getPageIndex(ref).catch(() => -1);
             if (pageIndex >= 0 && pageIndex < cleanPages.length && !seenPages.has(pageIndex)) {
                 seenPages.add(pageIndex);
                 entries.push({ title: item.title.trim(), pageIndex });
@@ -473,13 +602,13 @@ async function pdfOutlineChapters(pdf, cleanPages, options = {}) {
         entries.sort((a, b) => a.pageIndex - b.pageIndex);
         const chapters = [];
         if (entries[0].pageIndex > 0) {
-            const opening = normalizeText(cleanPages.slice(0, entries[0].pageIndex).join('\n\n'), options);
+            const opening = normalizeText(joinPdfPages(cleanPages.slice(0, entries[0].pageIndex)), options);
             if (opening) chapters.push({ title: 'Opening', text: opening });
         }
         for (let i = 0; i < entries.length; i++) {
             const start = entries[i].pageIndex;
             const end = i + 1 < entries.length ? entries[i + 1].pageIndex : cleanPages.length;
-            const text = normalizeText(cleanPages.slice(start, end).join('\n\n'), options);
+            const text = normalizeText(joinPdfPages(cleanPages.slice(start, end)), options);
             if (text) chapters.push({ title: entries[i].title, text });
         }
         return chapters.length >= 2 ? chapters : null;
@@ -498,6 +627,15 @@ async function readPdf(file, options = {}) {
     pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
     const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    try {
+        return await readPdfPages(pdf, options);
+    } finally {
+        // Releases the pdf.js worker and its memory; without this every import leaked one.
+        pdf.destroy?.();
+    }
+}
+
+async function readPdfPages(pdf, options) {
     const pages = [];
 
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
@@ -511,14 +649,15 @@ async function readPdf(file, options = {}) {
     }
 
     const strippedPages = stripRepeatedHeadersFooters(pages);
-    const removedHeaders = pages.reduce((n, p, i) => (p !== strippedPages[i] ? n + 1 : n), 0);
+    const removedHeaders = pages.reduce((n, p, i) => (p.trim() !== strippedPages[i] ? n + 1 : n), 0);
     const rawText = pages.join('\n\n');
-    const { text, stats, cuts } = normalizeTextWithStats(strippedPages.join('\n\n'), options);
+    const pdfOptions = { ...options, stripPageNumbers: true };
+    const { text, stats, cuts } = normalizeTextWithStats(joinPdfPages(strippedPages), pdfOptions);
     if (!text) {
         throw new Error(`This PDF (${pdf.numPages} page${pdf.numPages === 1 ? '' : 's'}) appears to be scanned images with no selectable text. Run OCR (e.g. Adobe, macOS Preview, or ocrmypdf) first, then re-upload.`);
     }
 
-    const chapters = await pdfOutlineChapters(pdf, strippedPages, options);
+    const chapters = await pdfOutlineChapters(pdf, strippedPages, pdfOptions);
     return {
         title: (await pdf.getMetadata().catch(() => null))?.info?.Title?.trim() || null,
         text,

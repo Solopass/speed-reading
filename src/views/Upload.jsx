@@ -288,8 +288,9 @@ export default function Upload({
             addNotification('Not enough text to split into chapters. Read it as one passage instead.');
             return;
         }
-        if (replaceId) onDeleteSaved?.(replaceId);
+        // Save first, delete second: if the new book is refused, the old one must survive.
         if (onSaveBook(createBook({ title: title.trim() || 'Imported book', chapters: previewChapters })) === false) return;
+        if (replaceId) onDeleteSaved?.(replaceId);
         setCustomText('');
         setRawBeforeClean(null);
         setCleanStats(null);
@@ -446,6 +447,9 @@ export default function Upload({
                     <textarea
                         value={customText}
                         onChange={(e) => { setCustomText(e.target.value); setImportedChapters(null); }}
+                        // AI Clean cuts paragraphs by position in the text it was sent;
+                        // editing meanwhile would make it cut the wrong ones.
+                        readOnly={aiCleaning}
                         placeholder="...or paste text straight in here."
                         aria-label="Document text to read"
                         className="w-full min-h-[14rem] bg-slate-950 border border-slate-700 rounded-xl p-4 text-white resize-y focus:outline-none focus:border-purple-500 transition-colors text-sm"

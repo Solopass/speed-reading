@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Paragraph } from './PacedText';
 
 function measureWordTops(container, wordEls) {
     if (!container) return [];
@@ -13,6 +14,9 @@ function measureWordTops(container, wordEls) {
 /**
  * Teleprompter-style scroll mode: text enters from the bottom and glides
  * smoothly upward past a central reading band at the target WPM.
+ *
+ * Like the pacer, the per-frame scroll is written straight to the DOM and
+ * React only re-renders when the current word changes.
  */
 export default function ScrollText({
     text,
@@ -31,6 +35,7 @@ export default function ScrollText({
     const viewportRef = useRef(null);
     const contentRef = useRef(null);
     const wordRefs = useRef([]);
+    const wordTopsRef = useRef([]);
 
     const paragraphs = useMemo(() => {
         const paras = text.trim().split(/\n\s*\n/).filter(p => p.trim());
@@ -44,16 +49,56 @@ export default function ScrollText({
     );
 
     const clampedInitial = Math.max(0, Math.min(totalWords, initialIndex));
-    const [progress, setProgress] = useState(clampedInitial);
     const progressRef = useRef(clampedInitial);
-    const [wordTops, setWordTops] = useState([]);
+    const [readIndex, setReadIndex] = useState(Math.floor(clampedInitial));
+    const readIndexRef = useRef(Math.floor(clampedInitial));
     const [viewportHeight, setViewportHeight] = useState(360);
+    const viewportHeightRef = useRef(360);
+    const focalRef = useRef(focalPct);
+    useLayoutEffect(() => { focalRef.current = focalPct; });
+
+    const setRef = useCallback((index, el) => { wordRefs.current[index] = el; }, []);
+
+    /**
+     * Interpolates the vertical position between the current word and the
+     * next so the upward scroll is continuous rather than stepping by line.
+     */
+    const paint = useCallback((progress) => {
+        const tops = wordTopsRef.current;
+        const content = contentRef.current;
+        if (!content) return;
+        let targetY = 0;
+        if (tops.length > 0) {
+            const idx = Math.max(0, Math.min(tops.length - 1, Math.floor(progress)));
+            const nextIdx = Math.min(tops.length - 1, idx + 1);
+            const frac = Math.max(0, progress - Math.floor(progress));
+            const y0 = tops[idx] ?? 0;
+            const y1 = tops[nextIdx] ?? y0;
+            targetY = y0 + (y1 - y0) * frac;
+        }
+        const focalY = viewportHeightRef.current * (focalRef.current / 100);
+        content.style.transform = `translate3d(0, ${focalY - targetY}px, 0)`;
+    }, []);
+
+    const moveTo = useCallback((progress) => {
+        progressRef.current = progress;
+        paint(progress);
+        const ri = Math.floor(progress);
+        if (ri !== readIndexRef.current) {
+            readIndexRef.current = ri;
+            setReadIndex(ri);
+        }
+    }, [paint]);
 
     useLayoutEffect(() => {
         const measure = () => {
             wordRefs.current.length = totalWords;
-            if (viewportRef.current) setViewportHeight(viewportRef.current.clientHeight);
-            setWordTops(measureWordTops(contentRef.current, wordRefs.current));
+            if (viewportRef.current) {
+                viewportHeightRef.current = viewportRef.current.clientHeight;
+                setViewportHeight(viewportRef.current.clientHeight);
+            }
+            wordTopsRef.current = measureWordTops(contentRef.current, wordRefs.current);
+            paint(progressRef.current);
         };
         measure();
         const observer = new ResizeObserver(measure);
@@ -61,30 +106,25 @@ export default function ScrollText({
         if (contentRef.current) observer.observe(contentRef.current);
         document.fonts?.ready.then(measure).catch(() => {});
         return () => observer.disconnect();
-    }, [paragraphs, bionicReading, totalWords]);
+    }, [paragraphs, bionicReading, totalWords, paint]);
+
+    // Moving the reading band repositions the text under it.
+    useLayoutEffect(() => { paint(progressRef.current); }, [focalPct, paint]);
 
     useEffect(() => {
         let cancelled = false;
         const startAt = Math.max(0, Math.min(totalWords, initialIndex));
-        queueMicrotask(() => {
-            if (cancelled) return;
-            progressRef.current = startAt;
-            setProgress(startAt);
-        });
+        queueMicrotask(() => { if (!cancelled) moveTo(startAt); });
         return () => { cancelled = true; };
-    }, [text, initialIndex, totalWords]);
+    }, [text, initialIndex, totalWords, moveTo]);
 
     useEffect(() => {
         if (!seek) return undefined;
         let cancelled = false;
         const index = Math.max(0, Math.min(totalWords, seek.index));
-        queueMicrotask(() => {
-            if (cancelled) return;
-            progressRef.current = index;
-            setProgress(index);
-        });
+        queueMicrotask(() => { if (!cancelled) moveTo(index); });
         return () => { cancelled = true; };
-    }, [seek, totalWords]);
+    }, [seek, totalWords, moveTo]);
 
     useEffect(() => {
         if (!isRunning || totalWords === 0) return undefined;
@@ -96,35 +136,21 @@ export default function ScrollText({
             const delta = Math.min(100, now - last);
             last = now;
             const next = Math.min(totalWords, progressRef.current + (delta / 60000) * wpm);
-            progressRef.current = next;
-            setProgress(next);
+            moveTo(next);
             if (next < totalWords) frame = requestAnimationFrame(tick);
         };
 
         frame = requestAnimationFrame(tick);
         return () => cancelAnimationFrame(frame);
-    }, [isRunning, wpm, totalWords]);
+    }, [isRunning, wpm, totalWords, moveTo]);
 
     useEffect(() => {
-        if (totalWords > 0 && progress >= totalWords) onComplete?.();
-    }, [progress, totalWords, onComplete]);
+        if (totalWords > 0 && readIndex >= totalWords) onComplete?.();
+    }, [readIndex, totalWords, onComplete]);
 
-    useEffect(() => { onProgress?.(Math.floor(progress)); }, [progress, onProgress]);
+    useEffect(() => { onProgress?.(readIndex); }, [readIndex, onProgress]);
 
-    // Interpolate vertical position between the current word and the next so
-    // the upward scroll is continuous rather than stepping line by line.
     const focalY = viewportHeight * (focalPct / 100);
-    let targetY = 0;
-    if (wordTops.length > 0) {
-        const idx = Math.max(0, Math.min(wordTops.length - 1, Math.floor(progress)));
-        const nextIdx = Math.min(wordTops.length - 1, idx + 1);
-        const frac = Math.max(0, progress - Math.floor(progress));
-        const y0 = wordTops[idx] ?? 0;
-        const y1 = wordTops[nextIdx] ?? y0;
-        targetY = y0 + (y1 - y0) * frac;
-    }
-    const translateY = focalY - targetY;
-    const readIndex = Math.floor(progress);
 
     return (
         <div
@@ -145,46 +171,26 @@ export default function ScrollText({
             <div
                 ref={contentRef}
                 className="mx-auto will-change-transform"
-                style={{
-                    maxWidth: 'var(--reading-max-width)',
-                    transform: `translate3d(0, ${translateY}px, 0)`
-                }}
+                style={{ maxWidth: 'var(--reading-max-width)' }}
             >
                 <div className="space-y-6">
-                    {paragraphs.map((para, p) => (
-                        <p
-                            key={p}
-                            style={{
-                                fontFamily: 'var(--reading-font)',
-                                fontSize: 'var(--reading-prose-size)',
-                                lineHeight: 'var(--reading-line-height)',
-                                letterSpacing: 'var(--reading-letter-spacing)',
-                                wordSpacing: 'var(--reading-word-spacing)',
-                                textAlign: 'var(--reading-align)',
-                                marginBottom: 'var(--reading-paragraph-gap)'
-                            }}
-                        >
-                            {para.map(({ word, index }) => {
-                                const isRead = index < readIndex;
-                                const mid = Math.max(1, Math.round(word.length * bionicStrength));
-                                return (
-                                    // Clicking a word is a mouse shortcut; [ and ] are the keyboard path.
-                                    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
-                                    <span
-                                        key={index}
-                                        ref={(el) => { wordRefs.current[index] = el; }}
-                                        onClick={onWordClick ? () => onWordClick(index) : undefined}
-                                        className={`transition-opacity duration-200 ${onWordClick ? 'cursor-pointer hover:underline' : ''}`}
-                                        style={{ color: 'var(--reading-fg)', opacity: isRead && dimRead ? 0.4 : 1 }}
-                                    >
-                                        {bionicReading && word.length > 1
-                                            ? <><strong style={{ fontWeight: 700 }}>{word.slice(0, mid)}</strong><span style={{ opacity: 0.78 }}>{word.slice(mid)}</span></>
-                                            : word}{' '}
-                                    </span>
-                                );
-                            })}
-                        </p>
-                    ))}
+                    {paragraphs.map((para, p) => {
+                        const start = para[0]?.index ?? 0;
+                        const end = start + para.length;
+                        return (
+                            <Paragraph
+                                key={p}
+                                para={para}
+                                readUntil={Math.max(start, Math.min(end, readIndex))}
+                                currentIndex={-1}
+                                dimRead={dimRead}
+                                bionicReading={bionicReading}
+                                bionicStrength={bionicStrength}
+                                onWordClick={onWordClick}
+                                setRef={setRef}
+                            />
+                        );
+                    })}
                 </div>
             </div>
         </div>
