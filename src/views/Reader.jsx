@@ -390,7 +390,8 @@ function Reader({
         if (mode === 'rsvp' && to < words.length && chunks.length) {
             const from = cursorRef.current;
             const start = chunks[chunkIndexAt(chunks, to)].start;
-            to = to > from && start <= from ? flashEnd(from) : start;
+            const nextStart = flashEnd(from);
+            to = to > from && start <= from && nextStart < words.length ? nextStart : start;
         }
         countRef.current = jump(countRef.current, cursorRef.current, to);
         cursorRef.current = to;
