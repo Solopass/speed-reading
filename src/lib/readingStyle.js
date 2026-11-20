@@ -6,6 +6,9 @@
 // measured WPM means the same thing session to session.
 
 import { clampOr } from './num';
+import { SCROLL_COLOR_MODES, SCROLL_PALETTES } from './textColor';
+
+export { SCROLL_COLOR_MODES, SCROLL_PALETTES };
 
 export const FONT_OPTIONS = [
     {
@@ -67,6 +70,25 @@ export const PACER_STYLES = [
     { id: 'line', label: 'Line only', note: 'Just the line, no cursor; the lightest guide' }
 ];
 
+/** What marks your place in Scroll mode. */
+export const SCROLL_GUIDES = [
+    { id: 'band', label: 'Band', note: 'A soft band across the reading line' },
+    { id: 'line', label: 'Thin line', note: 'A hairline under the reading line' },
+    { id: 'none', label: 'None', note: 'No guide; the spotlight alone' }
+];
+
+/** Highlight on the words at the reading line in Scroll mode. */
+export const SCROLL_MARKERS = [
+    { id: 'none', label: 'None', note: 'No highlight' },
+    { id: 'word', label: 'Word', note: 'The word you should be on' },
+    { id: 'phrase', label: 'Phrase', note: 'The 3-5 word phrase you should be taking in' }
+];
+
+export const SCROLL_MOTIONS = [
+    { id: 'smooth', label: 'Smooth', note: 'A continuous glide, like a teleprompter' },
+    { id: 'line', label: 'Line by line', note: 'Holds each line still, then steps up one line' }
+];
+
 export const DEFAULT_READING = {
     fontId: 'sans',
     themeId: 'dark',
@@ -86,12 +108,25 @@ export const DEFAULT_READING = {
     dimRead: true,        // fade words the pacer has passed
     rsvpContext: true,    // show before and after text above and below the RSVP flash
     scrollFocalPct: 44,   // vertical position (%) of the reading band in Scroll mode
+    // Scroll mode
+    scrollColor: 'none',          // none | gradient | phrases | sentences (textColor.js)
+    scrollPalette: 'classic',
+    scrollColorStrength: 0.7,     // how much of the palette colour is mixed into the text colour
+    scrollFadeFunctionWords: false,
+    scrollMarker: 'none',         // none | word | phrase
+    scrollGuide: 'band',          // band | line | none
+    scrollBandLines: 1,           // height of the band, in lines
+    scrollSpotlight: 0.35,        // how far text away from the reading line is dimmed
+    scrollEdgeFade: 18,           // % of the window faded at top and bottom
+    scrollHeightVh: 55,           // window height, % of the screen
+    scrollMotion: 'smooth',
+    scrollPacing: true,           // slow at punctuation and long words, same average speed
     countdown: true,      // 3-2-1 before playback starts
     speedRamp: false,     // ease in from 70% of the target over the first quarter
     zen: false            // hide the controls while playing
 };
 
-const BOOLEAN_PREFS = ['dimRead', 'rsvpContext', 'countdown', 'speedRamp', 'zen'];
+const BOOLEAN_PREFS = ['dimRead', 'rsvpContext', 'countdown', 'speedRamp', 'zen', 'scrollFadeFunctionWords', 'scrollPacing'];
 
 /**
  * Speed multiplier for the warm-up ramp: 70% at the first word, rising to full
@@ -115,7 +150,12 @@ export const LIMITS = {
     maxWidthCh: [30, 110],
     paragraphGapEm: [0, 3],
     bionicStrength: [0.2, 0.8],
-    scrollFocalPct: [20, 75]
+    scrollFocalPct: [20, 75],
+    scrollColorStrength: [0.2, 1],
+    scrollBandLines: [1, 3],
+    scrollSpotlight: [0, 0.85],
+    scrollEdgeFade: [0, 40],
+    scrollHeightVh: [35, 85]
 };
 
 const byId = (list, id, fallbackId) =>
@@ -139,6 +179,12 @@ export function normalizeReading(raw) {
     result.justify = source.justify === true;
     result.showFocalGuide = source.showFocalGuide !== false;
     result.pacerStyle = byId(PACER_STYLES, source.pacerStyle, 'band').id;
+    result.scrollColor = byId(SCROLL_COLOR_MODES, source.scrollColor, 'none').id;
+    result.scrollPalette = byId(SCROLL_PALETTES, source.scrollPalette, 'classic').id;
+    result.scrollMarker = byId(SCROLL_MARKERS, source.scrollMarker, 'none').id;
+    result.scrollGuide = byId(SCROLL_GUIDES, source.scrollGuide, 'band').id;
+    result.scrollMotion = byId(SCROLL_MOTIONS, source.scrollMotion, 'smooth').id;
+    result.scrollBandLines = Math.round(result.scrollBandLines);
     for (const key of BOOLEAN_PREFS) {
         result[key] = typeof source[key] === 'boolean' ? source[key] : DEFAULT_READING[key];
     }

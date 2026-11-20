@@ -70,6 +70,13 @@ Working and verified:
   follows word length (averaging out to the chosen WPM) with a beat at
   punctuation; groups are centred and wrap to two balanced lines. Import
   cleanup closes up stray punctuation ("word ,"), spaced ellipses and dashes.
+- **Scroll mode settings** — text colour by line gradient (colour runs letter
+  by letter across each line and into the next, guiding the return sweep),
+  alternating phrase or sentence colours, five palettes and a strength
+  control; fading small words; a word or phrase highlight at the reading line;
+  smart pacing (slower at punctuation and long words, same average speed);
+  smooth or line-by-line motion; band, thin-line or no guide; spotlight
+  dimming, band height, reading-line position, window height and edge fade.
 - **Vocabulary ranked by real word frequency** — the top 20,000 English words
   from wordfreq (CC BY-SA 4.0, see `src/data/WORDFREQ-NOTICE.md`), loaded only
   when the Vocabulary page opens.

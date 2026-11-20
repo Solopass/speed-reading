@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
 import { RotateCcw, X } from 'lucide-react';
 import {
-    DEFAULT_READING, FOCAL_COLORS, FONT_OPTIONS, LIMITS, PACER_STYLES, THEMES
+    DEFAULT_READING, FOCAL_COLORS, FONT_OPTIONS, LIMITS, PACER_STYLES, SCROLL_COLOR_MODES, SCROLL_GUIDES,
+    SCROLL_MARKERS, SCROLL_MOTIONS, SCROLL_PALETTES, THEMES
 } from '../lib/readingStyle';
 
 function Section({ title, children }) {
@@ -64,6 +65,24 @@ function Chips({ options, value, onChange, label }) {
     );
 }
 
+/** Colour pairs shown as two swatches, mixed into the page's text colour as the reader will see them. */
+function Palettes({ value, onChange }) {
+    return (
+        <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Colour palette">
+            {SCROLL_PALETTES.map(p => (
+                <button
+                    key={p.id} role="radio" aria-checked={value === p.id} aria-label={p.label} title={p.label}
+                    onClick={() => onChange(p.id)}
+                    className={`flex items-center gap-1 px-2 py-1.5 rounded-lg border ${value === p.id ? 'border-purple-500 bg-purple-500/15' : 'border-slate-700 hover:border-slate-500'}`}
+                >
+                    <span className="w-3.5 h-3.5 rounded-full" style={{ background: p.a }} />
+                    <span className="w-3.5 h-3.5 rounded-full" style={{ background: p.b }} />
+                </button>
+            ))}
+        </div>
+    );
+}
+
 /**
  * Everything about how a passage looks and behaves, adjustable mid-read and
  * applied live. Opening it pauses playback, so tuning never costs reading time.
@@ -81,6 +100,47 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
 
     const set = (patch) => patchReading(patch);
     const resetLook = () => patchReading({ ...DEFAULT_READING });
+    const pct = (v) => `${Math.round(v * 100)}%`;
+
+    // Scroll mode's own settings; shown first while scrolling.
+    const scrollSection = (
+        <Section title="Scroll">
+            <div>
+                <div className="text-sm text-slate-300 mb-1.5">Text colour</div>
+                <Chips label="Scroll text colour" options={SCROLL_COLOR_MODES} value={reading.scrollColor} onChange={(id) => set({ scrollColor: id })} />
+                <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
+                    {SCROLL_COLOR_MODES.find(m => m.id === reading.scrollColor)?.note}
+                </p>
+            </div>
+            {reading.scrollColor !== 'none' && (
+                <>
+                    <Palettes value={reading.scrollPalette} onChange={(id) => set({ scrollPalette: id })} />
+                    <Slider id="rs-scroll-strength" label="Colour strength" value={reading.scrollColorStrength} range={LIMITS.scrollColorStrength} step={0.05} onChange={(v) => set({ scrollColorStrength: v })} format={pct} />
+                </>
+            )}
+            <Switch label="Fade small words" hint={'"the", "of", "and" and the like go fainter, so your eye lands on the words that carry meaning.'} checked={reading.scrollFadeFunctionWords} onChange={(v) => set({ scrollFadeFunctionWords: v })} />
+            <div>
+                <div className="text-sm text-slate-300 mb-1.5">Highlight at the reading line</div>
+                <Chips label="Scroll highlight" options={SCROLL_MARKERS} value={reading.scrollMarker} onChange={(id) => set({ scrollMarker: id })} />
+            </div>
+            <Switch label="Smart pacing" hint="Slows at punctuation and long words, speeds through short ones; the average speed stays what you set." checked={reading.scrollPacing} onChange={(v) => set({ scrollPacing: v })} />
+            <div>
+                <div className="text-sm text-slate-300 mb-1.5">Motion</div>
+                <Chips label="Scroll motion" options={SCROLL_MOTIONS} value={reading.scrollMotion} onChange={(id) => set({ scrollMotion: id })} />
+            </div>
+            <div>
+                <div className="text-sm text-slate-300 mb-1.5">Reading guide</div>
+                <Chips label="Scroll reading guide" options={SCROLL_GUIDES} value={reading.scrollGuide} onChange={(id) => set({ scrollGuide: id })} />
+            </div>
+            {reading.scrollGuide === 'band' && (
+                <Slider id="rs-scroll-band" label="Band height" value={reading.scrollBandLines} range={LIMITS.scrollBandLines} step={1} onChange={(v) => set({ scrollBandLines: v })} format={(v) => `${v} line${v > 1 ? 's' : ''}`} />
+            )}
+            <Slider id="rs-scroll-spot" label="Spotlight" value={reading.scrollSpotlight} range={LIMITS.scrollSpotlight} step={0.05} onChange={(v) => set({ scrollSpotlight: v })} format={(v) => (v === 0 ? 'Off' : pct(v))} />
+            <Slider id="rs-scroll-focal" label="Reading line position" value={reading.scrollFocalPct} range={LIMITS.scrollFocalPct} step={2} onChange={(v) => set({ scrollFocalPct: v })} format={(v) => `${v}% down`} />
+            <Slider id="rs-scroll-height" label="Window height" value={reading.scrollHeightVh} range={LIMITS.scrollHeightVh} step={5} onChange={(v) => set({ scrollHeightVh: v })} format={(v) => `${v}% of screen`} />
+            <Slider id="rs-scroll-fade" label="Edge fade" value={reading.scrollEdgeFade} range={LIMITS.scrollEdgeFade} step={2} onChange={(v) => set({ scrollEdgeFade: v })} format={(v) => (v === 0 ? 'Off' : `${v}%`)} />
+        </Section>
+    );
 
     return (
         <div className="fixed inset-0 z-[55] flex justify-end">
@@ -95,6 +155,8 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                 </header>
 
                 <div className="flex-1 overflow-y-auto px-5 py-5 space-y-7">
+                    {mode === 'scroll' && scrollSection}
+
                     <Section title="Page">
                         <div className="grid grid-cols-5 gap-1.5" role="radiogroup" aria-label="Page colours">
                             {THEMES.map(t => (
@@ -144,10 +206,11 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                         <Switch label="Pause at punctuation" hint="A beat after commas and full stops." checked={settings.punctuationPacing} onChange={(v) => updateSettings({ punctuationPacing: v })} />
                     </Section>
 
-                    <Section title="Pacer, Scroll & Prose">
+                    {mode !== 'scroll' && scrollSection}
+
+                    <Section title="Pacer & Prose">
                         <Chips label="Pacer style" options={PACER_STYLES} value={reading.pacerStyle} onChange={(id) => set({ pacerStyle: id })} />
                         <Switch label="Fade words already passed" checked={reading.dimRead} onChange={(v) => set({ dimRead: v })} />
-                        <Slider id="rs-scroll-focal" label="Scroll focal position" value={reading.scrollFocalPct} range={LIMITS.scrollFocalPct} step={2} onChange={(v) => set({ scrollFocalPct: v })} format={(v) => `${v}%`} />
                         <Switch label="Bionic bold" hint="Bolds the start of each word." checked={settings.bionicReading} onChange={(v) => updateSettings({ bionicReading: v })} />
                         {settings.bionicReading && (
                             <Slider id="rs-bionic" label="Bold amount" value={reading.bionicStrength} range={LIMITS.bionicStrength} step={0.05} onChange={(v) => set({ bionicStrength: v })} format={(v) => `${Math.round(v * 100)}%`} />

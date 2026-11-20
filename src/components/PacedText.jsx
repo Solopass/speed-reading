@@ -36,14 +36,18 @@ const PARAGRAPH_STYLE = {
  * re-renders, not every word in a long chapter.
  */
 export const Paragraph = memo(function Paragraph({
-    para, readUntil, currentIndex, dimRead, bionicReading, bionicStrength, onWordClick, setRef
+    para, readUntil, currentIndex, currentEnd, dimRead, bionicReading, bionicStrength, onWordClick, setRef, looks = null
 }) {
+    // The highlighted stretch: one word by default, or a phrase [currentIndex, currentEnd).
+    const hiEnd = currentEnd ?? currentIndex + 1;
     return (
         <p style={PARAGRAPH_STYLE}>
             {para.map(({ word, index }) => {
                 const isRead = index < readUntil;
-                const isCurrent = index === currentIndex;
+                const isCurrent = currentIndex >= 0 && index >= currentIndex && index < hiEnd;
                 const mid = Math.max(1, Math.round(word.length * bionicStrength));
+                const look = looks?.[index];
+                const opacity = (isRead && dimRead ? 0.45 : 1) * (look?.fade ? 0.5 : 1);
                 return (
                     // Clicking a word is a mouse shortcut for jumping there; the
                     // keyboard path is [ and ] in the reader.
@@ -52,11 +56,22 @@ export const Paragraph = memo(function Paragraph({
                         key={index}
                         ref={(el) => setRef(index, el)}
                         onClick={onWordClick ? () => onWordClick(index) : undefined}
-                        className={`transition-opacity duration-300 rounded ${isCurrent ? 'bg-purple-500/25' : ''} ${onWordClick ? 'cursor-pointer' : ''}`}
-                        style={{ color: 'var(--reading-fg)', opacity: isRead && dimRead ? 0.45 : 1 }}
+                        className={`transition-opacity duration-300 ${onWordClick ? 'cursor-pointer' : ''}`}
+                        style={{
+                            color: look?.bg ? 'transparent' : (look?.color ?? 'var(--reading-fg)'),
+                            // A line gradient paints the letters themselves.
+                            ...(look?.bg ? { backgroundImage: look.bg, WebkitBackgroundClip: 'text', backgroundClip: 'text' } : null),
+                            // An inset shadow rather than a background, which a gradient would clip to the letters.
+                            boxShadow: isCurrent ? 'inset 0 0 0 999px rgba(168, 85, 247, 0.22)' : undefined,
+                            // A highlighted phrase reads as one block: rounded only at its ends.
+                            borderRadius: isCurrent
+                                ? `${index === currentIndex ? 4 : 0}px ${index === hiEnd - 1 ? 4 : 0}px ${index === hiEnd - 1 ? 4 : 0}px ${index === currentIndex ? 4 : 0}px`
+                                : 4,
+                            opacity
+                        }}
                     >
                         {bionicReading && word.length > 1 ? (
-                            <><strong style={{ color: 'var(--reading-fg)' }}>{word.slice(0, mid)}</strong>{word.slice(mid)}</>
+                            <><strong style={{ color: 'inherit' }}>{word.slice(0, mid)}</strong>{word.slice(mid)}</>
                         ) : word}
                         {' '}
                     </span>

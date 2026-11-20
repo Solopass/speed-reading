@@ -998,10 +998,8 @@ function Reader({
                             text={passage.text}
                             wpm={effectiveWpm}
                             isRunning={isPlaying}
+                            reading={reading}
                             bionicReading={settings.bionicReading}
-                            bionicStrength={reading.bionicStrength}
-                            dimRead={reading.dimRead}
-                            focalPct={reading.scrollFocalPct}
                             initialIndex={pacedInitialIndex}
                             seek={pacedSeek}
                             onWordClick={seekTo}
