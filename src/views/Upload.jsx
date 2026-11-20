@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { loadFrequencyRank } from '../lib/vocab';
 import {
     Activity, AlertTriangle, ChevronRight, Eraser, Globe, HardDrive, Play, Sparkles, Undo2, Upload as UploadIcon
 } from 'lucide-react';
@@ -8,8 +9,9 @@ import {
     ACCEPT_ATTRIBUTE, SUPPORTED_EXTENSIONS, applyParagraphCuts, chaptersFromAnchors, chunkBlocksForAiClean, extractFromHtml, extractText,
     normalizeTextWithStats, restoreCutItem, selectBlocksForAiClean, validateAiCuts, aiCutIndex
 } from '../lib/importText';
-import { BOOK_MIN_WORDS, buildChapters, createBook } from '../lib/book';
+import { BOOK_MIN_WORDS, buildChapters, createBook, mergeWithNext, renameChapter, splitChapterAt } from '../lib/book';
 import CutReviewPanel from '../components/CutReviewPanel';
+import CleanupTools from '../components/CleanupTools';
 import ManualAiPanel from '../components/ManualAiPanel';
 
 const nextId = (prefix) => `${prefix}-${Date.now()}`;
@@ -42,6 +44,11 @@ export default function Upload({
     const [fetchingUrl, setFetchingUrl] = useState(false);
     // The file's own chapters (EPUB or PDF outline), kept until the text is edited by hand.
     const [importedChapters, setImportedChapters] = useState(null);
+    const [chaptersEdited, setChaptersEdited] = useState(false);
+    // Word frequencies, for the cleaner's hyphen decisions and note detection.
+    const rankRef = useRef(null);
+    const [rank, setRank] = useState(null);
+    useEffect(() => { loadFrequencyRank().then(r => { rankRef.current = r; setRank(r); }).catch(() => {}); }, []);
     const [importing, setImporting] = useState(false);
     const [pdfProgress, setPdfProgress] = useState(null);
     const [isDragging, setIsDragging] = useState(false);
@@ -109,10 +116,12 @@ export default function Upload({
             setCutLog(res.cuts ?? []);
             setTitle(res.title);
             setImportedChapters(res.chapters);
+            setChaptersEdited(false);
             addNotification(`Loaded ${res.text.split(/\s+/).length.toLocaleString()} words from ${file.name}.`);
         } catch (error) {
             console.error('Import error:', error);
             setImportedChapters(null);
+            setChaptersEdited(false);
             addNotification(error.message || 'Could not read that file.');
         } finally {
             setImporting(false);
@@ -134,7 +143,7 @@ export default function Upload({
             const data = await resp.json();
             if (!resp.ok) throw new Error(data.error || 'Could not fetch that URL.');
             const extracted = extractFromHtml(data.html);
-            const { text, stats, cuts } = normalizeTextWithStats(extracted.text, { stripUrls, stripCitations });
+            const { text, stats, cuts } = normalizeTextWithStats(extracted.text, { stripUrls, stripCitations, rank: rankRef.current });
             if (!text || text.split(/\s+/).length < 10) {
                 throw new Error('That page did not contain enough readable article text.');
             }
@@ -144,6 +153,7 @@ export default function Upload({
             setCutLog(cuts);
             setTitle(extracted.title || extracted.heading || new URL(url).hostname);
             setImportedChapters(null);
+            setChaptersEdited(false);
             addNotification(`Imported ${text.split(/\s+/).length.toLocaleString()} words from ${new URL(url).hostname}.`, 'success');
         } catch (error) {
             addNotification(error.message || 'Could not import that URL.');
@@ -154,7 +164,7 @@ export default function Upload({
 
     const handleCleanClick = () => {
         setRawBeforeClean(customText);
-        const { text, stats, cuts } = normalizeTextWithStats(customText, { stripUrls, stripCitations });
+        const { text, stats, cuts } = normalizeTextWithStats(customText, { stripUrls, stripCitations, rank: rankRef.current });
         setCustomText(text);
         setCleanStats(stats);
         setCutLog(prev => [...prev, ...cuts]);
@@ -291,8 +301,21 @@ export default function Upload({
         if (!canBeBook || !customText.trim()) return [];
         // The file's own chapters are re-found in the current text, so cleaning,
         // AI cuts and hand edits are kept rather than the original chapter texts.
-        return buildChapters({ text: customText, chapters: chaptersFromAnchors(customText, importedChapters) });
-    }, [canBeBook, customText, importedChapters]);
+        const anchored = chaptersFromAnchors(customText, importedChapters);
+        // Chapters you edited by hand are kept exactly as you made them; the
+        // automatic tidy-up would merge a deliberately short chapter back.
+        if (chaptersEdited && anchored) return anchored;
+        return buildChapters({ text: customText, chapters: anchored });
+    }, [canBeBook, customText, importedChapters, chaptersEdited]);
+
+    // Editing the preview makes that list the book's chapters. They are kept as
+    // anchors like a file's own chapters, so later cleaning keeps them too.
+    const [splitOpen, setSplitOpen] = useState(null);
+    const editChapters = (fn) => {
+        setImportedChapters(fn(previewChapters.map(c => ({ title: c.title, text: c.text }))));
+        setChaptersEdited(true);
+        setSplitOpen(null);
+    };
 
     const handleAddBook = (replaceId = null) => {
         if (previewChapters.length < 2) {
@@ -308,6 +331,7 @@ export default function Upload({
         setCutLog([]);
         setTitle('');
         setImportedChapters(null);
+        setChaptersEdited(false);
         onOpenDocuments?.();
     };
 
@@ -481,6 +505,17 @@ export default function Upload({
                         </div>
                     )}
 
+                    <CleanupTools
+                        text={customText}
+                        setText={setCustomText}
+                        rank={rank}
+                        ai={ai}
+                        disabled={aiCleaning}
+                        onCuts={(items) => setCutLog(prev => [...items, ...prev])}
+                        onBeforeChange={() => setRawBeforeClean(prev => prev ?? customText)}
+                        addNotification={addNotification}
+                    />
+
                     <CutReviewPanel
                         cuts={cutLog}
                         onRestore={handleRestoreCut}
@@ -564,11 +599,38 @@ export default function Upload({
                                 </span>
                                 <span className="text-slate-500 font-normal">Saved per chapter</span>
                             </summary>
-                            <ol className="px-4 pb-3 pt-1 space-y-1 max-h-44 overflow-y-auto text-xs text-slate-400">
+                            <p className="px-4 text-[11px] text-slate-500">Rename a chapter, join it with the next, or split it at a paragraph.</p>
+                            <ol className="px-4 pb-3 pt-2 space-y-1.5 max-h-80 overflow-y-auto text-xs text-slate-400">
                                 {previewChapters.map((ch, i) => (
-                                    <li key={i} className="flex justify-between gap-2">
-                                        <span className="truncate">{i + 1}. {ch.title}</span>
-                                        <span className="font-mono text-slate-500 shrink-0">{ch.text.split(/\s+/).length.toLocaleString()}w</span>
+                                    <li key={`${i}-${ch.title}`} className="space-y-1">
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-mono text-slate-600 w-6 shrink-0 text-right">{i + 1}.</span>
+                                            <input
+                                                defaultValue={ch.title}
+                                                aria-label={`Title of chapter ${i + 1}`}
+                                                onBlur={(e) => { if (e.target.value.trim() && e.target.value !== ch.title) editChapters(list => renameChapter(list, i, e.target.value.trim())); }}
+                                                onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                                                className="flex-1 min-w-0 bg-transparent border border-transparent hover:border-slate-700 focus:border-purple-500 rounded px-1.5 py-0.5 text-slate-300 focus:outline-none"
+                                            />
+                                            <span className="font-mono text-slate-500 shrink-0">{ch.text.split(/\s+/).length.toLocaleString()}w</span>
+                                            <button type="button" onClick={() => setSplitOpen(splitOpen === i ? null : i)} className="shrink-0 text-slate-500 hover:text-purple-300">Split</button>
+                                            {i < previewChapters.length - 1 && (
+                                                <button type="button" onClick={() => editChapters(list => mergeWithNext(list, i))} title="Join with the next chapter" className="shrink-0 text-slate-500 hover:text-purple-300">Join ↓</button>
+                                            )}
+                                        </div>
+                                        {splitOpen === i && (
+                                            <select
+                                                aria-label={`Split chapter ${i + 1} before`}
+                                                defaultValue=""
+                                                onChange={(e) => { const at = Number(e.target.value); if (at > 0) editChapters(list => splitChapterAt(list, i, at)); }}
+                                                className="ml-8 w-[calc(100%-2rem)] bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-300"
+                                            >
+                                                <option value="">Split before which paragraph?</option>
+                                                {ch.text.split(/\n\s*\n/).slice(1, 200).map((p, k) => (
+                                                    <option key={k} value={k + 1}>{`¶${k + 2}: ${p.trim().slice(0, 70)}`}</option>
+                                                ))}
+                                            </select>
+                                        )}
                                     </li>
                                 ))}
                             </ol>
@@ -583,7 +645,7 @@ export default function Upload({
                         >
                             Add as a book
                             <span className="block text-[11px] font-normal text-slate-400 mt-0.5">
-                                {importedChapters?.length > 1 ? 'Uses the file’s own chapters' : 'Split into chapters'} · progress saved per chapter · bookmarks
+                                {chaptersEdited ? 'Uses your chapters' : importedChapters?.length > 1 ? 'Uses the file’s own chapters' : 'Split into chapters'} · progress saved per chapter · bookmarks
                             </span>
                         </button>
                     )}

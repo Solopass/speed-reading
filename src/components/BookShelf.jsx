@@ -1,5 +1,6 @@
 import { Bookmark, BookOpen, Brain, Check, ChevronRight, Play, Sparkles, Trash2, X } from 'lucide-react';
-import { bookProgress, nextChapterIndex } from '../lib/book';
+import { bookProgress, chapterSpeeds, nextChapterIndex } from '../lib/book';
+import ChapterSpeedChart from './ChapterSpeedChart';
 
 const minutes = (words, wpm) => Math.max(1, Math.round(words / Math.max(100, wpm)));
 
@@ -41,6 +42,8 @@ function BookCard({ book, wpm, onOpenChapter, onRemoveBookmark, onDelete, onClea
                     </button>
                 </div>
             </div>
+
+            <ChapterSpeedChart speeds={chapterSpeeds(book)} totalChapters={book.chapters.length} />
 
             <details className="group mt-3">
                 <summary className="cursor-pointer select-none text-xs font-bold text-slate-400 hover:text-white flex items-center gap-1">

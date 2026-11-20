@@ -5,6 +5,8 @@
 // format. Loading a PDF engine on first paint to support a format most sessions
 // never use would be a poor trade.
 
+import { loadFrequencyRank, rankOf } from './vocab';
+
 export const SUPPORTED_EXTENSIONS = [
     '.txt', '.text', '.md', '.markdown', '.html', '.htm', '.epub', '.docx', '.pdf'
 ];
@@ -77,8 +79,32 @@ const CITATION_RE = /\[\d+(?:[\s,\-–]+\d+)*\]/g;
  * Scrubs extraction artifacts and returns both the cleaned text and counts of
  * what was removed so the Upload UI can show a summary and offer undo.
  */
-export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations = false, stripPageNumbers = false, reflow = false } = {}) {
+export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations = false, stripPageNumbers = false, reflow = false, rank = null } = {}) {
     const stats = { junkChars: 0, rejoinedHyphens: 0, pageNumbers: 0, dotLeaders: 0 };
+    let lowerSource = null;
+    /**
+     * A word broken at a line end ("well-" / "known") is either one word split
+     * by the typesetter ("exam-ple") or a real hyphenated compound. The document
+     * itself is the best witness (which spelling it uses elsewhere); failing
+     * that, the frequency list: a known joined word is joined, two known halves
+     * whose join is not a word keep the hyphen.
+     */
+    const keepHyphen = (a, b) => {
+        lowerSource ??= String(raw).toLowerCase();
+        const count = (w) => {
+            let n = 0;
+            for (let i = lowerSource.indexOf(w); i !== -1 && n < 5; i = lowerSource.indexOf(w, i + 1)) n += 1;
+            return n;
+        };
+        const joined = `${a}${b}`.toLowerCase();
+        const hyphenated = `${a}-${b}`.toLowerCase();
+        const asHyphen = count(hyphenated);
+        const asJoined = count(joined);
+        if (asHyphen !== asJoined) return asHyphen > asJoined;
+        if (!rank) return false;
+        if (rankOf(joined, rank) < Infinity) return false;
+        return rankOf(a.toLowerCase(), rank) < Infinity && rankOf(b.toLowerCase(), rank) < Infinity;
+    };
     let scrubbed = String(raw)
         // Superscript footnote markers right after punctuation ("end.¹"). NFKC
         // would turn them into plain digits glued to the word ("end.1").
@@ -89,7 +115,7 @@ export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations 
         .replace(/\r\n?/g, '\n')
         .replace(/([A-Za-z]{2,})-[ \t]*\n[ \t]*([a-z]{2,})/g, (_, a, b) => {
             stats.rejoinedHyphens += 1;
-            return `${a}${b}`;
+            return keepHyphen(a, b) ? `${a}-${b}` : `${a}${b}`;
         });
 
     if (stripUrls) scrubbed = scrubbed.replace(URL_RE, '');
@@ -244,6 +270,191 @@ export function chaptersFromAnchors(text, chapters) {
         if (body.trim()) out.push({ title: chapters[starts[i].ci].title, text: body });
     }
     return out.length >= 2 ? out : null;
+}
+
+// --- Footnotes and reference lists ------------------------------------------
+
+/** Signs of a citation: ibid., et al., page refs, volumes, DOIs, URLs, a year in brackets. */
+const CITATION_HINT_RE = /\bibid\b|\bop\. cit\b|\bet al\b|\bpp?\.\s?\d|\bvol\.\s?\d|\bdoi\b|https?:\/\/|\((?:19|20)\d{2}[a-z]?\)|\b(?:19|20)\d{2}[a-z]?[.,;)]/i;
+/** Stronger signs, for a lone numbered paragraph to count as a footnote. */
+const FOOTNOTE_HINT_RE = /\bibid\b|\bop\. cit\b|\bet al\b|\bpp?\.\s?\d|\bvol\.\s?\d|\bdoi\b|https?:\/\/|\((?:19|20)\d{2}[a-z]?\)|^\d{1,3}[.)]?\s+(?:see|cf\.|quoted in)\b/i;
+const NOTES_HEADING_RE = /^(?:references|bibliography|works cited|notes|endnotes|sources|further reading|citations|literature cited)\.?$/i;
+const NUMBERED_ABBR_RE = /\b(?:no|vol|fig|pp?|ch|sec|art|eq|tab|ref)\.$/i;
+
+/**
+ * Footnote numbers glued to the text by extraction: "the war ended.12 Next"
+ * (after punctuation) or "history12 of" (after a known word). Numbers after
+ * "No." / "p." and the like, times ("3:45") and words that really contain
+ * digits ("covid19" when that is not a listed word + digits) are left alone.
+ */
+export function stripNoteMarkers(text, rank = null) {
+    let count = 0;
+    let out = String(text ?? '').replace(/(\p{L}{2,}[.,;:!?"”’)]{1,2})(\d{1,3})(?=[\s,.;]|$)/gu, (m, before) => {
+        // "No.5", "Jan.12", "Ex.4": a short word before a full stop is an abbreviation.
+        if (NUMBERED_ABBR_RE.test(before) || /(?:^|[^\p{L}])\p{L}{1,4}\.$/u.test(before) || /^\p{L}{1,4}\.$/u.test(before)) return m;
+        count += 1;
+        return before;
+    });
+    if (rank) {
+        out = out.replace(/(?<![\p{L}\p{N}])(\p{Ll}{3,})(\d{1,3})(?=[\s,.;:!?)]|$)/gu, (m, word) => {
+            if (rankOf(word, rank) === Infinity || rank.has(m.toLowerCase())) return m;
+            count += 1;
+            return word;
+        });
+    }
+    return { text: out, count };
+}
+
+/**
+ * Finds what a reader would not want flashed at them: footnote numbers in the
+ * text, footnote paragraphs ("12 See Smith (1999), p. 45."), and a trailing
+ * reference list under a "References" / "Notes" / "Bibliography" heading.
+ * Returns { markers, blocks: [paragraph index], references: { heading, end } | null }.
+ */
+export function findNotes(text, rank = null) {
+    const paras = splitParas(text);
+    const markers = stripNoteMarkers(text, rank).count;
+    const blocks = [];
+    const numbered = (p) => /^\d{1,3}[.)]?\s+\S/.test(p ?? '');
+    paras.forEach((p, i) => {
+        const words = p.split(/\s+/).length;
+        // Neighbouring numbered paragraphs make a list, not footnotes.
+        if (numbered(paras[i - 1]) || numbered(paras[i + 1])) return;
+        if (words <= 80 && numbered(p) && FOOTNOTE_HINT_RE.test(p)) blocks.push(i);
+    });
+
+    let references = null;
+    for (let i = paras.length - 2; i >= Math.floor(paras.length * 0.4); i--) {
+        if (!NOTES_HEADING_RE.test(paras[i])) continue;
+        let end = i + 1;
+        let citations = 0;
+        while (end < paras.length) {
+            const q = paras[end];
+            const cite = CITATION_HINT_RE.test(q) || /^\[?\d{1,3}[\].)]/.test(q);
+            // A long paragraph with no sign of a citation is prose again (an appendix, an afterword).
+            if (!cite && q.split(/\s+/).length >= 25) break;
+            if (cite) citations += 1;
+            end += 1;
+        }
+        const entries = end - i - 1;
+        if (entries >= 3 && citations / entries >= 0.6) references = { heading: i, end };
+        break;
+    }
+    const inRefs = (i) => references && i >= references.heading && i < references.end;
+    return { markers, blocks: blocks.filter(i => !inRefs(i)), references };
+}
+
+/** Removes what findNotes found; the removed paragraphs come back as restorable cut items. */
+export function removeNotes(text, found, rank = null) {
+    const cuts = found.blocks.map(index => ({ index, reason: 'Footnote' }));
+    if (found.references) {
+        for (let i = found.references.heading; i < found.references.end; i++) cuts.push({ index: i, reason: 'Reference list' });
+    }
+    const { text: kept, cutItems } = applyParagraphCuts(text, cuts);
+    const items = cutItems.map(c => ({ ...c, reason: c.reason.replace(/^AI: /, ''), source: 'notes' }));
+    const { text: clean, count } = stripNoteMarkers(kept, rank);
+    return { text: clean, cutItems: items, markers: count };
+}
+
+// --- AI repair ---------------------------------------------------------------
+
+const ENDS_CLEANLY_RE = /[.!?…:"”’)\]]$/;
+
+/** How garbled a paragraph looks: broken-up words ("th e w ord"), glued digits, odd symbols. */
+function garbleScore(p) {
+    const tokens = p.split(/\s+/).filter(Boolean);
+    if (tokens.length < 4) return 0;
+    const singles = tokens.filter(t => /^\p{L}$/u.test(t) && !/^[aAI]$/.test(t)).length;
+    const mixed = tokens.filter(t => /\p{L}\d|\d\p{L}/u.test(t) && !/^\d+(?:st|nd|rd|th|s)$/i.test(t)).length;
+    const odd = (p.match(/[^\p{L}\p{N}\s.,;:!?'"“”‘’()\-–—…%&/]/gu) ?? []).length;
+    return (singles + mixed) / tokens.length + odd / Math.max(1, p.length) * 4;
+}
+
+/**
+ * Paragraphs worth sending to the AI for repair: ones that stop mid-sentence
+ * while the next carries on in lower case (a paragraph split by a page or
+ * column break), and ones that look garbled by extraction or OCR.
+ */
+export function selectBlocksForRepair(text, maxBlocks = 40) {
+    const paras = splitParas(text);
+    const picked = [];
+    for (let i = 0; i < paras.length && picked.length < maxBlocks; i++) {
+        const p = paras[i];
+        const split = i + 1 < paras.length && !ENDS_CLEANLY_RE.test(p) && /^\p{Ll}/u.test(paras[i + 1]) && p.split(/\s+/).length > 4;
+        if (split || garbleScore(p) > 0.12) {
+            picked.push({ index: i, text: p.slice(0, 1500), next: split ? paras[i + 1].slice(0, 300) : null });
+        }
+    }
+    return picked;
+}
+
+/** Letter-bigram overlap (Dice), ignoring case, spacing and punctuation: 1 = same letters. */
+function letterSimilarity(a, b) {
+    const grams = (s) => {
+        const t = s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+        const m = new Map();
+        for (let i = 0; i < t.length - 1; i++) { const g = t.slice(i, i + 2); m.set(g, (m.get(g) ?? 0) + 1); }
+        return { m, n: Math.max(0, t.length - 1) };
+    };
+    const A = grams(a);
+    const B = grams(b);
+    if (!A.n || !B.n) return 0;
+    let shared = 0;
+    for (const [g, c] of A.m) shared += Math.min(c, B.m.get(g) ?? 0);
+    return (2 * shared) / (A.n + B.n);
+}
+
+/**
+ * Applies an AI's repairs after checking each one. A fix must keep almost the
+ * same letters as the original (it may rejoin broken words and fix OCR slips,
+ * not rewrite), and may merge a paragraph with the next only where the
+ * paragraph stops mid-sentence. Returns { text, changes, skipped }; each
+ * change can be undone with undoRepair.
+ */
+export function applyRepairs(text, fixes, shownBlocks) {
+    const paras = splitParas(text);
+    const shown = new Map((shownBlocks ?? []).map(b => [b.index, b]));
+    const wanted = new Map();
+    const skipped = [];
+    for (const f of Array.isArray(fixes) ? fixes : []) {
+        const index = aiCutIndex(f);
+        const fixed = String(f?.text ?? '').replace(/\s+/g, ' ').trim();
+        if (!Number.isInteger(index) || wanted.has(index)) continue;
+        if (!shown.has(index) || !paras[index] || !fixed) { skipped.push({ index, why: 'not one of the blocks it was shown' }); continue; }
+        const merge = f?.mergeWithNext === true && Boolean(shown.get(index).next) && index + 1 < paras.length;
+        const before = merge ? [paras[index], paras[index + 1]] : [paras[index]];
+        const original = before.join(' ');
+        // Unchanged text is no change, unless it joins two paragraphs.
+        if (!merge && fixed === original.replace(/\s+/g, ' ').trim()) continue;
+        const ratio = fixed.length / original.length;
+        if (ratio < 0.85 || ratio > 1.15 || letterSimilarity(original, fixed) < 0.85) {
+            skipped.push({ index, why: 'it changed the wording' });
+            continue;
+        }
+        wanted.set(index, { index, before, after: fixed, merge });
+    }
+    // A paragraph merged into the one before it cannot also be fixed on its own.
+    for (const [index, w] of wanted) if (w.merge && wanted.has(index + 1)) wanted.delete(index + 1);
+
+    const changes = [...wanted.values()].sort((a, b) => b.index - a.index);
+    for (const c of changes) paras.splice(c.index, c.before.length, c.after);
+    return {
+        text: paras.join('\n\n'),
+        changes: changes.reverse().map(c => ({ id: `fix-${Date.now()}-${c.index}`, ...c })),
+        skipped
+    };
+}
+
+/** Puts a repaired paragraph (or merged pair) back as it was. */
+export function undoRepair(text, change) {
+    const paras = splitParas(text);
+    let at = -1;
+    paras.forEach((p, i) => {
+        if (p === change.after && (at < 0 || Math.abs(i - change.index) < Math.abs(at - change.index))) at = i;
+    });
+    if (at < 0) return text;
+    paras.splice(at, 1, ...change.before);
+    return paras.join('\n\n');
 }
 
 /** The block number from an AI cut; NaN for null, empty or missing (Number(null) would be 0). */
@@ -884,6 +1095,9 @@ export async function extractText(file, options = {}) {
         throw new Error(`Cannot read ${extension || 'that file'}. Supported: ${SUPPORTED_EXTENSIONS.join(', ')}.`);
     }
 
+    // The frequency list lets the cleaner tell "exam-ple" from "well-known".
+    const rank = options.rank ?? await loadFrequencyRank().catch(() => null);
+    options = { ...options, rank };
     const { title, text, chapters = null, rawText = null, stats = null, cuts = [] } = await reader(file, options);
     const cleaned = (options.stripUrls || options.stripCitations)
         ? normalizeText(text, options)

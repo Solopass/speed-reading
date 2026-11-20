@@ -37,6 +37,7 @@ export default function ScrollText({
     wpm,
     isRunning,
     reading = DEFAULT_READING,
+    rank = null,
     bionicReading = false,
     initialIndex = 0,
     seek = null,
@@ -47,7 +48,7 @@ export default function ScrollText({
     const {
         bionicStrength, dimRead, readOpacity, scrollFocalPct: focalPct, scrollColor, scrollPalette, scrollColorStrength,
         scrollFadeFunctionWords, scrollMarker, scrollGuide, scrollBandLines, scrollSpotlight, scrollEdgeFade,
-        scrollHeightVh, scrollMotion, scrollPacing
+        scrollHeightVh, scrollMotion, scrollPacing, rarityPacing
     } = { ...DEFAULT_READING, ...reading };
 
     // Settings that move words without resizing the column (justify, spacing,
@@ -83,8 +84,8 @@ export default function ScrollText({
         if (!scrollPacing) return null;
         const gaps = tokenize(text).map(t => t.gap);
         const pauses = words.map((w, i) => pauseAfter(w, gaps[i] ?? 0, words[i + 1]));
-        return pacingCosts(words, wordWeights(words), pauses);
-    }, [text, words, scrollPacing]);
+        return pacingCosts(words, wordWeights(words, rarityPacing ? rank : null), pauses);
+    }, [text, words, scrollPacing, rarityPacing, rank]);
     const costsRef = useRef(costs);
     useLayoutEffect(() => { costsRef.current = costs; });
 

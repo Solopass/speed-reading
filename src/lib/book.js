@@ -283,3 +283,40 @@ export function migrateBook(raw) {
         attempts: Array.isArray(raw.attempts) ? raw.attempts.filter(a => a && typeof a.date === 'string') : []
     };
 }
+
+// --- Editing the chapter list before a book is saved ------------------------
+
+/** Renames chapter `i`. */
+export const renameChapter = (chapters, i, title) =>
+    chapters.map((c, j) => (j === i ? { ...c, title: String(title).slice(0, 120) } : c));
+
+/** Joins chapter `i` with the one after it, keeping the first title. */
+export function mergeWithNext(chapters, i) {
+    if (i < 0 || i >= chapters.length - 1) return chapters;
+    const merged = { title: chapters[i].title, text: `${chapters[i].text.trim()}\n\n${chapters[i + 1].text.trim()}` };
+    return [...chapters.slice(0, i), merged, ...chapters.slice(i + 2)];
+}
+
+/** Splits chapter `i` before its paragraph `at` (1 or later); the new chapter is titled after the old. */
+export function splitChapterAt(chapters, i, at) {
+    const paras = paragraphsOf(chapters[i]?.text ?? '');
+    if (at < 1 || at >= paras.length) return chapters;
+    const first = { title: chapters[i].title, text: paras.slice(0, at).join('\n\n') };
+    const second = { title: `${chapters[i].title} (continued)`, text: paras.slice(at).join('\n\n') };
+    return [...chapters.slice(0, i), first, second, ...chapters.slice(i + 1)];
+}
+
+/**
+ * Measured speed per chapter, from the book's finished-chapter attempts (the
+ * latest one per chapter). Returns [{ chapter, title, wpm, score }] in chapter order.
+ */
+export function chapterSpeeds(book) {
+    const latest = new Map();
+    for (const a of book?.attempts ?? []) {
+        if (a?.kind === 'chapter' && Number.isInteger(a.chapter) && Number.isFinite(a.wpm) && a.wpm > 0) latest.set(a.chapter, a);
+    }
+    return [...latest.values()]
+        .filter(a => book.chapters[a.chapter])
+        .sort((x, y) => x.chapter - y.chapter)
+        .map(a => ({ chapter: a.chapter, title: book.chapters[a.chapter].title, wpm: Math.round(a.wpm), score: Number.isFinite(a.score) ? a.score : null }));
+}

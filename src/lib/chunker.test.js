@@ -145,3 +145,15 @@ describe('joinFlashWords', () => {
         expect(joinFlashWords(['He', 'paused', '—', 'just'])).toBe('He paused — just');
     });
 });
+
+describe('rarity pacing', () => {
+    it('gives rare words more time than common ones of the same length, mean still 1', () => {
+        const rank = new Map([['house', 100], ['tiles', 15000]]);
+        const words = ['house', 'tiles', 'zymic', 'house'];
+        const w = wordWeights(words, rank);
+        expect(w.reduce((s, x) => s + x, 0) / w.length).toBeCloseTo(1, 6);
+        expect(w[1]).toBeGreaterThan(w[0]);
+        expect(w[2]).toBeGreaterThan(w[1]);
+        expect(wordWeights(words)[0]).toBeCloseTo(1, 6);
+    });
+});

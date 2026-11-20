@@ -12,6 +12,7 @@ import ReaderSettings from '../components/ReaderSettings';
 import { focalColorFor, rampFactor } from '../lib/readingStyle';
 import { clampIndex, clock, extractSections, jump, startCount, wordsCovered } from '../lib/readerNav';
 import { buildChunks, chunkIndexAt, joinFlashWords, pauseAfter, tokenize, wordWeights } from '../lib/chunker';
+import { loadFrequencyRank } from '../lib/vocab';
 import Quiz from '../components/Quiz';
 
 /** Words skipped by the rewind and skip controls. */
@@ -39,6 +40,7 @@ function KeyboardHint() {
             <span><Kbd>B</Kbd> bookmark (books)</span>
             <span><Kbd>F</Kbd> full screen</span>
             <span><Kbd>- =</Kbd> text size</span>
+            <span><Kbd>shift</Kbd> hold to slow</span>
             <span><Kbd>esc</Kbd> exit</span>
         </p>
     );
@@ -83,7 +85,18 @@ function Reader({
     // ordinary text with no pacing and no speed control.
     const isCalibration = passage?.isCalibration === true;
 
-    const [readWpm, setReadWpm] = useState(initialWpm);
+    // Paced and Scroll can each keep their own speed, stored as a factor of
+    // the RSVP speed so the adaptive target still moves all of them together.
+    const separateSpeeds = settings.separateModeSpeeds !== false;
+    const speedFactor = (m) => {
+        const f = separateSpeeds && m !== 'rsvp' ? Number(settings.modeSpeedFactor?.[m]) : 1;
+        return Number.isFinite(f) && f > 0 ? Math.min(3, Math.max(0.3, f)) : 1;
+    };
+    const baseWpmRef = useRef(initialWpm);
+    const [readWpm, setReadWpm] = useState(() => {
+        const startMode = isCalibration ? 'natural' : (settings.readerMode || 'rsvp');
+        return Math.round(initialWpm * speedFactor(startMode));
+    });
     // Skim runs at its own speed, so trying a skim and switching back does not
     // leave the reading speed at 1,000 WPM.
     const [skimWpm, setSkimWpm] = useState(() => settings.skimWpm ?? skimStartWpm(initialWpm));
@@ -155,7 +168,15 @@ function Reader({
         [passage?.text, settings.chunkSize, smartChunks]
     );
     const gaps = useMemo(() => tokenize(passage?.text ?? '').map(t => t.gap), [passage?.text]);
-    const weights = useMemo(() => wordWeights(words), [words]);
+    // Word frequencies, loaded once, so rare words can get a little more time.
+    const [rank, setRank] = useState(null);
+    useEffect(() => {
+        if (!reading.rarityPacing) return undefined;
+        let live = true;
+        loadFrequencyRank().then(r => { if (live) setRank(r); }).catch(() => {});
+        return () => { live = false; };
+    }, [reading.rarityPacing]);
+    const weights = useMemo(() => wordWeights(words, reading.rarityPacing ? rank : null), [words, rank, reading.rarityPacing]);
     /** End (exclusive) of the flash that starts at word `index`. */
     const flashEnd = useCallback((index) => {
         if (index >= words.length) return words.length;
@@ -184,7 +205,24 @@ function Reader({
         Math.max(0, wpm * (reading.accelCapPct / 100) - wpm),
         Math.floor(((reading.accelWpmPerMin * accelSecs) / 60) / 5) * 5
     );
-    const effectiveWpm = Math.min(2000, Math.round(wpm * ramp + (isCalibration ? 0 : accelBonus)));
+    // Holding Shift slows everything down through a hard patch; letting go resumes.
+    const [holdSlow, setHoldSlow] = useState(false);
+    useEffect(() => {
+        const typing = (e) => /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName ?? '');
+        const down = (e) => { if (e.key === 'Shift' && !typing(e)) setHoldSlow(true); };
+        const up = (e) => { if (e.key === 'Shift') setHoldSlow(false); };
+        const reset = () => setHoldSlow(false);
+        window.addEventListener('keydown', down);
+        window.addEventListener('keyup', up);
+        window.addEventListener('blur', reset);
+        return () => {
+            window.removeEventListener('keydown', down);
+            window.removeEventListener('keyup', up);
+            window.removeEventListener('blur', reset);
+        };
+    }, []);
+    const slowFactor = holdSlow && !isCalibration ? reading.holdSlowPct / 100 : 1;
+    const effectiveWpm = Math.min(2000, Math.max(50, Math.round((wpm * ramp + (isCalibration ? 0 : accelBonus)) * slowFactor)));
 
     const timerRef = useRef(null);
 
@@ -327,6 +365,10 @@ function Reader({
             setPacedInitialIndex(at);
             setPacedIndex(at);
             setPacedSeek(prev => ({ index: at, nonce: (prev?.nonce ?? 0) + 1 }));
+        }
+        // Each reading mode opens at its own remembered speed.
+        if (nextMode === 'rsvp' || nextMode === 'paced' || nextMode === 'scroll') {
+            setReadWpm(Math.min(2000, Math.max(100, Math.round(baseWpmRef.current * speedFactor(nextMode)))));
         }
         setMode(nextMode);
         updateSettings?.({ readerMode: nextMode });
@@ -487,7 +529,12 @@ function Reader({
         setWpm(next);
         if (isSkim) {
             updateSettings?.({ skimWpm: next });
+        } else if (separateSpeeds && (mode === 'paced' || mode === 'scroll')) {
+            // Only this mode's own speed changes; the RSVP base is untouched.
+            const factor = Math.round((next / Math.max(1, baseWpmRef.current)) * 10000) / 10000;
+            updateSettings?.({ modeSpeedFactor: { ...(settings.modeSpeedFactor ?? {}), [mode]: factor } });
         } else {
+            baseWpmRef.current = next;
             updateSettings?.(settings.autoAdaptive ? { readerWpm: next } : { readerWpm: next, baseWpm: next });
         }
     };
@@ -613,6 +660,27 @@ function Reader({
                 <span className="shrink-0 font-bold" style={{ color: focalColorFor(reading) ?? 'inherit' }}>{center}</span>
                 <span className="flex-1 min-w-0 text-left whitespace-pre" style={{ opacity: 0.8 }}>{end}</span>
             </div>
+        );
+    };
+
+    /** The coming group, faint and small under the flash, so the eyes are ready for it. */
+    const renderNextPreview = () => {
+        if (!reading.rsvpPreviewNext) return null;
+        const end = flashEnd(currentIndex);
+        if (end >= words.length) return <p aria-hidden="true" className="m-0" style={{ fontSize: 'calc(var(--reading-rsvp-size) * 0.32)' }}>&nbsp;</p>;
+        return (
+            <p
+                aria-hidden="true"
+                className="m-0 text-center select-none px-6 truncate max-w-full"
+                style={{
+                    fontSize: 'calc(var(--reading-rsvp-size) * 0.32)',
+                    fontFamily: 'var(--reading-font)',
+                    color: 'var(--reading-muted)',
+                    lineHeight: 1.2
+                }}
+            >
+                {joinFlashWords(words.slice(end, flashEnd(end)))}
+            </p>
         );
     };
 
@@ -852,6 +920,7 @@ function Reader({
                                     >
                                         {wpm} WPM
                                         {accelBonus > 0 && <span className="ml-1 text-emerald-400" title="Speed builder">+{accelBonus}</span>}
+                                        {slowFactor < 1 && <span className="ml-1 text-amber-400" title="Shift held">{reading.holdSlowPct}%</span>}
                                     </button>
                                     <button onClick={() => nudgeWpm(25)} aria-label="Faster" className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"><Plus size={16} /></button>
                                 </div>
@@ -959,12 +1028,17 @@ function Reader({
                                 onClick={togglePlay}
                                 aria-label={isPlaying ? 'Pause reading' : 'Start reading'}
                                 className="flex items-center justify-center w-full relative overflow-hidden cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 border-y border-slate-800/40"
-                                style={{ height: flashBoxHeight(settings.chunkSize) }}
+                                style={{ height: reading.rsvpPreviewNext ? `calc(${flashBoxHeight(settings.chunkSize)} + 2.4rem)` : flashBoxHeight(settings.chunkSize) }}
                             >
                                 {reading.showFocalGuide && (
                                     <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 pointer-events-none" style={{ background: 'var(--reading-muted)', opacity: 0.35 }} />
                                 )}
-                                {countdown === null && renderRsvpChunk()}
+                                {countdown === null && (
+                                    <div className="w-full flex flex-col items-center gap-2">
+                                        {renderRsvpChunk()}
+                                        {renderNextPreview()}
+                                    </div>
+                                )}
                             </button>
                             {reading.rsvpContext && (
                                 <div
@@ -1032,6 +1106,7 @@ function Reader({
                             wpm={effectiveWpm}
                             isRunning={isPlaying}
                             reading={reading}
+                            rank={reading.rarityPacing ? rank : null}
                             bionicReading={settings.bionicReading}
                             initialIndex={pacedInitialIndex}
                             seek={pacedSeek}

@@ -4,6 +4,8 @@ import {
 } from 'lucide-react';
 import { cleanDocSpec, dropGuessableQuestions, questionsForTextSpec, verifySpec } from '../lib/ai';
 import { normalizeQuestions } from '../lib/quiz';
+import CleanupTools from '../components/CleanupTools';
+import { loadFrequencyRank } from '../lib/vocab';
 import { applyParagraphCuts, chunkBlocksForAiClean, restoreCutItem, selectBlocksForAiClean, validateAiCuts, aiCutIndex } from '../lib/importText';
 import { isPartiallyRead, resumePoint } from '../lib/library';
 import { isBook } from '../lib/book';
@@ -48,6 +50,8 @@ function AiCleanModal({ target, ai, onSave, onClose, addNotification }) {
     const [cleaning, setCleaning] = useState(false);
     const [progress, setProgress] = useState('');
     const closedRef = useRef(false);
+    const [rank, setRank] = useState(null);
+    useEffect(() => { loadFrequencyRank().then(setRank).catch(() => {}); }, []);
 
     useEffect(() => {
         closedRef.current = false;
@@ -164,6 +168,16 @@ function AiCleanModal({ target, ai, onSave, onClose, addNotification }) {
                 ) : spec && (
                     <ManualAiPanel spec={spec} addNotification={addNotification} onResult={applyReply} />
                 )}
+
+                <CleanupTools
+                    text={draftText}
+                    setText={setDraftText}
+                    rank={rank}
+                    ai={ai}
+                    disabled={cleaning}
+                    onCuts={(items) => setCuts(prev => [...items, ...prev])}
+                    addNotification={addNotification}
+                />
 
                 <CutReviewPanel cuts={cuts} onRestore={restoreOne} onRestoreAll={restoreAll} defaultOpen />
 

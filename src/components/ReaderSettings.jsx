@@ -128,6 +128,9 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                 <Chips label="Scroll highlight" options={SCROLL_MARKERS} value={reading.scrollMarker} onChange={(id) => set({ scrollMarker: id })} />
             </div>
             <Switch label="Smart pacing" hint="Slows at punctuation and long words, speeds through short ones; the average speed stays what you set." checked={reading.scrollPacing} onChange={(v) => set({ scrollPacing: v })} />
+            {reading.scrollPacing && (
+                <Switch label="More time for rare words" hint="Smart pacing also slows for unfamiliar words and names." checked={reading.rarityPacing} onChange={(v) => set({ rarityPacing: v })} />
+            )}
             <div>
                 <div className="text-sm text-slate-300 mb-1.5">Motion</div>
                 <Chips label="Scroll motion" options={SCROLL_MOTIONS} value={reading.scrollMotion} onChange={(id) => set({ scrollMotion: id })} />
@@ -209,6 +212,8 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                         <Switch label="Centre guide" hint="A faint line through the focal letter." checked={reading.showFocalGuide} onChange={(v) => set({ showFocalGuide: v })} />
                         <Switch label="Show surrounding words" hint="Before and after text above and below the flash, so you keep your place." checked={reading.rsvpContext} onChange={(v) => set({ rsvpContext: v })} />
                         <Switch label="Pause at punctuation" hint="A beat after commas and full stops." checked={settings.punctuationPacing} onChange={(v) => updateSettings({ punctuationPacing: v })} />
+                        <Switch label="More time for rare words" hint="Unfamiliar words and names stay up a little longer, everyday words a little less; your average speed is unchanged." checked={reading.rarityPacing} onChange={(v) => set({ rarityPacing: v })} />
+                        <Switch label="Preview the next group" hint="Shows what comes next, faintly, under the flash." checked={reading.rsvpPreviewNext} onChange={(v) => set({ rsvpPreviewNext: v })} />
                     </Section>
 
                     {mode !== 'scroll' && scrollSection}
@@ -240,6 +245,8 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                                 <p className="text-[11px] text-slate-500 -mt-1 leading-snug">Speeds up a little every minute you read, stretching your pace without a jump. Your measured speed is what gets recorded.</p>
                             </>
                         )}
+                        <Slider id="rs-hold-slow" label="Hold Shift to slow to" value={reading.holdSlowPct} range={LIMITS.holdSlowPct} step={5} onChange={(v) => set({ holdSlowPct: v })} format={(v) => `${v}% speed`} />
+                        <Switch label="Separate speed per mode" hint="Paced and Scroll remember their own speed, relative to your RSVP speed." checked={settings.separateModeSpeeds !== false} onChange={(v) => updateSettings({ separateModeSpeeds: v })} />
                         <Slider id="rs-rewind" label="Rewind on resume" value={reading.rewindWords} range={LIMITS.rewindWords} step={1} onChange={(v) => set({ rewindWords: v })} format={(v) => (v === 0 ? 'Off' : `${v} word${v > 1 ? 's' : ''}`)} />
                         <Switch label="Hide controls while reading" hint="Move the mouse over the top bar to bring them back." checked={reading.zen} onChange={(v) => set({ zen: v })} />
                         {mode === 'rsvp' && (

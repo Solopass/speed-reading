@@ -271,6 +271,47 @@ ${listed}`,
 }
 
 /**
+ * Asks for light repairs to paragraphs damaged by extraction: words broken
+ * apart or glued together, OCR slips, and paragraphs split mid-sentence.
+ * The reply is checked by applyRepairs before anything changes.
+ */
+export function repairDocSpec({ blocks }) {
+    const listed = blocks
+        .map(({ index, text, next }) => `[${index}] ${text.replace(/\s+/g, ' ').trim()}${next ? `\n    (next block starts: "${next.replace(/\s+/g, ' ').trim().slice(0, 120)}")` : ''}`)
+        .join('\n');
+    return {
+        label: 'document repair',
+        prompt: `These numbered blocks come from a document whose text was extracted from a PDF or scan. Repair ONLY extraction damage:
+- words broken apart ("th e w ord") or run together ("thequick")
+- OCR misreads of letters (rn read as m, 1 for l, 0 for O) where the right word is obvious
+- a block that stops mid-sentence and continues in the next block: set "mergeWithNext": true and give the joined text of both
+
+Do NOT rephrase, summarise, translate, correct grammar or style, or change any word that is already a correct word. Keep the author's spelling and punctuation. Return only blocks you changed, using the exact number in square brackets. If nothing needs repair, return {"fixes": []}.
+
+${listed}`,
+        schema: {
+            type: 'OBJECT',
+            properties: {
+                fixes: {
+                    type: 'ARRAY',
+                    items: {
+                        type: 'OBJECT',
+                        properties: {
+                            index: { type: 'INTEGER' },
+                            text: { type: 'STRING' },
+                            mergeWithNext: { type: 'BOOLEAN' }
+                        },
+                        required: ['index', 'text']
+                    }
+                }
+            },
+            required: ['fixes']
+        },
+        shape: '{"fixes": [{"index": number, "text": string, "mergeWithNext": boolean}]}'
+    };
+}
+
+/**
  * Generates comprehension + gist questions for an existing uploaded document
  * or book chapter, using up to ~1,200 words so local models stay fast.
  */

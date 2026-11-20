@@ -127,11 +127,14 @@ export const DEFAULT_READING = {
     rewindWords: 0,       // words to step back when you resume after a pause
     rsvpWeight: 400,      // font weight of the flashed words
     readOpacity: 0.45,    // how visible text already read stays, when fading is on
+    rarityPacing: true,   // more time for rare words (RSVP and Scroll smart pacing)
+    holdSlowPct: 60,      // speed while Shift is held down
+    rsvpPreviewNext: false, // show the next group faintly under the flash
     speedRamp: false,     // ease in from 70% of the target over the first quarter
     zen: false            // hide the controls while playing
 };
 
-const BOOLEAN_PREFS = ['dimRead', 'rsvpContext', 'countdown', 'speedRamp', 'zen', 'scrollFadeFunctionWords', 'scrollPacing'];
+const BOOLEAN_PREFS = ['dimRead', 'rsvpContext', 'countdown', 'speedRamp', 'zen', 'scrollFadeFunctionWords', 'scrollPacing', 'rarityPacing', 'rsvpPreviewNext'];
 
 /**
  * Speed multiplier for the warm-up ramp: 70% at the first word, rising to full
@@ -165,7 +168,8 @@ export const LIMITS = {
     accelCapPct: [110, 200],
     rewindWords: [0, 12],
     rsvpWeight: [300, 800],
-    readOpacity: [0.1, 0.9]
+    readOpacity: [0.1, 0.9],
+    holdSlowPct: [30, 90]
 };
 
 const byId = (list, id, fallbackId) =>

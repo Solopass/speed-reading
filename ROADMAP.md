@@ -86,6 +86,16 @@ Working and verified:
 - **Reader quality of life** — speed builder (adds WPM each minute up to a
   cap), rewind on resume, `-`/`=` text size keys, flash weight, and how faint
   read text goes.
+- **Smarter import tools** — hyphens at line ends decided by the document's
+  own spelling and the word-frequency list ("exam-ple" joins, "well-known"
+  stays); footnote numbers, footnote paragraphs and a trailing reference list
+  found and removed in one click (restorable); AI Repair for paragraphs split
+  mid-sentence or garbled by OCR, with each fix checked to keep the original
+  letters and undoable; chapters renamed, joined or split before saving.
+- **Reading-mode upgrades** — rare words get a little more time (same average
+  speed); hold Shift to slow down; Paced and Scroll remember their own speed
+  relative to RSVP; RSVP can preview the next group; books chart your measured
+  speed by chapter.
 - **Vocabulary ranked by real word frequency** — the top 20,000 English words
   from wordfreq (CC BY-SA 4.0, see `src/data/WORDFREQ-NOTICE.md`), loaded only
   when the Vocabulary page opens.

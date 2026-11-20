@@ -14,6 +14,8 @@
 // Token indices match `text.trim().split(/\s+/)`, which is how the Reader
 // splits words, so progress, bookmarks and the honest word count are unchanged.
 
+import { rankOf } from './vocab';
+
 /** Words that should not end a group: they belong with what follows. */
 const LEANS_FORWARD = new Set((
     'a an the this that these those my your his her its our their whose ' +
@@ -121,7 +123,8 @@ export function buildChunks(text, { maxWords = 1, minWords, smart = true } = {})
         return chunks;
     }
 
-    const min = Math.max(1, Math.min(max, minWords ?? max - 2));
+    // At 3 per flash a lone word is as unwanted as at 5; the floor is 2 from 3 up.
+    const min = Math.max(1, Math.min(max, minWords ?? (max === 3 ? 2 : max - 2)));
     const target = (min + max) / 2;
     // Long words take longer to take in, so the character budget caps a group
     // before the word count does. ~6.5 characters per word is ordinary prose.
@@ -215,12 +218,19 @@ export function chunkIndexAt(chunks, index) {
  * still averages out to the chosen WPM: long words get a little more time,
  * short function words a little less.
  */
-export function wordWeights(words) {
+export function wordWeights(words, rank = null) {
     if (!words.length) return [];
     const raw = words.map(w => {
         const len = [...w.replace(/[^\p{L}\p{N}]/gu, '')].length;
         if (len === 0) return 0.3;
-        return Math.min(1.8, Math.max(0.7, 0.55 + len * 0.075));
+        const base = Math.min(1.8, Math.max(0.7, 0.55 + len * 0.075));
+        // With the frequency list, rare words (and names) get a little more
+        // time and everyday words a little less; the mean is still 1.
+        if (!rank) return base;
+        const core = w.toLowerCase().replace(/[^\p{L}]/gu, '');
+        if (core.length < 3) return base;
+        const r = rankOf(core, rank);
+        return base + (r < 2000 ? 0 : r < 8000 ? 0.12 : r < 20000 ? 0.28 : 0.45);
     });
     const mean = raw.reduce((s, x) => s + x, 0) / raw.length;
     return raw.map(x => x / mean);

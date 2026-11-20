@@ -1,3 +1,4 @@
+import { chapterSpeeds, mergeWithNext, renameChapter, splitChapterAt } from './book';
 import { describe, expect, it } from 'vitest';
 import {
     MAX_CHAPTER_WORDS, MIN_CHAPTER_WORDS, addBookmark, bookProgress, buildChapters, chapterPassage, chunkParagraphs,
@@ -149,5 +150,38 @@ describe('review fixes', () => {
         expect(fixed.currentChapter).toBe(1);
         expect(fixed.bookmarks).toHaveLength(1);
         expect(fixed.bookmarks[0]).toMatchObject({ chapter: 1, index: 9 });
+    });
+});
+
+describe('editing chapters before saving', () => {
+    const chapters = [{ title: 'A', text: 'a1\n\na2\n\na3' }, { title: 'B', text: 'b1' }, { title: 'C', text: 'c1' }];
+
+    it('renames, merges and splits', () => {
+        expect(renameChapter(chapters, 1, 'Bee')[1].title).toBe('Bee');
+        expect(mergeWithNext(chapters, 1)).toEqual([chapters[0], { title: 'B', text: 'b1\n\nc1' }]);
+        expect(mergeWithNext(chapters, 2)).toBe(chapters);
+        const split = splitChapterAt(chapters, 0, 2);
+        expect(split.map(c => c.title)).toEqual(['A', 'A (continued)', 'B', 'C']);
+        expect(split[0].text).toBe('a1\n\na2');
+        expect(split[1].text).toBe('a3');
+        expect(splitChapterAt(chapters, 0, 0)).toBe(chapters);
+    });
+});
+
+describe('chapterSpeeds', () => {
+    it('takes the latest finished attempt per chapter, in chapter order', () => {
+        const book = {
+            chapters: [{ title: 'A' }, { title: 'B' }, { title: 'C' }],
+            attempts: [
+                { kind: 'chapter', chapter: 1, wpm: 300, score: 80 },
+                { kind: 'chapter', chapter: 0, wpm: 250, score: null },
+                { kind: 'chapter', chapter: 1, wpm: 340.4, score: 90 },
+                { kind: 'read', wpm: 999 }
+            ]
+        };
+        expect(chapterSpeeds(book)).toEqual([
+            { chapter: 0, title: 'A', wpm: 250, score: null },
+            { chapter: 1, title: 'B', wpm: 340, score: 90 }
+        ]);
     });
 });

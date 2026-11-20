@@ -252,3 +252,126 @@ describe('review regressions', () => {
         expect(restored.indexOf('12')).toBe(1);
     });
 });
+
+describe('hyphens at line ends', () => {
+    const rank = new Map(['well', 'known', 'example', 'exam', 'ple', 'state', 'art'].map((w, i) => [w, i]));
+
+    it('joins a word the typesetter split', () => {
+        expect(normalizeText('A worked exam-\nple here.', { rank })).toBe('A worked example here.');
+    });
+
+    it('keeps the hyphen in a compound whose halves are words but whose join is not', () => {
+        expect(normalizeText('A well-\nknown fact.', { rank })).toBe('A well-known fact.');
+    });
+
+    it('follows the spelling the document uses elsewhere', () => {
+        expect(normalizeText('The state-of-the-art lab. Truly state-of-the-\nart.', {})).toContain('state-of-the-art.');
+        expect(normalizeText('Use the sub-\nmarine. A submarine dived.', {})).toContain('submarine.');
+    });
+
+    it('without a word list it still joins, as before', () => {
+        expect(normalizeText('A well-\nknown fact.')).toBe('A wellknown fact.');
+    });
+});
+
+describe('footnotes and reference lists', () => {
+    const rank = new Map(['history', 'war', 'the', 'of'].map((w, i) => [w, i]));
+    const prose = (n) => `Paragraph ${n} talks about the long history of the river and the farms along it, in plain sentences. It goes on for a while.`;
+
+    it('strips glued footnote numbers but not page refs, times or real tokens', async () => {
+        const { stripNoteMarkers } = await import('./importText');
+        expect(stripNoteMarkers('The war ended.12 Then peace.', rank).text).toBe('The war ended. Then peace.');
+        expect(stripNoteMarkers('A history12 of it.', rank).text).toBe('A history of it.');
+        expect(stripNoteMarkers('See No.5 and p.12 at 3:45 with covid19.', rank).text).toBe('See No.5 and p.12 at 3:45 with covid19.');
+    });
+
+    it('finds footnote paragraphs and a trailing reference list', async () => {
+        const { findNotes } = await import('./importText');
+        const text = [prose(1), '12 See Smith (1999), p. 45.', prose(2), prose(3), prose(4),
+            'References', 'Smith, J. (1999). Rivers. Press.', 'Jones, K. et al. (2004). Farms.', 'Lee, M. (2011). Floods, pp. 3-9.'].join('\n\n');
+        const found = findNotes(text, rank);
+        expect(found.blocks).toEqual([1]);
+        expect(found.references).toEqual({ heading: 5, end: 9 });
+    });
+
+    it('does not treat a numbered list or a Notes heading over prose as notes', async () => {
+        const { findNotes } = await import('./importText');
+        const text = [prose(1), '1 Preheat the oven', '2 Mix the flour', prose(2), 'Notes', prose(3), prose(4), prose(5)].join('\n\n');
+        const found = findNotes(text, rank);
+        expect(found.blocks).toEqual([]);
+        expect(found.references).toBeNull();
+    });
+
+    it('removeNotes cuts restorably and strips markers', async () => {
+        const { findNotes, removeNotes, restoreCutItem } = await import('./importText');
+        const text = [`${prose(1)}.3`, '3 Ibid., p. 7.', prose(2), prose(3), 'Bibliography', 'Smith (1999).', 'Jones (2004).', 'Lee (2011).'].join('\n\n');
+        const found = findNotes(text, rank);
+        const out = removeNotes(text, found, rank);
+        expect(out.text.split('\n\n')).toHaveLength(3);
+        expect(out.cutItems.map(c => c.reason)).toEqual(['Footnote', 'Reference list', 'Reference list', 'Reference list', 'Reference list']);
+        expect(restoreCutItem(out.text, out.cutItems[0]).split('\n\n')[1]).toBe('3 Ibid., p. 7.');
+    });
+});
+
+describe('AI repair', () => {
+    const text = [
+        'The river carried silt down from the hills every spring and the',
+        'farmers waited for the floods to pass.',
+        'Th e w ord s here were broken up by the scanner badly.',
+        'A clean paragraph that needs nothing at all.'
+    ].join('\n\n');
+
+    it('picks paragraphs split mid-sentence and garbled ones, not clean ones', async () => {
+        const { selectBlocksForRepair } = await import('./importText');
+        const picked = selectBlocksForRepair(text);
+        expect(picked.map(b => b.index)).toEqual([0, 2]);
+        expect(picked[0].next).toMatch(/^farmers/);
+    });
+
+    it('applies a merge and a light fix, refuses a rewrite, and undoes each', async () => {
+        const { selectBlocksForRepair, applyRepairs, undoRepair } = await import('./importText');
+        const shown = selectBlocksForRepair(text);
+        const { text: fixed, changes, skipped } = applyRepairs(text, [
+            { index: 0, mergeWithNext: true, text: 'The river carried silt down from the hills every spring and the farmers waited for the floods to pass.' },
+            { index: 2, text: 'The words here were broken up by the scanner badly.' },
+            { index: 3, text: 'Something entirely different.' }
+        ], shown);
+        expect(fixed.split('\n\n')).toEqual([
+            'The river carried silt down from the hills every spring and the farmers waited for the floods to pass.',
+            'The words here were broken up by the scanner badly.',
+            'A clean paragraph that needs nothing at all.'
+        ]);
+        expect(changes).toHaveLength(2);
+        expect(skipped.map(s => s.index)).toEqual([3]);
+        let back = undoRepair(fixed, changes[1]);
+        back = undoRepair(back, changes[0]);
+        expect(back).toBe(text);
+    });
+
+    it('refuses a fix that changes the wording', async () => {
+        const { selectBlocksForRepair, applyRepairs } = await import('./importText');
+        const { changes, skipped } = applyRepairs(text, [
+            { index: 2, text: 'These words were mangled by a scanning device, sadly.' }
+        ], selectBlocksForRepair(text));
+        expect(changes).toEqual([]);
+        expect(skipped[0].why).toMatch(/wording/);
+    });
+});
+
+describe('notes review regressions', () => {
+    const rank = new Map(['history', 'war', 'the', 'of'].map((w, i) => [w, i]));
+
+    it('leaves scripture references and abbreviated dates alone', async () => {
+        const { stripNoteMarkers } = await import('./importText');
+        const s = 'See Gen.3:16 and Matt.5:3, from Jan.12 to Ex.4 in Nos.5 today.';
+        expect(stripNoteMarkers(s, rank).text).toBe(s);
+        expect(stripNoteMarkers('The war ended.12 Then peace.', rank).text).toBe('The war ended. Then peace.');
+    });
+
+    it('does not take numbered list items with years for footnotes', async () => {
+        const { findNotes } = await import('./importText');
+        const prose = 'A long ordinary paragraph about the river and the farms along it, written in plain sentences. It goes on.';
+        const text = [prose, '1. In 1912, the bridge opened.', '2. In 1914, war broke out.', prose, '7 In 1990, it changed.', prose].join('\n\n');
+        expect(findNotes(text, rank).blocks).toEqual([]);
+    });
+});
