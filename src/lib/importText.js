@@ -31,7 +31,9 @@ const JUNK_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u00A
 const ASTRAL_PUA_RE = /[\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/gu;
 const LEADING_BULLET_RE = /^\s*[•▪▫●○■□◆◇❖➤➢➔►◄★☆✓✔✕✖†‡§¶]+\s*/;
 const DIVIDER_LINE_RE = /^[\s*\-_=~•·|—–]+$/;
-const PAGE_NUMBER_RE = /^(?:page\s*\d{1,4}(?:\s*(?:of|\/)\s*\d{1,4})?|[-–—]\s*\d{1,4}\s*[-–—]|\d{1,4}\s*\/\s*\d{1,4})$/i;
+const PAGE_NUMBER_RE = /^(?:page\s*\d{1,4}(?:\s*(?:of|\/)\s*\d{1,4})?|[-–—]\s*\d{1,4}\s*[-–—]|\d{1,4}\s*\/\s*\d{1,4}|\|\s*\d{1,4}|\d{1,4}\s*\|)$/i;
+const ROMAN_PAGE_RE = /^[ivxlcdm]{1,7}$/;
+const TOC_LINE_RE = /^.{3,80}\s+\d{1,4}$/;
 const STRAY_SYMBOL_TOKEN_RE = /(^|\s)[|~^_\\`*=<>[\]{}•▪▫●○■□◆◇❖➤➢➔►◄★☆✓✔✕✖†‡§¶]+(?=\s|$)/g;
 
 /**
@@ -160,7 +162,7 @@ export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations 
             }
             // Only PDFs have page furniture. In any other format a line that is
             // just "1" or "12" is far more likely a chapter number to keep.
-            if (stripPageNumbers && multiLine && (PAGE_NUMBER_RE.test(clean) || /^\d{1,4}$/.test(clean))) {
+            if (stripPageNumbers && multiLine && (PAGE_NUMBER_RE.test(clean) || /^\d{1,4}$/.test(clean) || ROMAN_PAGE_RE.test(clean))) {
                 stats.pageNumbers += 1;
                 cuts.push({ id: `det-${lineIdx}-pg`, index: paraIdx, text: clean, reason: 'Page number', source: 'auto', after: lastKept ? [lastKept] : [] });
                 return REMOVED;
@@ -175,6 +177,21 @@ export function normalizeTextWithStats(raw, { stripUrls = false, stripCitations 
         .join('\n')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
+
+    if (stripPageNumbers) {
+        const blocks = text.split(/\n\s*\n/);
+        const keptBlocks = [];
+        blocks.forEach((blk, idx) => {
+            const lines = blk.split('\n').map(l => l.trim()).filter(Boolean);
+            const tocHits = lines.filter(l => TOC_LINE_RE.test(l)).length;
+            if (lines.length >= 4 && tocHits >= Math.ceil(lines.length * 0.75)) {
+                cuts.push({ id: `det-toc-${idx}`, index: idx, text: blk, reason: 'Table of contents', source: 'auto' });
+            } else {
+                keptBlocks.push(blk);
+            }
+        });
+        text = keptBlocks.join('\n\n');
+    }
 
     if (reflow) text = reflowParagraphs(text);
 
@@ -861,8 +878,14 @@ export function stripRepeatedHeadersFooters(pages) {
         }
     }
 
-    const threshold = Math.max(3, Math.ceil(pages.length * 0.35));
-    const repeated = new Set([...counts.entries()].filter(([, n]) => n >= threshold).map(([k]) => k));
+    const threshold = pages.length >= 12 ? 3 : Math.max(3, Math.ceil(pages.length * 0.35));
+    const isHeaderLike = (key) => {
+        const count = counts.get(key) ?? 0;
+        if (count >= Math.max(3, Math.ceil(pages.length * 0.35))) return true;
+        // Per-chapter running headers in long books repeat 3+ times without terminal punctuation.
+        return pages.length >= 12 && count >= threshold && !/[.!?]$/.test(key);
+    };
+    const repeated = new Set([...counts.keys()].filter(isHeaderLike));
     if (repeated.size === 0) return pages;
 
     const isRepeated = (line) => line.trim().length <= 100 && repeated.has(headerKey(line));
@@ -920,8 +943,23 @@ export function orderPdfItems(items, pageWidth = 600) {
     const textItems = items.filter(it => it && 'str' in it && it.str.trim() && Array.isArray(it.transform));
     if (textItems.length < 8) return items;
 
-    const mid = pageWidth * 0.5;
-    const gutterPad = Math.max(10, pageWidth * 0.025);
+    const itemWidth = (it) => {
+        if (typeof it.width === 'number' && it.width > 0) return it.width;
+        const fs = Math.abs(it.transform[3] || it.transform[0] || 10);
+        return it.str.length * fs * 0.45;
+    };
+
+    let minX = Infinity;
+    let maxEndX = -Infinity;
+    for (const it of textItems) {
+        const x = it.transform[4];
+        const endX = x + itemWidth(it);
+        if (x < minX) minX = x;
+        if (endX > maxEndX) maxEndX = endX;
+    }
+    const span = maxEndX - minX;
+    const mid = span > 100 ? (minX + maxEndX) * 0.5 : pageWidth * 0.5;
+    const gutterPad = Math.max(10, (span > 100 ? span : pageWidth) * 0.025);
     const gutterLeft = mid - gutterPad;
     const gutterRight = mid + gutterPad;
 
@@ -931,8 +969,7 @@ export function orderPdfItems(items, pageWidth = 600) {
 
     for (const it of textItems) {
         const x = it.transform[4];
-        const w = it.width ?? 0;
-        const endX = x + w;
+        const endX = x + itemWidth(it);
         if (x < gutterRight && endX > gutterLeft) gutterHits += 1;
         else if (endX <= gutterLeft) left.push(it);
         else if (x >= gutterRight) right.push(it);
@@ -983,10 +1020,21 @@ export function assemblePdfPageText(ordered) {
     return text;
 }
 
+function flattenOutline(items, out = []) {
+    for (const item of items ?? []) {
+        if (!item) continue;
+        out.push(item);
+        if (Array.isArray(item.items) && item.items.length > 0) flattenOutline(item.items, out);
+    }
+    return out;
+}
+
 async function pdfOutlineChapters(pdf, cleanPages, options = {}) {
     try {
-        const outline = await pdf.getOutline();
-        if (!Array.isArray(outline) || outline.length < 2) return null;
+        const rawOutline = await pdf.getOutline();
+        if (!Array.isArray(rawOutline) || rawOutline.length === 0) return null;
+        const outline = rawOutline.length < 4 ? flattenOutline(rawOutline) : rawOutline;
+        if (outline.length < 2) return null;
 
         const entries = [];
         const seenPages = new Set();
