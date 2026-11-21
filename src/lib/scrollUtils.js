@@ -111,3 +111,20 @@ export function focalRange(word, spanMode = 'single') {
     const end = Math.min(str.length, center + 2);
     return { start, center, end };
 }
+
+/**
+ * Finds the word index whose visual line center is closest to `y` for
+ * constant-pixel-velocity scrolling.
+ */
+export function wordIndexAtY(lineTops, y) {
+    const n = Array.isArray(lineTops) ? lineTops.length : 0;
+    if (n === 0) return 0;
+    let lo = 0;
+    let hi = n - 1;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (lineTops[mid] < y) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}

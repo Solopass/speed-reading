@@ -209,9 +209,11 @@ describe('reader QOL settings', () => {
         expect(d.rsvpContextPlay).toBe('dim');
         expect(d.rsvpMergeShortWords).toBe(false);
 
-        const c = normalizeReading({ focalSpan: 'cluster', rsvpContextPlay: 'hide', rsvpMergeShortWords: true });
+        const c = normalizeReading({ focalSpan: 'cluster', rsvpContextPlay: 'hide', rsvpMergeShortWords: true, scrollMotion: 'constant', rsvpFlankOpacity: 0.1 });
         expect(c.focalSpan).toBe('cluster');
         expect(c.rsvpContextPlay).toBe('hide');
         expect(c.rsvpMergeShortWords).toBe(true);
+        expect(c.scrollMotion).toBe('constant');
+        expect(c.rsvpFlankOpacity).toBe(0.3);
     });
 });

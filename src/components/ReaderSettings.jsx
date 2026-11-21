@@ -203,12 +203,15 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                         <Slider id="rs-lh" label="Line spacing" value={reading.lineHeight} range={LIMITS.lineHeight} step={0.05} onChange={(v) => set({ lineHeight: v })} format={(v) => v.toFixed(2)} />
                         <Slider id="rs-width" label="Line width" value={reading.maxWidthCh} range={LIMITS.maxWidthCh} step={2} onChange={(v) => set({ maxWidthCh: v })} format={(v) => `${v} ch`} />
                         <Slider id="rs-ls" label="Letter spacing" value={reading.letterSpacing} range={LIMITS.letterSpacing} step={0.01} onChange={(v) => set({ letterSpacing: v })} format={(v) => `${v.toFixed(2)}em`} />
+                        <Slider id="rs-ws" label="Word spacing" value={reading.wordSpacing} range={LIMITS.wordSpacing} step={0.02} onChange={(v) => set({ wordSpacing: v })} format={(v) => `${v.toFixed(2)}em`} />
+                        <Slider id="rs-pgap" label="Paragraph gap" value={reading.paragraphGapEm} range={LIMITS.paragraphGapEm} step={0.1} onChange={(v) => set({ paragraphGapEm: v })} format={(v) => `${v.toFixed(1)}em`} />
                         <Switch label="Justify text" checked={reading.justify} onChange={(v) => set({ justify: v })} />
                     </Section>
 
                     <Section title="Flash (RSVP)">
                         <Slider id="rs-rsvp" label="Word size" value={reading.rsvpSizePx} range={LIMITS.rsvpSizePx} step={2} onChange={(v) => set({ rsvpSizePx: v })} format={(v) => `${v}px`} />
                         <Slider id="rs-rsvp-weight" label="Flash weight" value={reading.rsvpWeight} range={LIMITS.rsvpWeight} step={100} onChange={(v) => set({ rsvpWeight: v })} format={(v) => ({ 300: 'Light', 400: 'Regular', 500: 'Medium', 600: 'Semibold', 700: 'Bold', 800: 'Heavy' }[v] ?? v)} />
+                        <Slider id="rs-rsvp-flank" label="Flank brightness" value={reading.rsvpFlankOpacity} range={LIMITS.rsvpFlankOpacity} step={0.05} onChange={(v) => set({ rsvpFlankOpacity: v })} format={pct} />
                         <Slider id="rs-chunk" label={settings.chunkSize > 1 && settings.smartChunks !== false ? 'Words per flash (up to)' : 'Words per flash'} value={settings.chunkSize} range={[1, 5]} step={1} onChange={(v) => updateSettings({ chunkSize: v })} />
                         {settings.chunkSize > 1 && (
                             <Switch

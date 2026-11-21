@@ -4,7 +4,7 @@ import { buildChunks, chunkIndexAt, pauseAfter, tokenize, wordWeights } from '..
 import {
     advanceByCost, gradientAnchors, gradientBackground, layoutLines, pacingCosts, textLooks
 } from '../lib/textColor';
-import { buildLineSpans, groupLineTops, isHeadingParagraph } from '../lib/scrollUtils';
+import { buildLineSpans, groupLineTops, isHeadingParagraph, wordIndexAtY } from '../lib/scrollUtils';
 import { DEFAULT_READING, LIMITS } from '../lib/readingStyle';
 
 /** Word centres (for the scroll) and boxes (for the line gradient), relative to the text column. */
@@ -72,6 +72,7 @@ export default function ScrollText({
     const wordTopsRef = useRef([]);
     const wordLineTopsRef = useRef([]);
     const lineSpansRef = useRef({ lineStart: [], lineLen: [], nextLineTop: [] });
+    const constantYRef = useRef(0);
 
     const paragraphs = useMemo(() => {
         const paras = text.trim().split(/\n\s*\n/).filter(p => p.trim());
@@ -149,6 +150,7 @@ export default function ScrollText({
                 targetY = y0 + (y1 - y0) * frac;
             }
         }
+        constantYRef.current = targetY;
         const focalY = viewportHeightRef.current * (focalRef.current / 100);
         const transform = `translate3d(0, ${focalY - targetY}px, 0)`;
         if (content.style.transform !== transform) content.style.transform = transform;
@@ -226,6 +228,26 @@ export default function ScrollText({
         const tick = (now) => {
             const delta = Math.min(100, now - last);
             last = now;
+            if (motionRef.current === 'constant' && wordLineTopsRef.current.length > 0 && contentRef.current) {
+                const lineTops = wordLineTopsRef.current;
+                const firstY = lineTops[0] ?? 0;
+                const lastY = lineTops[lineTops.length - 1] ?? firstY;
+                const span = Math.max(1, lastY - firstY);
+                const pxPerMs = (span / Math.max(1, totalWords - 1)) * (wpm / 60000);
+                const nextY = Math.min(lastY, constantYRef.current + pxPerMs * delta);
+                constantYRef.current = nextY;
+                const focalY = viewportHeightRef.current * (focalRef.current / 100);
+                contentRef.current.style.transform = `translate3d(0, ${focalY - nextY}px, 0)`;
+                const done = nextY >= lastY;
+                const nextIdx = done ? totalWords : wordIndexAtY(lineTops, nextY);
+                progressRef.current = nextIdx;
+                if (nextIdx !== readIndexRef.current) {
+                    readIndexRef.current = nextIdx;
+                    setReadIndex(nextIdx);
+                }
+                if (!done) frame = requestAnimationFrame(tick);
+                return;
+            }
             const budget = (delta / 60000) * wpm;
             // Smart pacing spends the same time overall, just more of it on
             // long words and at punctuation, less on "the" and "of".

@@ -110,7 +110,8 @@ export const SCROLL_MARKERS = [
 ];
 
 export const SCROLL_MOTIONS = [
-    { id: 'smooth', label: 'Smooth', note: 'A continuous glide, like a teleprompter' },
+    { id: 'smooth', label: 'Smooth', note: 'Continuous word-paced glide across each line' },
+    { id: 'constant', label: 'Constant glide', note: 'Pure constant pixel speed — never surges on short lines' },
     { id: 'line', label: 'Line by line', note: 'Holds each line still, then steps up one line' }
 ];
 
@@ -155,6 +156,7 @@ export const DEFAULT_READING = {
     accelCapPct: 140,     // ...up to this % of the speed you started at
     rewindWords: 0,       // words to step back when you resume after a pause
     rsvpWeight: 400,      // font weight of the flashed words
+    rsvpFlankOpacity: 0.8, // opacity of non-focal letters around the anchor
     readOpacity: 0.45,    // how visible text already read stays, when fading is on
     rarityPacing: true,   // more time for rare words (RSVP and Scroll smart pacing)
     holdSlowPct: 60,      // speed while Shift is held down
@@ -200,6 +202,7 @@ export const LIMITS = {
     accelCapPct: [110, 200],
     rewindWords: [0, 12],
     rsvpWeight: [300, 800],
+    rsvpFlankOpacity: [0.3, 1],
     readOpacity: [0.1, 0.9],
     holdSlowPct: [30, 90]
 };

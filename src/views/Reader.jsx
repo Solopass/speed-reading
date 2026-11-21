@@ -753,6 +753,7 @@ function Reader({
         const focal = focalColorFor(reading);
         const spanMode = reading.focalSpan ?? 'single';
         const isGrad = spanMode === 'gradient';
+        const flankOpacity = reading.rsvpFlankOpacity ?? 0.8;
 
         if (chunkWords.length > 1) {
             // A phrase is taken in as a whole, centred on the fixation point.
@@ -789,15 +790,15 @@ function Reader({
                                 return (
                                     <span key={wi}>
                                         {wi > 0 ? ' ' : ''}
-                                        <span style={{ opacity: 0.82 }}>{pw.slice(0, cIdx)}</span>
+                                        <span style={{ opacity: flankOpacity }}>{pw.slice(0, cIdx)}</span>
                                         <span className="font-bold" style={{ color: focal ?? 'inherit' }}>{pw.charAt(cIdx)}</span>
-                                        <span style={{ opacity: 0.82 }}>{pw.slice(cIdx + 1)}</span>
+                                        <span style={{ opacity: flankOpacity }}>{pw.slice(cIdx + 1)}</span>
                                     </span>
                                 );
                             })
                         ) : (
                             <>
-                                <span style={{ opacity: isGrad ? 0.9 : 0.85, color: isGrad && focal ? focal : undefined }}>
+                                <span style={{ opacity: isGrad ? Math.max(flankOpacity, 0.85) : flankOpacity, color: isGrad && focal ? focal : undefined }}>
                                     {joined.slice(0, midStart)}
                                 </span>
                                 {midStart < midCenter && (
@@ -811,7 +812,7 @@ function Reader({
                                         {joined.slice(midCenter + 1, midEnd)}
                                     </span>
                                 )}
-                                <span style={{ opacity: isGrad ? 0.9 : 0.85, color: isGrad && focal ? focal : undefined }}>
+                                <span style={{ opacity: isGrad ? Math.max(flankOpacity, 0.85) : flankOpacity, color: isGrad && focal ? focal : undefined }}>
                                     {joined.slice(midEnd)}
                                 </span>
                             </>
@@ -842,12 +843,12 @@ function Reader({
                     fontWeight: reading.rsvpWeight
                 }}
             >
-                <span className="flex-1 min-w-0 text-right whitespace-pre" style={{ opacity: isGrad ? 0.9 : 0.8 }}>
+                <span className="flex-1 min-w-0 text-right whitespace-pre" style={{ opacity: isGrad ? Math.max(flankOpacity, 0.85) : flankOpacity }}>
                     {isGrad && focal ? <span style={{ color: focal, opacity: 0.55 }}>{pre}</span> : pre}
                     {leftCluster && <span className="font-bold" style={{ color: focal ?? 'inherit', opacity: 0.85 }}>{leftCluster}</span>}
                 </span>
                 <span className="shrink-0 font-bold" style={{ color: focal ?? 'inherit' }}>{center}</span>
-                <span className="flex-1 min-w-0 text-left whitespace-pre" style={{ opacity: isGrad ? 0.9 : 0.8 }}>
+                <span className="flex-1 min-w-0 text-left whitespace-pre" style={{ opacity: isGrad ? Math.max(flankOpacity, 0.85) : flankOpacity }}>
                     {rightCluster && <span className="font-bold" style={{ color: focal ?? 'inherit', opacity: 0.85 }}>{rightCluster}</span>}
                     {isGrad && focal ? <span style={{ color: focal, opacity: 0.55 }}>{post}</span> : post}
                 </span>
