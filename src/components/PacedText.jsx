@@ -1,6 +1,14 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
+/** Above this many words, only paragraphs near the cursor are rendered. */
+const LONG_TEXT_WORDS = 12000;
+const WINDOW_BEFORE = 15;
+const WINDOW_AFTER = 30;
+const RECENTER_AFTER = 10;
+
+/** `lines` may start part-way through the text (windowed): positions count from its first word. */
 function locateCursor(lines, progress) {
+    if (lines.length) progress -= lines[0].start;
     if (!lines.length) return null;
     let consumed = 0;
     for (const line of lines) {
@@ -138,6 +146,45 @@ export default function PacedText({
     const [readIndex, setReadIndex] = useState(Math.floor(clampedInitial));
     const readIndexRef = useRef(Math.floor(clampedInitial));
 
+    // --- Long chapters: render a window of paragraphs ------------------------
+    // As in Scroll mode, a very long chapter renders only the paragraphs around
+    // the cursor; spacers sized from the measured pixels per character stand in
+    // for the rest. Browser scroll anchoring keeps the visible text still when
+    // a spacer above it changes size.
+    const windowed = totalWords > LONG_TEXT_WORDS;
+    const paraStarts = useMemo(() => paragraphs.map(pa => pa[0]?.index ?? 0), [paragraphs]);
+    const paraChars = useMemo(() => {
+        const totals = [0];
+        for (const pa of paragraphs) totals.push(totals[totals.length - 1] + pa.reduce((n, w) => n + w.word.length + 1, 0));
+        return totals;
+    }, [paragraphs]);
+    const paraOf = useCallback((idx) => {
+        let lo = 0;
+        let hi = paraStarts.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (paraStarts[mid] <= idx) lo = mid; else hi = mid - 1;
+        }
+        return Math.max(0, lo);
+    }, [paraStarts]);
+    const [winCenter, setWinCenter] = useState(() => paraOf(Math.floor(clampedInitial)));
+    useEffect(() => {
+        if (!windowed) return undefined;
+        const cur = paraOf(readIndex);
+        if (Math.abs(cur - winCenter) <= RECENTER_AFTER) return undefined;
+        let live = true;
+        queueMicrotask(() => { if (live) setWinCenter(cur); });
+        return () => { live = false; };
+    }, [windowed, readIndex, winCenter, paraOf]);
+    const winLo = windowed ? Math.max(0, winCenter - WINDOW_BEFORE) : 0;
+    const winHi = windowed ? Math.min(paragraphs.length, winCenter + WINDOW_AFTER) : paragraphs.length;
+    // Pixels per character (plus paragraph gap) measured from the rendered paragraphs.
+    const [pxPerChar, setPxPerChar] = useState(0.45);
+    const topSpacerRef = useRef(null);
+    const bottomSpacerRef = useRef(null);
+    // A word to bring into view once the window has rendered around it.
+    const pendingScrollRef = useRef(null);
+
     const setRef = useCallback((index, el) => { wordRefs.current[index] = el; }, []);
 
     /** Moves the band, cursor and underline to `progress` without a React render. */
@@ -205,6 +252,18 @@ export default function PacedText({
             });
 
             linesRef.current = grouped;
+            if (windowed) {
+                // Calibrate the spacers from what is actually on the page.
+                const top = topSpacerRef.current ? topSpacerRef.current.getBoundingClientRect().bottom : base.top;
+                const bottom = bottomSpacerRef.current ? bottomSpacerRef.current.getBoundingClientRect().top : base.bottom;
+                const chars = paraChars[winHi] - paraChars[winLo];
+                const next = chars > 0 && bottom > top ? (bottom - top) / chars : null;
+                if (next && Math.abs(next - pxPerChar) / pxPerChar > 0.03) setPxPerChar(next);
+                if (pendingScrollRef.current !== null) {
+                    const el = wordRefs.current[pendingScrollRef.current];
+                    if (el) { el.scrollIntoView?.({ block: 'center' }); pendingScrollRef.current = null; }
+                }
+            }
             paint(progressRef.current);
         };
 
@@ -214,7 +273,7 @@ export default function PacedText({
         // Font loading can reflow the text after the first measure.
         document.fonts?.ready.then(measure).catch(() => {});
         return () => observer.disconnect();
-    }, [paragraphs, bionicReading, totalWords, paint]);
+    }, [paragraphs, bionicReading, totalWords, paint, windowed, winLo, winHi, paraChars, pxPerChar]);
 
     // A different pacer style mounts different guide elements; place them.
     useLayoutEffect(() => { paint(progressRef.current); }, [pacerStyle, paint]);
@@ -240,11 +299,20 @@ export default function PacedText({
         const index = Math.max(0, Math.min(totalWords, seek.index));
         queueMicrotask(() => {
             if (cancelled) return;
+            const target = Math.min(index, Math.max(0, totalWords - 1));
             moveTo(index);
-            wordRefs.current[Math.min(index, Math.max(0, totalWords - 1))]?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+            const el = wordRefs.current[target];
+            if (el) {
+                // Already on the page: scroll now, and leave no target for a later measure.
+                pendingScrollRef.current = null;
+                el.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+            } else if (windowed) {
+                setWinCenter(paraOf(index));
+                pendingScrollRef.current = target;
+            }
         });
         return () => { cancelled = true; };
-    }, [seek, totalWords, moveTo]);
+    }, [seek, totalWords, moveTo, windowed, paraOf]);
 
     // Time-based rather than per-frame increments, so the pace stays honest
     // when the browser throttles frames.
@@ -294,7 +362,11 @@ export default function PacedText({
             )}
 
             <div className="relative space-y-6">
-                {paragraphs.map((para, p) => {
+                {windowed && winLo > 0 && (
+                    <div ref={topSpacerRef} aria-hidden="true" style={{ height: (paraChars[winLo] - paraChars[0]) * pxPerChar }} />
+                )}
+                {paragraphs.slice(winLo, winHi).map((para, k) => {
+                    const p = winLo + k;
                     const start = para[0]?.index ?? 0;
                     const end = start + para.length;
                     return (
@@ -312,6 +384,9 @@ export default function PacedText({
                         />
                     );
                 })}
+                {windowed && winHi < paragraphs.length && (
+                    <div ref={bottomSpacerRef} aria-hidden="true" style={{ height: (paraChars[paragraphs.length] - paraChars[winHi]) * pxPerChar }} />
+                )}
             </div>
         </div>
     );

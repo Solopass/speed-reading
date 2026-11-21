@@ -10,6 +10,7 @@ import {
     recentSeries, scoredSessions, sessionsToGoal
 } from '../lib/stats';
 import { chartColors, tooltipStyle } from '../lib/theme';
+import ComprehensionBySpeed from '../components/ComprehensionBySpeed';
 
 const ACTION_ICONS = { baseline: Target, 'baseline-more': Target, recall: Bookmark, plan: Map, push: Zap, read: BookOpen, book: BookOpen };
 const ACTION_CTA = {
@@ -247,6 +248,13 @@ function Dashboard({
                 </div>
 
                 <div className="lg:col-span-2 space-y-4">
+                    {Array.isArray(settings.checkpointLog) && settings.checkpointLog.some(e => Number.isFinite(e?.wpm)) && (
+                        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 md:p-6">
+                            <h2 className="text-lg font-bold text-white mb-1">Comprehension at speed</h2>
+                            <p className="text-xs text-slate-500 mb-3">How often you got reader checkpoints right, by the speed you were reading at.</p>
+                            <ComprehensionBySpeed log={settings.checkpointLog} />
+                        </div>
+                    )}
                     {hasBaseline && (
                         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 md:p-6">
                             <div className="flex items-end justify-between mb-3 gap-2">

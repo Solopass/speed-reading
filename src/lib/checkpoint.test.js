@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCloze, difficultyBuckets, difficultyScores, nextChunkSize, sentencesIn, speedTrace } from './checkpoint';
+import { buildCloze, checkpointsBySpeed, difficultyBuckets, difficultyScores, nextChunkSize, sentencesIn, speedTrace } from './checkpoint';
 import { easeCosts } from './textColor';
 
 const text = 'The farmers planted barley along the river every spring. Heavy floods carried thick silt across the fields. Children gathered smooth pebbles near the wooden bridge. Merchants traded copper bowls for woven baskets at market. Nobody expected the harvest to fail that year.';
@@ -96,5 +96,41 @@ describe('review regressions', () => {
         for (let i = 1; i < 20; i++) expect(out[i]).toBeGreaterThanOrEqual(out[i - 1]);
         expect(out[19]).toBeGreaterThan(330);
         expect(out[0]).toBeGreaterThan(0);
+    });
+});
+
+describe('checkpointsBySpeed', () => {
+    it('groups checks into speed bands with accuracy, skipping old entries without a speed', () => {
+        const log = [
+            { ok: true, wpm: 320 }, { ok: false, wpm: 380 }, { ok: true, wpm: 510 },
+            { ok: true, size: 3 }, { ok: true, wpm: 0 }
+        ];
+        expect(checkpointsBySpeed(log)).toEqual([
+            { from: 300, to: 399, n: 2, right: 1, pct: 50 },
+            { from: 500, to: 599, n: 1, right: 1, pct: 100 }
+        ]);
+        expect(checkpointsBySpeed(null)).toEqual([]);
+    });
+});
+
+describe('sentence recognition checkpoints', () => {
+    const sents = Array.from({ length: 30 }, (_, i) => `Sentence number ${i} tells about the ${['harbour', 'meadow', 'tower', 'forest', 'river'][i % 5]} at length today.`);
+    const w = sents.join(' ').split(' ');
+
+    it('offers the sentence just read plus two unread decoys', async () => {
+        const { buildRecognition } = await import('./checkpoint');
+        const q = buildRecognition(w, 0, 30, { random: seq([0.2, 0.6, 0.1, 0.8, 0.4]) });
+        expect(q.kind).toBe('sentence');
+        expect(q.options).toHaveLength(3);
+        const readText = w.slice(0, 30).join(' ');
+        expect(readText).toContain(q.options[q.answerIndex]);
+        for (const o of q.options.filter((_, i) => i !== q.answerIndex)) expect(readText).not.toContain(o);
+    });
+
+    it('returns null near the end, and buildCheckpoint falls back to a missing-word check', async () => {
+        const { buildRecognition, buildCheckpoint } = await import('./checkpoint');
+        expect(buildRecognition(w, w.length - 40, w.length)).toBeNull();
+        const q = buildCheckpoint(w, w.length - 40, w.length, { kind: 'sentence', random: seq([0.3, 0.7]) });
+        expect(q?.kind).toBe('word');
     });
 });

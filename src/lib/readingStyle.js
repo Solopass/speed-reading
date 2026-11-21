@@ -95,6 +95,13 @@ export const PACER_STYLES = [
     { id: 'line', label: 'Line only', note: 'Just the line, no cursor; the lightest guide' }
 ];
 
+/** The kind of question a reader checkpoint asks. */
+export const CHECKPOINT_KINDS = [
+    { id: 'mixed', label: 'Mixed', note: 'Mostly missing words, sometimes which sentence you read' },
+    { id: 'word', label: 'Missing word', note: 'A sentence you just read with one word blanked out' },
+    { id: 'sentence', label: 'Which sentence', note: 'Pick the sentence you just read from three' }
+];
+
 /** What marks your place in Scroll mode. */
 export const SCROLL_GUIDES = [
     { id: 'band', label: 'Band', note: 'A soft band across the reading line' },
@@ -168,6 +175,7 @@ export const DEFAULT_READING = {
     // Measurement and comfort while reading (each can be switched off)
     checkpoints: true,        // fill-the-blank check on a sentence you just read
     checkpointEveryMin: 3,    // minutes of reading between checks
+    checkpointKind: 'mixed',  // mixed | word | sentence
     adaptiveChunk: true,      // checkpoint results step words-per-flash up or down (2-5)
     blinkBreaks: true,        // a short blank gap in RSVP so your eyes can blink
     blinkEverySec: 30,
@@ -258,6 +266,7 @@ export function normalizeReading(raw) {
     result.scrollMarker = byId(SCROLL_MARKERS, source.scrollMarker, 'none').id;
     result.scrollGuide = byId(SCROLL_GUIDES, source.scrollGuide, 'band').id;
     result.scrollMotion = byId(SCROLL_MOTIONS, source.scrollMotion, 'smooth').id;
+    result.checkpointKind = byId(CHECKPOINT_KINDS, source.checkpointKind, 'mixed').id;
     result.scrollBandLines = Math.round(result.scrollBandLines);
     result.rewindWords = Math.round(result.rewindWords);
     result.rsvpWeight = Math.round(result.rsvpWeight / 100) * 100;

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { BookmarkPlus, RotateCcw, Trash2, X } from 'lucide-react';
 import {
     BUILTIN_PRESETS, DEFAULT_READING, FONT_OPTIONS, LIMITS, PACER_STYLES, RSVP_CONTEXT_PLAY_MODES,
-    SCROLL_COLOR_MODES, SCROLL_GUIDES, SCROLL_MARKERS, SCROLL_MOTIONS, SCROLL_PALETTES, THEMES,
+    SCROLL_COLOR_MODES, SCROLL_GUIDES, SCROLL_MARKERS, SCROLL_MOTIONS, SCROLL_PALETTES, THEMES, CHECKPOINT_KINDS,
     normalizePreset
 } from '../lib/readingStyle';
 import FocalColorPicker from './FocalColorPicker';
@@ -244,6 +244,10 @@ export default function ReaderSettings({
                                 <Switch label="Checkpoints" hint="Every few minutes, a fill-the-blank question on a sentence you just read. Works offline, no AI." checked={reading.checkpoints} onChange={(v) => set({ checkpoints: v })} />
                                 {reading.checkpoints && (
                                     <>
+                                        <div>
+                                            <div className="text-sm text-slate-300 mb-1.5">Question type</div>
+                                            <Chips label="Checkpoint question type" options={CHECKPOINT_KINDS} value={reading.checkpointKind} onChange={(id) => set({ checkpointKind: id })} />
+                                        </div>
                                         <Slider id="rs-check-every" label="Every" value={reading.checkpointEveryMin} range={LIMITS.checkpointEveryMin} step={1} onChange={(v) => set({ checkpointEveryMin: v })} format={(v) => `${v} min of reading`} />
                                         <Switch label="Words per flash follows your checks" hint="With 2+ words per flash: four right in a row adds a word (up to 5), two misses in three takes one away (down to 2)." checked={reading.adaptiveChunk} onChange={(v) => set({ adaptiveChunk: v })} />
                                     </>

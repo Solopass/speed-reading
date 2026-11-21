@@ -178,3 +178,59 @@ export function difficultyBuckets(scores, n = 60) {
     const hi = Math.max(...raw);
     return raw.map(v => (hi - lo < 1e-6 ? 0 : (v - lo) / (hi - lo)));
 }
+
+/**
+ * Checkpoint results grouped by the speed they were read at, for the
+ * "comprehension at speed" chart: [{ from, to, n, right, pct }] for each
+ * band of `band` WPM that has any checks, slowest first. Entries saved
+ * before speeds were recorded are skipped.
+ */
+export function checkpointsBySpeed(log, band = 100) {
+    const bands = new Map();
+    for (const e of Array.isArray(log) ? log : []) {
+        if (!Number.isFinite(e?.wpm) || e.wpm <= 0) continue;
+        const from = Math.floor(e.wpm / band) * band;
+        const b = bands.get(from) ?? { from, to: from + band - 1, n: 0, right: 0 };
+        b.n += 1;
+        if (e.ok) b.right += 1;
+        bands.set(from, b);
+    }
+    return [...bands.values()]
+        .sort((a, b) => a.from - b.from)
+        .map(b => ({ ...b, pct: Math.round((b.right / b.n) * 100) }));
+}
+
+const clip = (s, n = 160) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
+
+/**
+ * "Which of these did you just read?": one sentence from the stretch just
+ * read and two decoys from text you have not reached yet (so they are the same
+ * style but cannot have been seen). Returns the same shape as buildCloze, with
+ * kind 'sentence' and no blanked sentence, or null when there is not enough
+ * unread text left for decoys.
+ */
+export function buildRecognition(words, from, to, { random = Math.random } = {}) {
+    const end = Math.min(words.length, to);
+    const read = sentencesIn(words, from, end).slice(-3);
+    if (!read.length) return null;
+    // Decoys from well ahead of the reader, not the next few lines.
+    const ahead = sentencesIn(words, Math.min(words.length, end + 40), words.length);
+    if (ahead.length < 2) return null;
+    const pick = read[Math.floor(random() * read.length)];
+    const decoys = shuffled(ahead, random).slice(0, 2);
+    const text = (s) => clip(words.slice(s.start, s.end).join(' '));
+    const answer = text(pick);
+    const options = shuffled([answer, ...decoys.map(text)], random);
+    if (new Set(options).size < 3) return null;
+    return { kind: 'sentence', prompt: 'Which of these did you just read?', sentence: null, options, answerIndex: options.indexOf(answer), answer, wordIndex: pick.start };
+}
+
+/** Picks the checkpoint for the stretch just read, by the chosen kind ('mixed', 'word', 'sentence'). */
+export function buildCheckpoint(words, from, to, { kind = 'mixed', rank = null, random = Math.random } = {}) {
+    const wantSentence = kind === 'sentence' || (kind === 'mixed' && random() < 0.4);
+    const first = wantSentence ? buildRecognition(words, from, to, { random }) : buildCloze(words, from, to, { rank, random });
+    if (first) return wantSentence ? first : { ...first, kind: 'word' };
+    // Fall back to the other kind rather than skipping the check.
+    const other = wantSentence ? buildCloze(words, from, to, { rank, random }) : buildRecognition(words, from, to, { random });
+    return other && !other.kind ? { ...other, kind: 'word' } : other;
+}

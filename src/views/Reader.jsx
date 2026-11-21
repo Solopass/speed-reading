@@ -14,7 +14,8 @@ import { focalColorFor, rampFactor } from '../lib/readingStyle';
 import { focalRange, orpIndex, rsvpWordScale, searchTextMatches } from '../lib/scrollUtils';
 import { clampIndex, clock, extractSections, jump, startCount, wordsCovered } from '../lib/readerNav';
 import { buildChunks, chunkIndexAt, endsSentence, joinFlashWords, pauseAfter, tokenize, wordWeights } from '../lib/chunker';
-import { buildCloze, difficultyBuckets, difficultyScores, nextChunkSize, speedTrace } from '../lib/checkpoint';
+import { buildCheckpoint, difficultyBuckets, difficultyScores, nextChunkSize, speedTrace } from '../lib/checkpoint';
+import { MAX_WPM, autoStartPlays, blinkDue as isBlinkDue, blinkMayAdvance, checkWindowAfterSeek, checkpointDue, restartsFromTop } from '../lib/readerLogic';
 import { loadFrequencyRank } from '../lib/vocab';
 import Quiz from '../components/Quiz';
 import CheckpointCard from '../components/CheckpointCard';
@@ -157,7 +158,7 @@ function Reader({
     // leave the reading speed at 1,000 WPM.
     const [skimWpm, setSkimWpm] = useState(() => settings.skimWpm ?? skimStartWpm(initialWpm));
     const safeResume = Math.max(0, resumeFrom);
-    const [isPlaying, setIsPlaying] = useState(() => Boolean(passage?.autoStart) && !isCalibration && (settings.readerMode || 'rsvp') !== 'natural');
+    const [isPlaying, setIsPlaying] = useState(() => autoStartPlays(passage?.autoStart, isCalibration, settings.readerMode || 'rsvp'));
     const [currentIndex, setCurrentIndex] = useState(safeResume);
     const [mode, setMode] = useState(isCalibration ? 'natural' : (settings.readerMode || 'rsvp'));
     const [isAudioReady, setIsAudioReady] = useState(false);
@@ -405,15 +406,15 @@ function Reader({
     const [checkStats, setCheckStats] = useState({ asked: 0, right: 0 });
     const lastCheckRef = useRef({ secs: 0, idx: safeResume });
     useEffect(() => {
-        // Skim is read for gist, so a check on one exact word would be unfair there.
-        if (!reading.checkpoints || isCalibration || mode === 'natural' || mode === 'skim' || !isPlaying || checkpoint) return;
-        const since = playSecs - lastCheckRef.current.secs;
-        const every = reading.checkpointEveryMin * 60;
-        if (since < every) return;
-        // Wait for a sentence to finish, unless that is taking too long.
+        if (!isPlaying || checkpoint) return;
+        // Due after the interval, at a sentence end (or after a short grace);
+        // never in Skim, Natural or the baseline (see readerLogic.js).
         const atSentenceEnd = cursorIndex > 0 && endsSentence(words[cursorIndex - 1], words[cursorIndex]);
-        if (!atSentenceEnd && since < every + 20) return;
-        const cloze = buildCloze(words, lastCheckRef.current.idx, cursorIndex, { rank });
+        if (!checkpointDue({
+            enabled: reading.checkpoints, mode, isCalibration, playSecs,
+            lastSecs: lastCheckRef.current.secs, everyMin: reading.checkpointEveryMin, atSentenceEnd
+        })) return;
+        const cloze = buildCheckpoint(words, lastCheckRef.current.idx, cursorIndex, { kind: reading.checkpointKind, rank });
         lastCheckRef.current = { secs: playSecs, idx: cursorIndex };
         if (!cloze) return;
         queueMicrotask(() => {
@@ -421,14 +422,16 @@ function Reader({
             setCountdown(null);
             setCheckpoint({ cloze, picked: null });
         });
-    }, [playSecs, cursorIndex, reading.checkpoints, reading.checkpointEveryMin, isCalibration, mode, isPlaying, checkpoint, words, rank]);
+    }, [playSecs, cursorIndex, reading.checkpoints, reading.checkpointEveryMin, reading.checkpointKind, isCalibration, mode, isPlaying, checkpoint, words, rank]);
 
     const answerCheckpoint = useCallback((i) => {
         if (!checkpoint || checkpoint.picked !== null) return;
         const ok = i === checkpoint.cloze.answerIndex;
         setCheckpoint({ ...checkpoint, picked: i });
         setCheckStats(st => ({ asked: st.asked + 1, right: st.right + (ok ? 1 : 0) }));
-        const log = [...(Array.isArray(settings.checkpointLog) ? settings.checkpointLog : []), { ok, size: settings.chunkSize, mode }].slice(-30);
+        // Kept with the speed and date, for the dashboard's comprehension-at-speed chart.
+        const entry = { ok, size: settings.chunkSize, mode, wpm: effectiveWpm, date: new Date().toISOString().slice(0, 10), kind: checkpoint.cloze.kind ?? 'word' };
+        const log = [...(Array.isArray(settings.checkpointLog) ? settings.checkpointLog : []), entry].slice(-300);
         const patch = { checkpointLog: log };
         // Words per flash follows how well the checks go, between 2 and 5.
         if (reading.adaptiveChunk && mode === 'rsvp' && settings.chunkSize >= 2) {
@@ -443,7 +446,7 @@ function Reader({
             setAccelSecs(0);
             addNotification?.('Missed check: the speed builder starts again from your base speed.');
         }
-    }, [checkpoint, settings.checkpointLog, settings.chunkSize, mode, reading.adaptiveChunk, updateSettings, addNotification, accelSecs]);
+    }, [checkpoint, settings.checkpointLog, settings.chunkSize, mode, reading.adaptiveChunk, updateSettings, addNotification, accelSecs, effectiveWpm]);
     const continueAfterCheckpoint = useCallback(() => { setCheckpoint(null); setIsPlaying(true); }, []);
     const skipCheckpoint = useCallback(() => { setCheckpoint(null); setIsPlaying(true); }, []);
 
@@ -492,7 +495,7 @@ function Reader({
     const measuredWpm = useCallback((wordsRead) => {
         const ms = elapsedMs();
         if (ms < 500 || wordsRead <= 0) return wpm;
-        return Math.min(2500, Math.max(50, Math.round(wordsRead / (ms / 60000))));
+        return Math.min(MAX_WPM, Math.max(50, Math.round(wordsRead / (ms / 60000))));
     }, [elapsedMs, wpm]);
 
     // Words covered *this sitting*, banked across every rewind and skip (see
@@ -552,8 +555,7 @@ function Reader({
         if (!auto && to < cursorRef.current) rewindEventsRef.current.push(playSecsRef.current);
         // The next checkpoint asks about text read, not text jumped over: a jump
         // forward starts the window here; stepping back keeps what was already read.
-        const prevIdx = lastCheckRef.current.idx;
-        lastCheckRef.current = { ...lastCheckRef.current, idx: to > cursorRef.current ? to : Math.min(prevIdx, to) };
+        lastCheckRef.current = { ...lastCheckRef.current, idx: checkWindowAfterSeek(lastCheckRef.current.idx, cursorRef.current, to) };
         countRef.current = jump(countRef.current, cursorRef.current, to);
         cursorRef.current = to;
         if (mode === 'rsvp') setCurrentIndex(to);
@@ -579,6 +581,19 @@ function Reader({
         const { onLeave: leave, passageId, chapterIndex: chapter, absoluteIndex: at, finished } = leaveRef.current;
         if (!finished) leave?.({ passageId, chapterIndex: chapter, progressIndex: at, mode: leaveRef.current.mode });
     }, []);
+
+    // The chapter-end quiz is written in the background once you are 60% of
+    // the way through a book chapter that has none, so with a slow local model
+    // it is ready (or nearly) when the chapter ends instead of starting then.
+    const quizPrefetchRef = useRef(null);
+    const wantsChapterQuiz = reading.chapterEndQuiz && Boolean(onGenerateQuiz) && Boolean(passage?.bookId)
+        && questions.length === 0 && !isCalibration && mode !== 'natural' && mode !== 'skim';
+    useEffect(() => {
+        // Only while actually reading: opening a chapter resumed past 60% does not start it.
+        if (!wantsChapterQuiz || !isPlaying || quizPrefetchRef.current || words.length === 0) return;
+        if (cursorIndex / words.length < 0.6) return;
+        quizPrefetchRef.current = onGenerateQuiz(passage).catch(() => null);
+    }, [wantsChapterQuiz, isPlaying, cursorIndex, words.length, onGenerateQuiz, passage]);
 
     /**
      * Ends the reading. `atIndex` is where the cursor finished: the RSVP and
@@ -609,7 +624,9 @@ function Reader({
             setPending(measured);
             setQuizWriting(true);
             quizWritingCancelledRef.current = false;
-            onGenerateQuiz(passage)
+            // A background attempt that failed (model not loaded yet, say) is tried once more now.
+            const prefetched = quizPrefetchRef.current;
+            (prefetched ? prefetched.then(res => res ?? onGenerateQuiz(passage)) : onGenerateQuiz(passage))
                 .then((res) => {
                     if (quizWritingCancelledRef.current) return;
                     const qs = normalizeQuestions(res?.questions);
@@ -682,9 +699,10 @@ function Reader({
             if (ts >= targetAt) {
                 if (lastBlinkRef.current === 0) lastBlinkRef.current = ts;
                 const since = ts - lastBlinkRef.current;
-                const blinkDue = reading.blinkBreaks && !isCalibration && end < words.length
-                    && since >= blinkEvery && (endsSentence(words[end - 1], words[end]) || since >= blinkEvery * 1.5);
-                if (blinkDue) {
+                if (isBlinkDue({
+                    enabled: reading.blinkBreaks, isCalibration, sinceMs: since, everyMs: blinkEvery,
+                    atSentenceEnd: endsSentence(words[end - 1], words[end]), isLast: end >= words.length
+                })) {
                     lastBlinkRef.current = ts;
                     rsvpDeadlineRef.current = targetAt + BLINK_MS;
                     setBlinking(true);
@@ -693,7 +711,7 @@ function Reader({
                         blinkTimerRef.current = null;
                         setBlinking(false);
                         // A jump during the blink wins: do not drag the reader back.
-                        if (playingRef.current && rsvpIndexRef.current === blinkFrom) advance();
+                        if (blinkMayAdvance(playingRef.current, rsvpIndexRef.current, blinkFrom)) advance();
                     }, BLINK_MS);
                     return;
                 }
@@ -747,7 +765,7 @@ function Reader({
     const togglePlay = () => {
         if (countdown !== null) { setCountdown(null); return; }
         if (isPlaying) { setIsPlaying(false); return; }
-        if (mode !== 'natural' && words.length > 0 && cursorRef.current >= words.length) seekTo(0, { auto: true });
+        if (restartsFromTop(mode, cursorRef.current, words.length)) seekTo(0, { auto: true });
         // Stepping back a few words on resume picks the sentence back up.
         else if (hasPlayedRef.current && reading.rewindWords > 0 && cursorRef.current > 0) seekBy(-reading.rewindWords, { auto: true });
         if (reading.countdown) setCountdown(3);
