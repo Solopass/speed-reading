@@ -11,7 +11,7 @@ import { CALIBRATION_PASSAGES } from './lib/calibration';
 import { intensityLabel, nextPushIntensity } from './lib/protocol';
 import { MAX_DRILL_HISTORY, migrateDrills } from './lib/drillStats';
 import { createBackup, downloadBackup, readBackup } from './lib/backup';
-import { DEFAULT_READING, normalizeReading } from './lib/readingStyle';
+import { DEFAULT_READING, normalizePreset, normalizeReading } from './lib/readingStyle';
 import { STEP_KINDS, migratePlans, removePlan, upsertPlan } from './lib/plans';
 import {
     addPassageBookmark, createEntry, findEntry, migrateLibrary, recallQueue, recordAttempt,
@@ -153,6 +153,8 @@ export default function App() {
     const [plans, setPlans] = usePersistentState('speedReadPlans', (raw) => migratePlans(raw ?? []), [], onSaveError);
     const [drills, setDrills] = usePersistentState('speedReadDrills', (raw) => migrateDrills(raw ?? []), [], onSaveError);
     const [vocab, setVocab] = usePersistentState('speedReadVocab', migrateVocab, [], onSaveError);
+    const [customPresets, setCustomPresets] = usePersistentState('speedReadPresets', (raw) => (Array.isArray(raw) ? raw.map(normalizePreset).filter(Boolean) : []), [], onSaveError);
+    const [popoutWin, setPopoutWin] = useState(null);
 
     const [activePassage, setActivePassage] = useState(null);
     // Set when a passage is opened purely to re-test retention, so the result
@@ -460,6 +462,8 @@ export default function App() {
     };
 
     const exitFocus = (to) => {
+        if (popoutWin && !popoutWin.closed) popoutWin.close();
+        setPopoutWin(null);
         setActivePassage(null);
         setIsRecall(false);
         setCurrentView(to);
@@ -541,6 +545,8 @@ export default function App() {
             setActivePassage({ ...chapterPassage(book, nextChapterIdx, 0), autoStart: !session.scored });
             setIsRecall(false);
         } else {
+            if (popoutWin && !popoutWin.closed) popoutWin.close();
+            setPopoutWin(null);
             setActivePassage(null);
             setIsRecall(false);
             setCurrentView('dashboard');
@@ -630,7 +636,7 @@ export default function App() {
                         {currentView === 'upload' && <Upload ai={ai} library={library} readingWpm={readerOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onSaveBook={saveBook} onSavePassage={(p) => saveToLibrary(p, 'import')} onOpenSaved={(id) => openSaved(id, { returnTo: 'documents' })} onDeleteSaved={deleteSaved} onOpenDocuments={() => navigate('documents')} addNotification={addNotification} />}
                         {currentView === 'recall' && <RecallCheck passage={activePassage} onDone={finishRecall} onExit={() => exitFocus('dashboard')} />}
                         {currentView === 'push' && <SpeedPush reading={reading} patchReading={patchReading} updateSettings={updateSettings} passage={activePassage} targetWpm={activeOpeningWpm} intensity={userStats.pushIntensity} settings={settings} onFinish={finishSession} onExit={() => exitFocus(returnView)} />}
-                        {currentView === 'reader' && <Reader key={activePassage?.id + ':' + (activePassage?.chapterIndex ?? '')} passage={activePassage} book={activeBook} onSelectChapter={activeBook ? selectBookChapter : null} settings={settings} reading={reading} patchReading={patchReading} updateSettings={updateSettings} initialWpm={readerOpeningWpm} resumeFrom={activePassage?.resumeFrom ?? (isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id)))} onFinish={finishSession} onLeave={handleReaderLeave} onBookmark={!activePassage?.isCalibration ? bookmarkHere : null} onExit={() => exitFocus(activePassage?.isCalibration ? 'dashboard' : returnView)} addNotification={addNotification} />}
+                        {currentView === 'reader' && <Reader key={activePassage?.id + ':' + (activePassage?.chapterIndex ?? '')} passage={activePassage} book={activeBook} onSelectChapter={activeBook ? selectBookChapter : null} settings={settings} reading={reading} patchReading={patchReading} updateSettings={updateSettings} customPresets={customPresets} onSavePresets={setCustomPresets} popoutWin={popoutWin} onPopoutChange={setPopoutWin} initialWpm={readerOpeningWpm} resumeFrom={activePassage?.resumeFrom ?? (isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id)))} onFinish={finishSession} onLeave={handleReaderLeave} onBookmark={!activePassage?.isCalibration ? bookmarkHere : null} onExit={() => exitFocus(activePassage?.isCalibration ? 'dashboard' : returnView)} addNotification={addNotification} />}
                         {currentView === 'tools' && <Tools drills={drills} adaptiveStart={settings.autoAdaptive} onDrillComplete={handleDrillComplete} addNotification={addNotification} />}
                         {currentView === 'vocab' && <Vocabulary vocab={vocab} setVocab={setVocab} library={library} ai={ai} addNotification={addNotification} />}
                         {currentView === 'analytics' && <Analytics history={sessionHistory} drills={drills} stats={userStats} theme={theme} />}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-    DEFAULT_READING, FOCAL_COLORS, FONT_OPTIONS, LIMITS, THEMES,
-    estimatedWordsPerLine, focalColorFor, fontFor, normalizeReading,
+    BUILTIN_PRESETS, DEFAULT_READING, FOCAL_COLORS, FONT_OPTIONS, LIMITS, THEMES,
+    estimatedWordsPerLine, focalColorFor, fontFor, normalizePreset, normalizeReading,
     readingCssVars, themeFor, webFontHrefs
 } from './readingStyle';
 
@@ -215,5 +215,13 @@ describe('reader QOL settings', () => {
         expect(c.rsvpMergeShortWords).toBe(true);
         expect(c.scrollMotion).toBe('constant');
         expect(c.rsvpFlankOpacity).toBe(0.3);
+    });
+
+    it('provides valid built-in presets and normalizes custom presets', () => {
+        expect(BUILTIN_PRESETS.length).toBeGreaterThanOrEqual(3);
+        const valid = normalizePreset({ name: 'My Focus', reading: { rsvpSizePx: 999 } });
+        expect(valid?.name).toBe('My Focus');
+        expect(valid?.reading.rsvpSizePx).toBe(LIMITS.rsvpSizePx[1]);
+        expect(normalizePreset({ name: '   ' })).toBeNull();
     });
 });

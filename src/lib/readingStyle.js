@@ -298,3 +298,70 @@ export const webFontHrefs = (reading) => fontFor(reading).hrefs ?? [];
  */
 export const estimatedWordsPerLine = (reading) =>
     Math.max(1, Math.round(normalizeReading(reading).maxWidthCh / 5.5));
+
+/** Built-in one-click reading profiles. */
+export const BUILTIN_PRESETS = [
+    {
+        id: 'chill-scroll',
+        name: 'Chill Scroll',
+        note: 'Constant-glide teleprompter with soft band & comfortable width',
+        reading: {
+            scrollMotion: 'constant',
+            scrollGuide: 'band',
+            scrollSpotlight: 0.35,
+            scrollTunnel: 0,
+            maxWidthCh: 62,
+            proseSizePx: 21
+        }
+    },
+    {
+        id: 'tunnel-1100',
+        name: 'Tunnel Focus 1100+',
+        note: '3-letter focal cluster, dimmed flanks, hidden context while playing, glue-word merge',
+        reading: {
+            focalSpan: 'cluster',
+            rsvpFlankOpacity: 0.55,
+            rsvpContextPlay: 'hide',
+            rsvpMergeShortWords: true,
+            showFocalGuide: true,
+            rsvpSizePx: 68
+        }
+    },
+    {
+        id: 'clean-rsvp',
+        name: 'Clean RSVP',
+        note: 'Classic single-letter ORP with dimmed context',
+        reading: {
+            focalSpan: 'single',
+            rsvpFlankOpacity: 0.8,
+            rsvpContextPlay: 'dim',
+            rsvpMergeShortWords: false,
+            showFocalGuide: true
+        }
+    },
+    {
+        id: 'night-glide',
+        name: 'Night Glide',
+        note: 'High-contrast constant scroll with phrase colour & focus tunnel',
+        reading: {
+            themeId: 'contrast',
+            scrollMotion: 'constant',
+            scrollTunnel: 15,
+            scrollSpotlight: 0.5,
+            scrollColor: 'phrases'
+        }
+    }
+];
+
+/** Normalizes a user-saved custom preset entry. */
+export function normalizePreset(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const name = String(raw.name ?? '').trim().slice(0, 40);
+    if (!name) return null;
+    const id = String(raw.id || `custom-${Date.now()}`);
+    return {
+        id,
+        name,
+        reading: normalizeReading(raw.reading)
+    };
+}

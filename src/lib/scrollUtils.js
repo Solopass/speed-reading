@@ -128,3 +128,36 @@ export function wordIndexAtY(lineTops, y) {
     }
     return lo;
 }
+
+/**
+ * Searches word-split text for a phrase/keyword and returns matching word indices
+ * with short surrounding snippets for in-reader Jump-to-match.
+ */
+export function searchTextMatches(text, query, maxResults = 30) {
+    const q = String(query ?? '').trim().toLowerCase();
+    if (!q || !text) return [];
+    const words = String(text).trim().split(/\s+/).filter(Boolean);
+    const qWords = q.split(/\s+/).filter(Boolean);
+    if (qWords.length === 0) return [];
+    const matches = [];
+    for (let i = 0; i < words.length && matches.length < maxResults; i++) {
+        let hit = false;
+        if (qWords.length === 1) {
+            hit = words[i].toLowerCase().includes(qWords[0]);
+        } else if (i + qWords.length <= words.length) {
+            hit = qWords.every((qw, k) => {
+                const w = words[i + k].toLowerCase();
+                return k === 0 ? w.endsWith(qw) || w.includes(qw) : k === qWords.length - 1 ? w.startsWith(qw) || w.includes(qw) : w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '') === qw || w === qw;
+            });
+        }
+        if (hit) {
+            const from = Math.max(0, i - 4);
+            const to = Math.min(words.length, i + qWords.length + 6);
+            matches.push({
+                index: i,
+                snippet: `${from > 0 ? '…' : ''}${words.slice(from, to).join(' ')}${to < words.length ? '…' : ''}`
+            });
+        }
+    }
+    return matches;
+}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-    ArrowUpDown, Bookmark, ChevronLeft, ChevronRight, ExternalLink, Maximize2, Minimize2, Minus, Pause, Play, Plus, RotateCcw, Settings2, SkipBack, SkipForward, Target, Volume2
+    ArrowUpDown, Bookmark, ChevronLeft, ChevronRight, ExternalLink, Maximize2, Minimize2, Minus, Pause, Play, Plus, RotateCcw, Search, Settings2, SkipBack, SkipForward, Target, Volume2, X
 } from 'lucide-react';
 import { normalizeQuestions } from '../lib/quiz';
 import useHotkeys from '../lib/useHotkeys';
@@ -11,7 +11,7 @@ import PassageText from '../components/PassageText';
 import ReadingSurface from '../components/ReadingSurface';
 import ReaderSettings from '../components/ReaderSettings';
 import { focalColorFor, rampFactor } from '../lib/readingStyle';
-import { focalRange, orpIndex, rsvpWordScale } from '../lib/scrollUtils';
+import { focalRange, orpIndex, rsvpWordScale, searchTextMatches } from '../lib/scrollUtils';
 import { clampIndex, clock, extractSections, jump, startCount, wordsCovered } from '../lib/readerNav';
 import { buildChunks, chunkIndexAt, joinFlashWords, pauseAfter, tokenize, wordWeights } from '../lib/chunker';
 import { loadFrequencyRank } from '../lib/vocab';
@@ -122,8 +122,9 @@ function Scrubber({ index, total, onSeek, label }) {
 }
 
 function Reader({
-    passage, book = null, onSelectChapter = null, settings, reading, patchReading, updateSettings, initialWpm, resumeFrom = 0,
-    onFinish, onLeave, onExit, onBookmark = null, addNotification
+    passage, book = null, onSelectChapter = null, settings, reading, patchReading, updateSettings,
+    customPresets = [], onSavePresets = null, popoutWin: liftedPopoutWin = null, onPopoutChange = null,
+    initialWpm, resumeFrom = 0, onFinish, onLeave, onExit, onBookmark = null, addNotification
 }) {
     // The baseline test measures your natural pace, so it is always read as
     // ordinary text with no pacing and no speed control.
@@ -160,7 +161,12 @@ function Reader({
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [countdown, setCountdown] = useState(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
-    const [popoutWin, setPopoutWin] = useState(null);
+    const [localPopoutWin, setLocalPopoutWin] = useState(null);
+    const popoutWin = onPopoutChange ? liftedPopoutWin : localPopoutWin;
+    const setPopoutWin = onPopoutChange ?? setLocalPopoutWin;
+    const [searchOpen, setSearchOpen] = useState(false);
+    const [searchQuery, setSearchQuery] = useState('');
+    const searchInputRef = useRef(null);
 
     const [pacedIndex, setPacedIndex] = useState(safeResume);
     const [pacedSeek, setPacedSeek] = useState(null);
@@ -614,7 +620,11 @@ function Reader({
     const closePopout = useCallback(() => {
         if (popoutWin && !popoutWin.closed) popoutWin.close();
         setPopoutWin(null);
-    }, [popoutWin]);
+    }, [popoutWin, setPopoutWin]);
+
+    const handleWidthChange = useCallback((ch) => patchReading({ maxWidthCh: ch }), [patchReading]);
+    const handleFocalChange = useCallback((pct) => patchReading({ scrollFocalPct: pct }), [patchReading]);
+    const handleHeightChange = useCallback((vh) => patchReading({ scrollHeightVh: vh }), [patchReading]);
 
     const togglePopout = async () => {
         if (popoutWin && !popoutWin.closed) {
@@ -648,8 +658,48 @@ function Reader({
     };
 
     useEffect(() => () => {
-        if (popoutWin && !popoutWin.closed) popoutWin.close();
-    }, [popoutWin]);
+        if (!onPopoutChange && popoutWin && !popoutWin.closed) popoutWin.close();
+    }, [onPopoutChange, popoutWin]);
+
+    useEffect(() => {
+        if (!searchOpen) return undefined;
+        searchInputRef.current?.focus();
+        const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); setSearchOpen(false); } };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [searchOpen]);
+
+    useEffect(() => {
+        if (isCalibration || mode === 'natural') return undefined;
+        const onKey = (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+                e.preventDefault();
+                pause();
+                setSearchOpen(true);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [isCalibration, mode]);
+
+    const searchResults = useMemo(() => {
+        if (!searchOpen || !searchQuery.trim()) return [];
+        const currentHits = searchTextMatches(passage?.text, searchQuery, 20).map(m => ({
+            ...m,
+            chapterIndex: chapterIndex,
+            chapterTitle: book?.chapters?.[chapterIndex]?.title ?? null
+        }));
+        if (!book || book.chapters.length <= 1) return currentHits;
+        const otherHits = [];
+        book.chapters.forEach((ch, ci) => {
+            if (ci === chapterIndex || otherHits.length >= 20) return;
+            for (const m of searchTextMatches(ch.text, searchQuery, 5)) {
+                otherHits.push({ ...m, chapterIndex: ci, chapterTitle: ch.title });
+                if (otherHits.length >= 20) break;
+            }
+        });
+        return [...currentHits, ...otherHits];
+    }, [searchOpen, searchQuery, passage?.text, book, chapterIndex]);
 
     const restart = () => { pause(); seekTo(0); };
 
@@ -740,12 +790,13 @@ function Reader({
         z: () => patchReading({ zen: !reading.zen }),
         s: () => openSettings(),
         b: () => { if (mode !== 'natural' && onBookmark) { pause(); setBookmarkNote(''); setBookmarkOpen(true); } },
+        '/': () => { if (mode !== 'natural') { pause(); setSearchOpen(true); } },
         f: () => toggleFullscreen(),
         '-': () => resizeText(-1),
         '=': () => resizeText(1),
         '+': () => resizeText(1),
-        Escape: () => { if (bookmarkOpen) setBookmarkOpen(false); else if (wpmMenuOpen) setWpmMenuOpen(false); else onExit?.(); }
-    }, !quizActive && !settingsOpen && !bookmarkOpen && !isCalibration);
+        Escape: () => { if (searchOpen) setSearchOpen(false); else if (bookmarkOpen) setBookmarkOpen(false); else if (wpmMenuOpen) setWpmMenuOpen(false); else onExit?.(); }
+    }, !quizActive && !settingsOpen && !bookmarkOpen && !searchOpen && !isCalibration);
 
     const renderRsvpChunk = () => {
         const chunkWords = words.slice(currentIndex, flashEnd(currentIndex));
@@ -1151,6 +1202,17 @@ function Reader({
                             </button>
                         </>
                     )}
+                    {mode !== 'natural' && !isCalibration && (
+                        <button
+                            type="button"
+                            onClick={() => { pause(); setSearchOpen(true); }}
+                            aria-label="Search in text"
+                            title="Search & jump (/ or Ctrl+F)"
+                            className="p-2.5 rounded-xl border border-slate-800 text-slate-300 hover:text-white hover:border-slate-600 transition-colors"
+                        >
+                            <Search size={18} />
+                        </button>
+                    )}
                     {onBookmark && mode !== 'natural' && (
                         <button
                             onClick={() => { pause(); setBookmarkNote(''); setBookmarkOpen(true); }} aria-label="Bookmark this spot" title="Bookmark & note (B)"
@@ -1369,9 +1431,9 @@ function Reader({
                             onWordClick={seekTo}
                             onProgress={setPacedIndex}
                             onComplete={handlePacerComplete}
-                            onChangeWidth={(ch) => patchReading({ maxWidthCh: ch })}
-                            onChangeFocalPct={(pct) => patchReading({ scrollFocalPct: pct })}
-                            onChangeHeightVh={(vh) => patchReading({ scrollHeightVh: vh })}
+                            onChangeWidth={handleWidthChange}
+                            onChangeFocalPct={handleFocalChange}
+                            onChangeHeightVh={handleHeightChange}
                         />
 
                         <div className="mt-6 pt-4 border-t border-slate-800 flex flex-col items-center gap-2">
@@ -1471,7 +1533,64 @@ function Reader({
                 open={settingsOpen} onClose={closeSettings} mode={mode}
                 reading={reading} patchReading={patchReading}
                 settings={settings} updateSettings={updateSettings}
+                customPresets={customPresets} onSavePresets={onSavePresets}
             />
+            {searchOpen && (
+                <div className="fixed inset-0 z-[60] grid place-items-start justify-center p-4 pt-20">
+                    <button aria-label="Close search" className="absolute inset-0 bg-black/50" onClick={() => setSearchOpen(false)} />
+                    <div
+                        role="dialog"
+                        aria-label="Search in document"
+                        className="relative w-full max-w-lg bg-slate-900 border border-slate-700 rounded-2xl p-4 shadow-2xl space-y-3"
+                    >
+                        <div className="flex items-center gap-2">
+                            <Search size={16} className="text-purple-400 shrink-0" />
+                            <input
+                                ref={searchInputRef}
+                                type="text"
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                placeholder={book && book.chapters.length > 1 ? 'Search this chapter or entire book…' : 'Search text to jump…'}
+                                className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-purple-500"
+                            />
+                            <button type="button" onClick={() => setSearchOpen(false)} aria-label="Close search" className="p-2 text-slate-400 hover:text-white">
+                                <X size={16} />
+                            </button>
+                        </div>
+                        {searchQuery.trim() && (
+                            <div className="max-h-72 overflow-y-auto space-y-1.5 pr-1">
+                                {searchResults.length === 0 ? (
+                                    <p className="text-xs text-slate-500 py-4 text-center">No matches found.</p>
+                                ) : (
+                                    searchResults.map((m, i) => (
+                                        <button
+                                            key={`${m.chapterIndex ?? 'p'}-${m.index}-${i}`}
+                                            type="button"
+                                            onClick={() => {
+                                                setSearchOpen(false);
+                                                if (Number.isInteger(m.chapterIndex) && m.chapterIndex !== chapterIndex && onSelectChapter) {
+                                                    onSelectChapter(m.chapterIndex, { progressIndex: cursorRef.current, mode });
+                                                } else {
+                                                    seekTo(m.index);
+                                                }
+                                            }}
+                                            className="w-full text-left bg-slate-950/70 hover:border-purple-500 border border-slate-800 rounded-xl px-3 py-2 transition-colors"
+                                        >
+                                            <div className="flex items-center justify-between text-[11px] text-purple-300 font-mono mb-0.5">
+                                                <span>{m.chapterTitle ? `${m.chapterTitle} · ` : ''}Word {m.index + 1}</span>
+                                                {Number.isInteger(m.chapterIndex) && m.chapterIndex !== chapterIndex && (
+                                                    <span className="text-slate-500">Opens chapter</span>
+                                                )}
+                                            </div>
+                                            <div className="text-xs text-slate-300 line-clamp-2">{m.snippet}</div>
+                                        </button>
+                                    ))
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
             {popoutWin && !popoutWin.closed && (mode === 'rsvp' || isScroll) && createPortal(
                 <ReadingSurface reading={reading} className="h-screen w-screen flex flex-col justify-between p-4 select-none">
                     <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800/60 shrink-0">

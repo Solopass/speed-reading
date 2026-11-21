@@ -1,8 +1,9 @@
-import { useEffect } from 'react';
-import { RotateCcw, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { BookmarkPlus, RotateCcw, Trash2, X } from 'lucide-react';
 import {
-    DEFAULT_READING, FONT_OPTIONS, LIMITS, PACER_STYLES, RSVP_CONTEXT_PLAY_MODES, SCROLL_COLOR_MODES,
-    SCROLL_GUIDES, SCROLL_MARKERS, SCROLL_MOTIONS, SCROLL_PALETTES, THEMES
+    BUILTIN_PRESETS, DEFAULT_READING, FONT_OPTIONS, LIMITS, PACER_STYLES, RSVP_CONTEXT_PLAY_MODES,
+    SCROLL_COLOR_MODES, SCROLL_GUIDES, SCROLL_MARKERS, SCROLL_MOTIONS, SCROLL_PALETTES, THEMES,
+    normalizePreset
 } from '../lib/readingStyle';
 import FocalColorPicker from './FocalColorPicker';
 
@@ -89,19 +90,53 @@ function Palettes({ value, onChange }) {
  * applied live. Opening it pauses playback, so tuning never costs reading time.
  * Changes are saved to the same settings the Reading Setup page edits.
  */
-export default function ReaderSettings({ open, onClose, reading, patchReading, settings, updateSettings, mode }) {
+export default function ReaderSettings({
+    open, onClose, reading, patchReading, settings, updateSettings, mode,
+    customPresets = [], onSavePresets = null
+}) {
+    const [tabOverride, setTabOverride] = useState(null);
+    const [presetName, setPresetName] = useState('');
+
     useEffect(() => {
         if (!open) return undefined;
-        const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
+        const onKey = (e) => {
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                setTabOverride(null);
+                onClose();
+            }
+        };
         window.addEventListener('keydown', onKey, true);
         return () => window.removeEventListener('keydown', onKey, true);
     }, [open, onClose]);
 
     if (!open) return null;
 
+    const defaultTab = mode === 'scroll' ? 'scroll' : mode === 'rsvp' ? 'rsvp' : 'general';
+    const activeTab = tabOverride ?? defaultTab;
+    const close = () => { setTabOverride(null); onClose(); };
+
     const set = (patch) => patchReading(patch);
     const resetLook = () => patchReading({ ...DEFAULT_READING });
     const pct = (v) => `${Math.round(v * 100)}%`;
+
+    const applyPreset = (preset) => {
+        if (!preset?.reading) return;
+        patchReading(preset.reading);
+    };
+
+    const saveCustomPreset = (e) => {
+        e.preventDefault();
+        if (!onSavePresets) return;
+        const entry = normalizePreset({ id: `custom-${Date.now()}`, name: presetName, reading });
+        if (!entry) return;
+        onSavePresets([entry, ...customPresets.filter(p => p.name.toLowerCase() !== entry.name.toLowerCase())].slice(0, 16));
+        setPresetName('');
+    };
+
+    const deleteCustomPreset = (id) => {
+        onSavePresets?.(customPresets.filter(p => p.id !== id));
+    };
 
     // Scroll mode's own settings; shown first while scrolling.
     const scrollSection = (
@@ -164,19 +199,115 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
 
     return (
         <div className="fixed inset-0 z-[55] flex justify-end">
-            <button aria-label="Close reading settings" className="absolute inset-0 bg-black/40" onClick={onClose} />
+            <button aria-label="Close reading settings" className="absolute inset-0 bg-black/40" onClick={close} />
             <aside
                 className="relative w-full max-w-sm h-full bg-slate-900 border-l border-slate-800 shadow-2xl flex flex-col animate-in slide-in-from-right-8"
                 role="dialog" aria-label="Reading settings"
             >
                 <header className="flex items-center justify-between px-5 h-14 border-b border-slate-800 shrink-0">
                     <span className="font-bold text-white">Reading settings</span>
-                    <button onClick={onClose} aria-label="Close" className="p-2 -mr-2 text-slate-400 hover:text-white"><X size={18} /></button>
+                    <button onClick={close} aria-label="Close" className="p-2 -mr-2 text-slate-400 hover:text-white"><X size={18} /></button>
                 </header>
 
-                <div className="flex-1 overflow-y-auto px-5 py-5 space-y-7">
-                    {mode === 'scroll' && scrollSection}
+                <div className="flex gap-1 px-4 py-2.5 border-b border-slate-800 bg-slate-950/50 shrink-0" role="tablist" aria-label="Settings sections">
+                    {[
+                        ['rsvp', 'Speed Reader'],
+                        ['scroll', 'Scroll'],
+                        ['general', 'Page & Session'],
+                        ['presets', 'Presets']
+                    ].map(([id, label]) => (
+                        <button
+                            key={id}
+                            type="button"
+                            role="tab"
+                            aria-selected={activeTab === id}
+                            onClick={() => setTabOverride(id)}
+                            className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
+                                activeTab === id
+                                    ? 'bg-purple-600 text-white'
+                                    : 'text-slate-400 hover:text-white hover:bg-slate-800/70'
+                            }`}
+                        >
+                            {label}
+                        </button>
+                    ))}
+                </div>
 
+                <div className="flex-1 overflow-y-auto px-5 py-5 space-y-7">
+                    {activeTab === 'scroll' && scrollSection}
+
+                    {activeTab === 'presets' && (
+                        <div className="space-y-6">
+                            {onSavePresets && (
+                                <Section title="Save current settings">
+                                    <form onSubmit={saveCustomPreset} className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            value={presetName}
+                                            onChange={(e) => setPresetName(e.target.value)}
+                                            placeholder="Preset name (e.g. Focus 1100)"
+                                            maxLength={40}
+                                            className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-purple-500"
+                                        />
+                                        <button
+                                            type="submit"
+                                            disabled={!presetName.trim()}
+                                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-xs font-bold shrink-0"
+                                        >
+                                            <BookmarkPlus size={13} /> Save
+                                        </button>
+                                    </form>
+                                </Section>
+                            )}
+
+                            {customPresets.length > 0 && (
+                                <Section title="Your custom presets">
+                                    <div className="space-y-2">
+                                        {customPresets.map(p => (
+                                            <div key={p.id} className="flex items-center gap-2 bg-slate-950/70 border border-slate-800 rounded-xl p-2.5">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => applyPreset(p)}
+                                                    className="flex-1 text-left min-w-0"
+                                                >
+                                                    <div className="text-xs font-bold text-white truncate">{p.name}</div>
+                                                    <div className="text-[11px] text-slate-500 truncate">
+                                                        {p.reading.scrollMotion} · {p.reading.focalSpan} · {p.reading.maxWidthCh}ch
+                                                    </div>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => deleteCustomPreset(p.id)}
+                                                    aria-label={`Delete preset ${p.name}`}
+                                                    className="p-1.5 text-slate-500 hover:text-rose-400 transition-colors"
+                                                >
+                                                    <Trash2 size={13} />
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </Section>
+                            )}
+
+                            <Section title="Built-in presets">
+                                <div className="space-y-2">
+                                    {BUILTIN_PRESETS.map(p => (
+                                        <button
+                                            key={p.id}
+                                            type="button"
+                                            onClick={() => applyPreset(p)}
+                                            className="w-full text-left bg-slate-950/70 hover:border-purple-500 border border-slate-800 rounded-xl p-3 transition-colors"
+                                        >
+                                            <div className="text-xs font-bold text-white">{p.name}</div>
+                                            <div className="text-[11px] text-slate-400 mt-0.5 leading-snug">{p.note}</div>
+                                        </button>
+                                    ))}
+                                </div>
+                            </Section>
+                        </div>
+                    )}
+
+                    {activeTab === 'general' && (
                     <Section title="Page">
                         <div className="grid grid-cols-5 gap-1.5" role="radiogroup" aria-label="Page colours">
                             {THEMES.map(t => (
@@ -207,7 +338,9 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                         <Slider id="rs-pgap" label="Paragraph gap" value={reading.paragraphGapEm} range={LIMITS.paragraphGapEm} step={0.1} onChange={(v) => set({ paragraphGapEm: v })} format={(v) => `${v.toFixed(1)}em`} />
                         <Switch label="Justify text" checked={reading.justify} onChange={(v) => set({ justify: v })} />
                     </Section>
+                    )}
 
+                    {activeTab === 'rsvp' && (
                     <Section title="Flash (RSVP)">
                         <Slider id="rs-rsvp" label="Word size" value={reading.rsvpSizePx} range={LIMITS.rsvpSizePx} step={2} onChange={(v) => set({ rsvpSizePx: v })} format={(v) => `${v}px`} />
                         <Slider id="rs-rsvp-weight" label="Flash weight" value={reading.rsvpWeight} range={LIMITS.rsvpWeight} step={100} onChange={(v) => set({ rsvpWeight: v })} format={(v) => ({ 300: 'Light', 400: 'Regular', 500: 'Medium', 600: 'Semibold', 700: 'Bold', 800: 'Heavy' }[v] ?? v)} />
@@ -244,10 +377,12 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                         <Switch label="Pause at punctuation" hint="A beat after commas and full stops." checked={settings.punctuationPacing} onChange={(v) => updateSettings({ punctuationPacing: v })} />
                         <Switch label="More time for rare words" hint="Unfamiliar words and names stay up a little longer, everyday words a little less; your average speed is unchanged." checked={reading.rarityPacing} onChange={(v) => set({ rarityPacing: v })} />
                         <Switch label="Preview the next group" hint="Shows what comes next, faintly, under the flash." checked={reading.rsvpPreviewNext} onChange={(v) => set({ rsvpPreviewNext: v })} />
+                        <Switch label="Speak each flash" hint="Text to speech in step with RSVP. Best below about 400 WPM." checked={settings.audioSyncEnabled} onChange={(v) => updateSettings({ audioSyncEnabled: v })} />
                     </Section>
+                    )}
 
-                    {mode !== 'scroll' && scrollSection}
-
+                    {activeTab === 'general' && (
+                    <>
                     <Section title="Pacer & Prose">
                         <Chips label="Pacer style" options={PACER_STYLES} value={reading.pacerStyle} onChange={(id) => set({ pacerStyle: id })} />
                         {/* In Scroll mode these sit in the Scroll section above. */}
@@ -279,10 +414,9 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                         <Switch label="Separate speed per mode" hint="Paced and Scroll remember their own speed, relative to your RSVP speed." checked={settings.separateModeSpeeds !== false} onChange={(v) => updateSettings({ separateModeSpeeds: v })} />
                         <Slider id="rs-rewind" label="Rewind on resume" value={reading.rewindWords} range={LIMITS.rewindWords} step={1} onChange={(v) => set({ rewindWords: v })} format={(v) => (v === 0 ? 'Off' : `${v} word${v > 1 ? 's' : ''}`)} />
                         <Switch label="Hide controls while reading" hint="Move the mouse over the top bar to bring them back." checked={reading.zen} onChange={(v) => set({ zen: v })} />
-                        {mode === 'rsvp' && (
-                            <Switch label="Speak each flash" hint="Text to speech in step with RSVP. Best below about 400 WPM." checked={settings.audioSyncEnabled} onChange={(v) => updateSettings({ audioSyncEnabled: v })} />
-                        )}
                     </Section>
+                    </>
+                    )}
                 </div>
 
                 <footer className="px-5 py-3 border-t border-slate-800 flex items-center justify-between shrink-0">

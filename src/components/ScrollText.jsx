@@ -265,7 +265,26 @@ export default function ScrollText({
         if (totalWords > 0 && readIndex >= totalWords) onComplete?.();
     }, [readIndex, totalWords, onComplete]);
 
-    useEffect(() => { onProgress?.(readIndex); }, [readIndex, onProgress]);
+    const lastProgressSentRef = useRef(0);
+    useEffect(() => {
+        if (!isRunning || readIndex >= totalWords) {
+            lastProgressSentRef.current = performance.now();
+            onProgress?.(readIndex);
+            return undefined;
+        }
+        const now = performance.now();
+        const elapsed = now - lastProgressSentRef.current;
+        if (elapsed >= 120) {
+            lastProgressSentRef.current = now;
+            onProgress?.(readIndex);
+            return undefined;
+        }
+        const t = setTimeout(() => {
+            lastProgressSentRef.current = performance.now();
+            onProgress?.(readIndex);
+        }, 120 - elapsed);
+        return () => clearTimeout(t);
+    }, [readIndex, isRunning, totalWords, onProgress]);
 
     // The highlighted stretch at the reading line.
     const marker = useMemo(() => {

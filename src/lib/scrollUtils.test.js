@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLineSpans, focalRange, groupLineTops, isHeadingParagraph, orpIndex, rsvpWordScale, wordIndexAtY } from './scrollUtils';
+import { buildLineSpans, focalRange, groupLineTops, isHeadingParagraph, orpIndex, rsvpWordScale, searchTextMatches, wordIndexAtY } from './scrollUtils';
 
 describe('scrollUtils', () => {
     it('groups word vertical centers into shared visual-line centers', () => {
@@ -57,5 +57,13 @@ describe('scrollUtils', () => {
         expect(wordIndexAtY(lineTops, 90)).toBe(0);
         expect(wordIndexAtY(lineTops, 115)).toBe(3);
         expect(wordIndexAtY(lineTops, 150)).toBe(5);
+    });
+
+    it('finds single-word and multi-word matches with snippets in searchTextMatches', () => {
+        const text = 'The quiet fox walked through the quiet forest at dawn.';
+        const hits = searchTextMatches(text, 'quiet forest');
+        expect(hits).toHaveLength(1);
+        expect(hits[0].index).toBe(6);
+        expect(hits[0].snippet).toContain('quiet forest');
     });
 });
