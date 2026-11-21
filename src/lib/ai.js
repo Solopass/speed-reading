@@ -1,4 +1,4 @@
-import { QUIZ_INSTRUCTIONS, QUIZ_QUESTION_COUNT } from './quiz';
+import { QUIZ_INSTRUCTIONS, QUIZ_QUESTION_COUNT, normalizeQuestions } from './quiz';
 
 // Request shaping and response parsing, shared by two paths: a direct Gemini
 // call, and a copy/paste exchange with whatever assistant the user already has
@@ -335,4 +335,41 @@ ${excerpt}`,
         },
         shape: `{${QUESTIONS_SHAPE}, ${GIST_SHAPE}}`
     };
+}
+
+/** Up to `limit` words taken as three even slices from the start, middle and end of a text. */
+export function sampleAcross(text, limit = 1200) {
+    const words = String(text ?? '').trim().split(/\s+/).filter(Boolean);
+    if (words.length <= limit) return words.join(' ');
+    const part = Math.floor(limit / 3);
+    const mid = Math.floor(words.length / 2 - part / 2);
+    return [words.slice(0, part), words.slice(mid, mid + part), words.slice(words.length - part)]
+        .map(w => w.join(' ')).join('\n\n');
+}
+
+/**
+ * Writes comprehension questions for a passage or chapter and, when asked,
+ * drops any the model can answer without the text (the blind check).
+ * Returns { questions, gistQuestions, dropped }, already normalised.
+ */
+export async function generateQuestionsFor(ai, { title, text }, { verify = true, spread = false } = {}) {
+    // A chapter read in full should be quizzed on all of it, not just its
+    // opening: `spread` samples the beginning, middle and end instead.
+    const spec = questionsForTextSpec({ title, text: spread ? sampleAcross(text, 1200) : text });
+    const reply = await ai.generate({ prompt: spec.prompt, schema: spec.schema });
+    let questions = normalizeQuestions(reply?.questions);
+    const gistQuestions = normalizeQuestions(reply?.gistQuestions);
+    let dropped = 0;
+    if (verify && questions.length > 0) {
+        try {
+            const check = verifySpec({ questions });
+            const blind = await ai.generate({ prompt: check.prompt, schema: check.schema });
+            const out = dropGuessableQuestions(questions, blind?.answers);
+            questions = out.questions;
+            dropped = out.dropped;
+        } catch {
+            // Keep the questions if the blind check itself fails.
+        }
+    }
+    return { questions, gistQuestions, dropped };
 }

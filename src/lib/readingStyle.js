@@ -164,10 +164,22 @@ export const DEFAULT_READING = {
     rsvpContextPlay: 'dim', // show | dim | hide surrounding context while playing
     rsvpMergeShortWords: false, // pair tiny glue words with their neighbour in 1-word RSVP
     speedRamp: false,     // ease in from 70% of the target over the first quarter
-    zen: false            // hide the controls while playing
+    zen: false,           // hide the controls while playing
+    // Measurement and comfort while reading (each can be switched off)
+    checkpoints: true,        // fill-the-blank check on a sentence you just read
+    checkpointEveryMin: 3,    // minutes of reading between checks
+    adaptiveChunk: true,      // checkpoint results step words-per-flash up or down (2-5)
+    blinkBreaks: true,        // a short blank gap in RSVP so your eyes can blink
+    blinkEverySec: 30,
+    speedTrace: true,         // live speed line under the progress bar
+    difficultyMap: true,      // shade the progress bar by how dense the text is
+    scrollEaseHard: true,     // Scroll eases off just before dense stretches
+    remoteControls: true,     // presentation clickers, page-turners and gamepads
+    chapterEndQuiz: true      // write a quiz at the end of a book chapter that has none
 };
 
-const BOOLEAN_PREFS = ['dimRead', 'rsvpContext', 'countdown', 'speedRamp', 'zen', 'scrollFadeFunctionWords', 'scrollPacing', 'rarityPacing', 'rsvpPreviewNext', 'rsvpMergeShortWords'];
+const BOOLEAN_PREFS = ['dimRead', 'rsvpContext', 'countdown', 'speedRamp', 'zen', 'scrollFadeFunctionWords', 'scrollPacing', 'rarityPacing', 'rsvpPreviewNext', 'rsvpMergeShortWords',
+    'checkpoints', 'adaptiveChunk', 'blinkBreaks', 'speedTrace', 'difficultyMap', 'scrollEaseHard', 'remoteControls', 'chapterEndQuiz'];
 
 /**
  * Speed multiplier for the warm-up ramp: 70% at the first word, rising to full
@@ -204,7 +216,9 @@ export const LIMITS = {
     rsvpWeight: [300, 800],
     rsvpFlankOpacity: [0.3, 1],
     readOpacity: [0.1, 0.9],
-    holdSlowPct: [30, 90]
+    holdSlowPct: [30, 90],
+    checkpointEveryMin: [1, 10],
+    blinkEverySec: [10, 60]
 };
 
 const byId = (list, id, fallbackId) =>

@@ -163,6 +163,7 @@ export default function ReaderSettings({
                 <div className="text-sm text-slate-300 mb-1.5">Highlight at the reading line</div>
                 <Chips label="Scroll highlight" options={SCROLL_MARKERS} value={reading.scrollMarker} onChange={(id) => set({ scrollMarker: id })} />
             </div>
+            <Switch label="Ease off before dense text" hint="Slows a little just before a hard stretch (rare words, long sentences) instead of in the middle of it." checked={reading.scrollEaseHard} onChange={(v) => set({ scrollEaseHard: v })} />
             <Switch label="Smart pacing" hint="Slows at punctuation and long words, speeds through short ones; the average speed stays what you set." checked={reading.scrollPacing} onChange={(v) => set({ scrollPacing: v })} />
             {reading.scrollPacing && (
                 <Switch label="More time for rare words" hint="Smart pacing also slows for unfamiliar words and names." checked={reading.rarityPacing} onChange={(v) => set({ rarityPacing: v })} />
@@ -214,6 +215,7 @@ export default function ReaderSettings({
                         ['rsvp', 'Speed Reader'],
                         ['scroll', 'Scroll'],
                         ['general', 'Page & Session'],
+                        ['training', 'Training'],
                         ['presets', 'Presets']
                     ].map(([id, label]) => (
                         <button
@@ -235,6 +237,32 @@ export default function ReaderSettings({
 
                 <div className="flex-1 overflow-y-auto px-5 py-5 space-y-7">
                     {activeTab === 'scroll' && scrollSection}
+
+                    {activeTab === 'training' && (
+                        <>
+                            <Section title="Checks">
+                                <Switch label="Checkpoints" hint="Every few minutes, a fill-the-blank question on a sentence you just read. Works offline, no AI." checked={reading.checkpoints} onChange={(v) => set({ checkpoints: v })} />
+                                {reading.checkpoints && (
+                                    <>
+                                        <Slider id="rs-check-every" label="Every" value={reading.checkpointEveryMin} range={LIMITS.checkpointEveryMin} step={1} onChange={(v) => set({ checkpointEveryMin: v })} format={(v) => `${v} min of reading`} />
+                                        <Switch label="Words per flash follows your checks" hint="With 2+ words per flash: four right in a row adds a word (up to 5), two misses in three takes one away (down to 2)." checked={reading.adaptiveChunk} onChange={(v) => set({ adaptiveChunk: v })} />
+                                    </>
+                                )}
+                                <Switch label="Quiz at the end of a chapter" hint="When a book chapter has no quiz, your AI provider writes one as you finish, so the chapter counts as training." checked={reading.chapterEndQuiz} onChange={(v) => set({ chapterEndQuiz: v })} />
+                            </Section>
+                            <Section title="Feedback">
+                                <Switch label="Speed trace" hint="Your actual speed this session under the progress bar; amber where you held Shift, red ticks where you went back." checked={reading.speedTrace} onChange={(v) => set({ speedTrace: v })} />
+                                <Switch label="Difficulty map" hint="Shades the progress bar by how dense the text is: rare words and long sentences." checked={reading.difficultyMap} onChange={(v) => set({ difficultyMap: v })} />
+                            </Section>
+                            <Section title="Comfort and controls">
+                                <Switch label="Blink breaks (RSVP)" hint="A brief blank flash, at a sentence end where possible, so your eyes get to blink." checked={reading.blinkBreaks} onChange={(v) => set({ blinkBreaks: v })} />
+                                {reading.blinkBreaks && (
+                                    <Slider id="rs-blink" label="Every" value={reading.blinkEverySec} range={LIMITS.blinkEverySec} step={5} onChange={(v) => set({ blinkEverySec: v })} format={(v) => `${v} s`} />
+                                )}
+                                <Switch label="Clickers and gamepads" hint="Page Down plays or pauses, Page Up goes back. Gamepad: A play/pause, B back, D-pad speed, shoulder buttons by sentence." checked={reading.remoteControls} onChange={(v) => set({ remoteControls: v })} />
+                            </Section>
+                        </>
+                    )}
 
                     {activeTab === 'presets' && (
                         <div className="space-y-6">

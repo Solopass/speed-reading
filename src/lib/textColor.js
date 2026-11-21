@@ -151,3 +151,30 @@ export function advanceByCost(position, budget, costs) {
     }
     return Math.min(n, p);
 }
+
+/**
+ * Eases smart-pacing costs ahead of hard stretches: each word's cost grows
+ * with how difficult the next `window` words are, so the scroll slows a little
+ * before a dense passage rather than in the middle of it. The mean stays 1,
+ * so the average speed is unchanged.
+ */
+export function easeCosts(costs, scores, { window = 30, strength = 0.3 } = {}) {
+    if (!costs?.length || scores?.length !== costs.length) return costs;
+    const n = costs.length;
+    // Sliding mean of the difficulty just ahead of each word.
+    const ahead = new Array(n);
+    let sum = 0;
+    for (let i = n - 1; i >= 0; i--) {
+        sum += scores[i];
+        if (i + window < n) sum -= scores[i + window];
+        ahead[i] = sum / Math.min(window, n - i);
+    }
+    // A loop rather than Math.min(...ahead): spreading 100k+ values overflows the stack.
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const v of ahead) { if (v < lo) lo = v; if (v > hi) hi = v; }
+    const span = hi - lo || 1;
+    const eased = costs.map((c, i) => c * (1 + strength * ((ahead[i] - lo) / span - 0.5)));
+    const mean = eased.reduce((s, x) => s + x, 0) / n;
+    return eased.map(x => x / mean);
+}

@@ -13,9 +13,12 @@ import ReaderSettings from '../components/ReaderSettings';
 import { focalColorFor, rampFactor } from '../lib/readingStyle';
 import { focalRange, orpIndex, rsvpWordScale, searchTextMatches } from '../lib/scrollUtils';
 import { clampIndex, clock, extractSections, jump, startCount, wordsCovered } from '../lib/readerNav';
-import { buildChunks, chunkIndexAt, joinFlashWords, pauseAfter, tokenize, wordWeights } from '../lib/chunker';
+import { buildChunks, chunkIndexAt, endsSentence, joinFlashWords, pauseAfter, tokenize, wordWeights } from '../lib/chunker';
+import { buildCloze, difficultyBuckets, difficultyScores, nextChunkSize, speedTrace } from '../lib/checkpoint';
 import { loadFrequencyRank } from '../lib/vocab';
 import Quiz from '../components/Quiz';
+import CheckpointCard from '../components/CheckpointCard';
+import SpeedTraceLine from '../components/SpeedTraceLine';
 
 /** Words skipped by the rewind and skip controls. */
 const SKIP_WORDS = 10;
@@ -56,7 +59,7 @@ export const skimStartWpm = (targetWpm) => Math.min(2500, Math.max(700, Math.rou
  * reading position; the word count stays honest because the Reader banks what
  * was covered before every jump.
  */
-function Scrubber({ index, total, onSeek, label }) {
+function Scrubber({ index, total, onSeek, label, heat = null }) {
     const [dragging, setDragging] = useState(false);
     const [previewIdx, setPreviewIdx] = useState(null);
     const barRef = useRef(null);
@@ -117,6 +120,14 @@ function Scrubber({ index, total, onSeek, label }) {
             <div className="h-2 group-hover:h-3 transition-all bg-slate-800 rounded-full overflow-hidden">
                 <div className={`h-full bg-purple-600 ${dragging ? '' : 'transition-[width] duration-200'}`} style={{ width: `${pct}%` }} />
             </div>
+            {heat?.length > 0 && (
+                // How dense the text is along the way: darker amber is harder going.
+                <div className="mt-1 h-1 flex rounded-full overflow-hidden" aria-hidden="true" title="Difficulty ahead: darker is denser text">
+                    {heat.map((h, i) => (
+                        <div key={i} className="flex-1 bg-amber-400" style={{ opacity: 0.08 + h * 0.62 }} />
+                    ))}
+                </div>
+            )}
         </div>
     );
 }
@@ -124,7 +135,7 @@ function Scrubber({ index, total, onSeek, label }) {
 function Reader({
     passage, book = null, onSelectChapter = null, settings, reading, patchReading, updateSettings,
     customPresets = [], onSavePresets = null, popoutWin: liftedPopoutWin = null, onPopoutChange = null,
-    initialWpm, resumeFrom = 0, onFinish, onLeave, onExit, onBookmark = null, addNotification
+    initialWpm, resumeFrom = 0, onFinish, onLeave, onExit, onBookmark = null, addNotification, onGenerateQuiz = null
 }) {
     // The baseline test measures your natural pace, so it is always read as
     // ordinary text with no pacing and no speed control.
@@ -236,11 +247,18 @@ function Reader({
     // Word frequencies, loaded once, so rare words can get a little more time.
     const [rank, setRank] = useState(null);
     useEffect(() => {
-        if (!reading.rarityPacing) return undefined;
+        if (!(reading.rarityPacing || reading.difficultyMap || reading.checkpoints || reading.scrollEaseHard)) return undefined;
         let live = true;
         loadFrequencyRank().then(r => { if (live) setRank(r); }).catch(() => {});
         return () => { live = false; };
-    }, [reading.rarityPacing]);
+    }, [reading.rarityPacing, reading.difficultyMap, reading.checkpoints, reading.scrollEaseHard]);
+    // How hard each word is going (rarity, sentence length), for the progress
+    // bar's difficulty strip and for Scroll easing off before dense stretches.
+    const difficulty = useMemo(
+        () => (reading.difficultyMap || reading.scrollEaseHard ? difficultyScores(words, rank) : null),
+        [words, rank, reading.difficultyMap, reading.scrollEaseHard]
+    );
+    const heat = useMemo(() => (reading.difficultyMap && difficulty ? difficultyBuckets(difficulty, 80) : null), [difficulty, reading.difficultyMap]);
     const weights = useMemo(() => wordWeights(words, reading.rarityPacing ? rank : null), [words, rank, reading.rarityPacing]);
     /** End (exclusive) of the flash that starts at word `index`. */
     const flashEnd = useCallback((index) => {
@@ -257,7 +275,11 @@ function Reader({
     // Otherwise it falls back to the detail questions, which is harsh on a
     // skim, so those sessions are still kept out of the reading averages.
     const gistQuestions = useMemo(() => normalizeQuestions(passage?.gistQuestions), [passage]);
-    const questions = isSkim && gistQuestions.length > 0 ? gistQuestions : detailQuestions;
+    // Questions written at the end of a chapter that had none (see handleFinishReading).
+    const [extraQuestions, setExtraQuestions] = useState(null);
+    const [quizWriting, setQuizWriting] = useState(false);
+    const quizWritingCancelledRef = useRef(false);
+    const questions = extraQuestions ?? (isSkim && gistQuestions.length > 0 ? gistQuestions : detailQuestions);
 
     // Where the reader is now, in whichever mode is running.
     const cursorIndex = mode === 'rsvp' ? Math.min(currentIndex, words.length) : Math.min(pacedIndex, words.length);
@@ -355,6 +377,75 @@ function Reader({
         return () => clearInterval(id);
     }, [accelOn, clockRunning, isPlaying]);
 
+    // --- Measurement while reading ------------------------------------------
+    // Seconds of actual playback, one trace sample per second (position and
+    // whether Shift was held), and the checkpoint schedule that runs off them.
+    const [playSecs, setPlaySecs] = useState(0);
+    const playSecsRef = useRef(0);
+    const traceRef = useRef([]);
+    const rewindEventsRef = useRef([]);
+    const [trace, setTrace] = useState(null);
+    const holdSlowRef = useRef(false);
+    const traceCursorRef = useRef(cursorIndex);
+    useLayoutEffect(() => { holdSlowRef.current = holdSlow; traceCursorRef.current = cursorIndex; });
+    useEffect(() => {
+        if (!clockRunning || !isPlaying || mode === 'natural' || isCalibration) return undefined;
+        const id = setInterval(() => {
+            playSecsRef.current += 1;
+            const t = playSecsRef.current;
+            traceRef.current.push({ t, idx: traceCursorRef.current, slow: holdSlowRef.current });
+            if (traceRef.current.length > 7200) traceRef.current.shift();
+            setPlaySecs(t);
+            if (t % 5 === 0) setTrace(speedTrace(traceRef.current, 10, rewindEventsRef.current));
+        }, 1000);
+        return () => clearInterval(id);
+    }, [clockRunning, isPlaying, mode, isCalibration]);
+
+    const [checkpoint, setCheckpoint] = useState(null);
+    const [checkStats, setCheckStats] = useState({ asked: 0, right: 0 });
+    const lastCheckRef = useRef({ secs: 0, idx: safeResume });
+    useEffect(() => {
+        if (!reading.checkpoints || isCalibration || mode === 'natural' || !isPlaying || checkpoint) return;
+        const since = playSecs - lastCheckRef.current.secs;
+        const every = reading.checkpointEveryMin * 60;
+        if (since < every) return;
+        // Wait for a sentence to finish, unless that is taking too long.
+        const atSentenceEnd = cursorIndex > 0 && endsSentence(words[cursorIndex - 1], words[cursorIndex]);
+        if (!atSentenceEnd && since < every + 20) return;
+        const cloze = buildCloze(words, lastCheckRef.current.idx, cursorIndex, { rank });
+        lastCheckRef.current = { secs: playSecs, idx: cursorIndex };
+        if (!cloze) return;
+        queueMicrotask(() => {
+            setIsPlaying(false);
+            setCountdown(null);
+            setCheckpoint({ cloze, picked: null });
+        });
+    }, [playSecs, cursorIndex, reading.checkpoints, reading.checkpointEveryMin, isCalibration, mode, isPlaying, checkpoint, words, rank]);
+
+    const answerCheckpoint = useCallback((i) => {
+        if (!checkpoint || checkpoint.picked !== null) return;
+        const ok = i === checkpoint.cloze.answerIndex;
+        setCheckpoint({ ...checkpoint, picked: i });
+        setCheckStats(st => ({ asked: st.asked + 1, right: st.right + (ok ? 1 : 0) }));
+        const log = [...(Array.isArray(settings.checkpointLog) ? settings.checkpointLog : []), { ok, size: settings.chunkSize, mode }].slice(-30);
+        const patch = { checkpointLog: log };
+        // Words per flash follows how well the checks go, between 2 and 5.
+        if (reading.adaptiveChunk && mode === 'rsvp' && settings.chunkSize >= 2) {
+            const next = nextChunkSize(log.filter(e => e.mode === 'rsvp'), settings.chunkSize);
+            if (next !== settings.chunkSize) {
+                patch.chunkSize = next;
+                addNotification?.(`Words per flash ${next > settings.chunkSize ? 'up' : 'down'} to ${next}.`, next > settings.chunkSize ? 'success' : undefined);
+            }
+        }
+        updateSettings?.(patch);
+        if (!ok && accelSecs > 0) {
+            setAccelSecs(0);
+            addNotification?.('Missed check: the speed builder starts again from your base speed.');
+        }
+    }, [checkpoint, settings.checkpointLog, settings.chunkSize, mode, reading.adaptiveChunk, updateSettings, addNotification, accelSecs]);
+    const continueAfterCheckpoint = useCallback(() => { setCheckpoint(null); setIsPlaying(true); }, []);
+    const skipCheckpoint = useCallback(() => { setCheckpoint(null); setIsPlaying(true); }, []);
+
     // --- Full screen ---------------------------------------------------------
     useEffect(() => {
         const onChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
@@ -423,6 +514,7 @@ function Reader({
         runningSinceRef.current = null;
         setElapsedSecs(0);
         countRef.current = startCount(at);
+        lastCheckRef.current = { ...lastCheckRef.current, idx: at };
         if (nextMode === 'rsvp') setCurrentIndex(at);
         else if (nextMode === 'paced' || nextMode === 'skim' || nextMode === 'scroll') {
             setPacedInitialIndex(at);
@@ -444,7 +536,7 @@ function Reader({
     useLayoutEffect(() => { cursorRef.current = cursorIndex; });
 
     /** Jump to a word, in RSVP or the pacers. */
-    const seekTo = useCallback((target) => {
+    const seekTo = useCallback((target, { auto = false } = {}) => {
         if (mode === 'natural' || words.length === 0) return;
         let to = clampIndex(target, words.length);
         // A jump in RSVP lands on the start of the phrase holding that word.
@@ -456,6 +548,9 @@ function Reader({
             const nextStart = flashEnd(from);
             to = to > from && start <= from && nextStart < words.length ? nextStart : start;
         }
+        if (!auto && to < cursorRef.current) rewindEventsRef.current.push(playSecsRef.current);
+        // The next checkpoint asks about text read from here on, not text jumped over.
+        lastCheckRef.current = { ...lastCheckRef.current, idx: to };
         countRef.current = jump(countRef.current, cursorRef.current, to);
         cursorRef.current = to;
         if (mode === 'rsvp') setCurrentIndex(to);
@@ -465,7 +560,7 @@ function Reader({
         }
     }, [mode, words.length, chunks, flashEnd]);
 
-    const seekBy = useCallback((delta) => seekTo(cursorRef.current + delta), [seekTo]);
+    const seekBy = useCallback((delta, opts) => seekTo(cursorRef.current + delta, opts), [seekTo]);
 
     // Position within the whole passage, for the library's resume point.
     const absoluteIndex = mode === 'rsvp' ? currentIndex : pacedIndex;
@@ -501,9 +596,28 @@ function Reader({
             setQuizActive(true);
             return;
         }
-        leaveRef.current.finished = true;
-        onFinish({ ...measured, score: null });
-    }, [stopClock, wordsRead, words.length, questions, onFinish, measuredWpm, elapsedMs, mode, isCalibration]);
+        const finishPlain = () => {
+            leaveRef.current.finished = true;
+            onFinish({ ...measured, score: null });
+        };
+        // A book chapter with no quiz would only count as practice; with an AI
+        // available, write one now so the chapter counts as training.
+        if (reading.chapterEndQuiz && onGenerateQuiz && passage?.bookId && !isSkim && mode !== 'natural' && !isCalibration) {
+            setPending(measured);
+            setQuizWriting(true);
+            quizWritingCancelledRef.current = false;
+            onGenerateQuiz(passage)
+                .then((res) => {
+                    if (quizWritingCancelledRef.current) return;
+                    const qs = normalizeQuestions(res?.questions);
+                    if (qs.length > 0) { setExtraQuestions(qs); setQuizActive(true); } else finishPlain();
+                })
+                .catch(() => { if (!quizWritingCancelledRef.current) finishPlain(); })
+                .finally(() => setQuizWriting(false));
+            return;
+        }
+        finishPlain();
+    }, [stopClock, wordsRead, words.length, questions, onFinish, measuredWpm, elapsedMs, mode, isCalibration, reading.chapterEndQuiz, onGenerateQuiz, passage, isSkim, setQuizWriting, setExtraQuestions]);
 
     // Timers and the pacer call the latest finish handler through a ref, so
     // their effects do not restart every time the parent re-renders (which
@@ -513,6 +627,14 @@ function Reader({
 
     // --- RSVP advance (zero-drift rAF accumulator for 1,000+ WPM) -----------
     const rsvpDeadlineRef = useRef(0);
+    // Blink breaks: RSVP holds the eyes so still that people stop blinking.
+    // Every so often, preferably at a sentence end, the flash goes blank briefly.
+    const BLINK_MS = 300;
+    const [blinking, setBlinking] = useState(false);
+    const lastBlinkRef = useRef(0);
+    const blinkTimerRef = useRef(null);
+    const playingRef = useRef(isPlaying);
+    useLayoutEffect(() => { playingRef.current = isPlaying; });
     useEffect(() => {
         if (!isPlaying || mode !== 'rsvp' || words.length === 0 || currentIndex >= words.length) {
             rsvpDeadlineRef.current = 0;
@@ -536,25 +658,50 @@ function Reader({
         const targetAt = base + delayMs;
         let frame = 0;
 
+        const advance = () => {
+            if (end >= words.length) {
+                setCurrentIndex(words.length);
+                setIsPlaying(false);
+                // The last chunk has just been shown, so the whole rest counts.
+                finishRef.current(words.length);
+            } else {
+                setCurrentIndex(end);
+            }
+        };
+        const blinkEvery = reading.blinkEverySec * 1000;
+
         const tick = (ts) => {
             if (ts >= targetAt) {
-                rsvpDeadlineRef.current = targetAt;
-                if (end >= words.length) {
-                    setCurrentIndex(words.length);
-                    setIsPlaying(false);
-                    // The last chunk has just been shown, so the whole rest counts.
-                    finishRef.current(words.length);
-                } else {
-                    setCurrentIndex(end);
+                if (lastBlinkRef.current === 0) lastBlinkRef.current = ts;
+                const since = ts - lastBlinkRef.current;
+                const blinkDue = reading.blinkBreaks && !isCalibration && end < words.length
+                    && since >= blinkEvery && (endsSentence(words[end - 1], words[end]) || since >= blinkEvery * 1.5);
+                if (blinkDue) {
+                    lastBlinkRef.current = ts;
+                    rsvpDeadlineRef.current = targetAt + BLINK_MS;
+                    setBlinking(true);
+                    blinkTimerRef.current = setTimeout(() => {
+                        blinkTimerRef.current = null;
+                        setBlinking(false);
+                        if (playingRef.current) advance();
+                    }, BLINK_MS);
+                    return;
                 }
+                rsvpDeadlineRef.current = targetAt;
+                advance();
                 return;
             }
             frame = requestAnimationFrame(tick);
         };
 
         frame = requestAnimationFrame(tick);
-        return () => cancelAnimationFrame(frame);
-    }, [isPlaying, currentIndex, effectiveWpm, mode, words, settings.punctuationPacing, flashEnd, weights, gaps, paraEnds]);
+        return () => {
+            cancelAnimationFrame(frame);
+            // Paused (or re-timed) in the middle of a blink: show the flash again.
+            // A pause mid-blink shows the flash again; a speed change lets the blink finish.
+            if (blinkTimerRef.current && !playingRef.current) { clearTimeout(blinkTimerRef.current); blinkTimerRef.current = null; setBlinking(false); }
+        };
+    }, [isPlaying, currentIndex, effectiveWpm, mode, words, settings.punctuationPacing, flashEnd, weights, gaps, paraEnds, reading.blinkBreaks, reading.blinkEverySec, isCalibration]);
 
     // The pacer reports completion from its own animation loop; guard against
     // it firing more than once as the final frames settle.
@@ -580,14 +727,19 @@ function Reader({
 
     // Set once playback has started, so the first start does not rewind.
     const hasPlayedRef = useRef(false);
-    useEffect(() => { if (isPlaying) hasPlayedRef.current = true; }, [isPlaying]);
+    useEffect(() => {
+        if (!isPlaying) return;
+        hasPlayedRef.current = true;
+        // A pause rests the eyes, so the blink clock starts again on resume.
+        lastBlinkRef.current = 0;
+    }, [isPlaying]);
 
     const togglePlay = () => {
         if (countdown !== null) { setCountdown(null); return; }
         if (isPlaying) { setIsPlaying(false); return; }
         if (mode === 'rsvp' && words.length > 0 && currentIndex >= words.length) seekTo(0);
         // Stepping back a few words on resume picks the sentence back up.
-        else if (hasPlayedRef.current && reading.rewindWords > 0 && cursorRef.current > 0) seekBy(-reading.rewindWords);
+        else if (hasPlayedRef.current && reading.rewindWords > 0 && cursorRef.current > 0) seekBy(-reading.rewindWords, { auto: true });
         if (reading.countdown) setCountdown(3);
         else setIsPlaying(true);
     };
@@ -601,7 +753,7 @@ function Reader({
             setIsPlaying(false);
             setCountdown(null);
             const back = Math.max(4, reading.rewindWords || 0);
-            if (cursorRef.current > 0) seekBy(-back);
+            if (cursorRef.current > 0) seekBy(-back, { auto: true });
             addNotification?.('Paused when tab left the foreground.');
         };
         document.addEventListener('visibilitychange', onVis);
@@ -795,10 +947,53 @@ function Reader({
         '-': () => resizeText(-1),
         '=': () => resizeText(1),
         '+': () => resizeText(1),
-        Escape: () => { if (searchOpen) setSearchOpen(false); else if (bookmarkOpen) setBookmarkOpen(false); else if (wpmMenuOpen) setWpmMenuOpen(false); else onExit?.(); }
-    }, !quizActive && !settingsOpen && !bookmarkOpen && !searchOpen && !isCalibration);
+        Escape: () => { if (searchOpen) setSearchOpen(false); else if (bookmarkOpen) setBookmarkOpen(false); else if (wpmMenuOpen) setWpmMenuOpen(false); else onExit?.(); },
+        ...(reading.remoteControls ? {
+            // Presentation clickers and page-turners send these keys.
+            PageDown: () => { if (mode !== 'natural') togglePlay(); },
+            PageUp: () => seekBy(-SKIP_WORDS),
+            MediaPlayPause: () => { if (mode !== 'natural') togglePlay(); },
+            MediaTrackNext: () => seekSentence(1),
+            MediaTrackPrevious: () => seekSentence(-1)
+        } : {})
+    }, !quizActive && !settingsOpen && !bookmarkOpen && !searchOpen && !isCalibration && !checkpoint && !quizWriting);
+
+    // Gamepads (polled; the Gamepad API has no button events): A or Start
+    // play/pause, B back, D-pad up/down speed, shoulder buttons a sentence back or on.
+    const padRef = useRef({ enabled: false, actions: {} });
+    useLayoutEffect(() => {
+        padRef.current = {
+            enabled: !quizActive && !settingsOpen && !bookmarkOpen && !searchOpen && !checkpoint && !quizWriting,
+            actions: {
+                toggle: () => { if (mode !== 'natural') togglePlay(); },
+                back: () => seekBy(-SKIP_WORDS),
+                faster: () => nudgeWpm(wpmStep),
+                slower: () => nudgeWpm(-wpmStep),
+                prevSentence: () => seekSentence(-1),
+                nextSentence: () => seekSentence(1)
+            }
+        };
+    });
+    useEffect(() => {
+        if (!reading.remoteControls || isCalibration || typeof navigator === 'undefined' || !navigator.getGamepads) return undefined;
+        const BUTTONS = [[0, 'toggle'], [9, 'toggle'], [1, 'back'], [12, 'faster'], [13, 'slower'], [4, 'prevSentence'], [5, 'nextSentence']];
+        const wasDown = new Map();
+        const id = setInterval(() => {
+            for (const pad of navigator.getGamepads()) {
+                if (!pad) continue;
+                for (const [b, action] of BUTTONS) {
+                    const down = Boolean(pad.buttons[b]?.pressed);
+                    const key = `${pad.index}:${b}`;
+                    if (down && !wasDown.get(key) && padRef.current.enabled) padRef.current.actions[action]?.();
+                    wasDown.set(key, down);
+                }
+            }
+        }, 50);
+        return () => clearInterval(id);
+    }, [reading.remoteControls, isCalibration]);
 
     const renderRsvpChunk = () => {
+        if (blinking) return null;
         const chunkWords = words.slice(currentIndex, flashEnd(currentIndex));
         if (chunkWords.length === 0) return null;
         const focal = focalColorFor(reading);
@@ -1103,6 +1298,7 @@ function Reader({
         <p className="text-slate-500 text-sm font-mono text-center">
             {pctDone}% · {cursorIndex} / {words.length} · {left} left · {clock(elapsedSecs)} read
             {ramp < 1 && <span className="text-amber-400"> · warming up {Math.round(ramp * 100)}%</span>}
+            {checkStats.asked > 0 && <span className="text-emerald-400/80"> · checks {checkStats.right}/{checkStats.asked}</span>}
         </p>
     );
 
@@ -1393,7 +1589,8 @@ function Reader({
                         </div>
 
                         <div className="w-full flex flex-col items-center gap-2 mt-10">
-                            <Scrubber index={cursorIndex} total={words.length} onSeek={seekTo} label="Reading position" />
+                            <Scrubber index={cursorIndex} total={words.length} onSeek={seekTo} label="Reading position" heat={heat} />
+                            {reading.speedTrace && <SpeedTraceLine trace={trace} />}
                             {status}
                             {renderTimeline()}
                             <p className="text-slate-600 text-xs">Target {wpm} WPM · actual pace is measured and recorded</p>
@@ -1425,6 +1622,7 @@ function Reader({
                             isRunning={isPlaying}
                             reading={reading}
                             rank={reading.rarityPacing ? rank : null}
+                            difficulty={reading.scrollEaseHard ? difficulty : null}
                             bionicReading={settings.bionicReading}
                             initialIndex={pacedInitialIndex}
                             seek={pacedSeek}
@@ -1437,7 +1635,8 @@ function Reader({
                         />
 
                         <div className="mt-6 pt-4 border-t border-slate-800 flex flex-col items-center gap-2">
-                            <Scrubber index={cursorIndex} total={words.length} onSeek={seekTo} label="Reading position" />
+                            <Scrubber index={cursorIndex} total={words.length} onSeek={seekTo} label="Reading position" heat={heat} />
+                            {reading.speedTrace && <SpeedTraceLine trace={trace} />}
                             {status}
                             {renderTimeline()}
                             <p className="text-xs text-center" style={{ color: 'var(--reading-muted)' }}>
@@ -1475,7 +1674,8 @@ function Reader({
                         />
 
                         <div className="mt-10 pt-6 border-t border-slate-800 flex flex-col items-center gap-2">
-                            <Scrubber index={cursorIndex} total={words.length} onSeek={seekTo} label="Reading position" />
+                            <Scrubber index={cursorIndex} total={words.length} onSeek={seekTo} label="Reading position" heat={heat} />
+                            {reading.speedTrace && <SpeedTraceLine trace={trace} />}
                             {status}
                             {renderTimeline()}
                             <p className="text-xs text-center" style={{ color: 'var(--reading-muted)' }}>
@@ -1535,6 +1735,38 @@ function Reader({
                 settings={settings} updateSettings={updateSettings}
                 customPresets={customPresets} onSavePresets={onSavePresets}
             />
+            {checkpoint && (
+                <CheckpointCard
+                    checkpoint={checkpoint}
+                    stats={checkStats}
+                    onAnswer={answerCheckpoint}
+                    onContinue={continueAfterCheckpoint}
+                    onSkip={skipCheckpoint}
+                    onTurnOff={() => { patchReading({ checkpoints: false }); skipCheckpoint(); addNotification?.('Checkpoints off. Turn them back on in reading settings.'); }}
+                />
+            )}
+
+            {quizWriting && (
+                <div className="fixed inset-0 z-[56] grid place-items-center p-4 bg-black/50">
+                    <div role="dialog" aria-label="Writing a quiz" className="w-full max-w-sm bg-slate-900 border border-slate-700 rounded-3xl p-6 shadow-2xl text-center space-y-3">
+                        <p className="font-bold text-white">Writing a quiz for this chapter…</p>
+                        <p className="text-xs text-slate-400">So the chapter counts as measured training. The questions are saved with the chapter.</p>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                quizWritingCancelledRef.current = true;
+                                setQuizWriting(false);
+                                leaveRef.current.finished = true;
+                                onFinish({ ...pending, score: null });
+                            }}
+                            className="text-sm text-slate-300 hover:text-white underline"
+                        >
+                            Skip the quiz
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {searchOpen && (
                 <div className="fixed inset-0 z-[60] grid place-items-start justify-center p-4 pt-20">
                     <button aria-label="Close search" className="absolute inset-0 bg-black/50" onClick={() => setSearchOpen(false)} />
@@ -1641,6 +1873,7 @@ function Reader({
                                 isRunning={isPlaying}
                                 reading={{ ...reading, scrollHeightVh: 76 }}
                                 rank={reading.rarityPacing ? rank : null}
+                                difficulty={reading.scrollEaseHard ? difficulty : null}
                                 bionicReading={settings.bionicReading}
                                 initialIndex={pacedInitialIndex}
                                 seek={pacedSeek}

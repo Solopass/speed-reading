@@ -3,6 +3,7 @@ import { Activity } from 'lucide-react';
 import { hasApiKey } from './lib/gemini';
 import { listModels } from './lib/ollama';
 import { DEFAULT_AI_SETTINGS, migrateAiSettings, resolveAi } from './lib/aiProvider';
+import { generateQuestionsFor } from './lib/ai';
 import {
     DEFAULT_STATS, HISTORY_LIMIT, addBaselineSample, adaptTarget, backupReminderDue, createSession,
     markBackedUp, migrateHistory, migrateStats, nextStreak, snoozeBackup, todayKey
@@ -444,6 +445,16 @@ export default function App() {
         addNotification(`Saved ${questions.length} chapter question${questions.length === 1 ? '' : 's'}.`, 'success');
     };
 
+    // At the end of a book chapter with no quiz, the reader asks for one so the
+    // chapter counts as measured training; the questions are kept with the chapter.
+    const generateChapterQuiz = ai?.generate ? async (p) => {
+        const res = await generateQuestionsFor(ai, { title: p.title, text: p.text }, { verify: settings.verifyQuestions, spread: true });
+        if (res.questions.length > 0 && p.bookId && Number.isInteger(p.chapterIndex)) {
+            updateChapterQuestions(p.bookId, p.chapterIndex, { questions: res.questions, gistQuestions: res.gistQuestions });
+        }
+        return res;
+    } : null;
+
     // Leaving part-way through stores the resume point without marking the
     // passage finished.
     const handleReaderLeave = ({ passageId, progressIndex, chapterIndex = null, mode = null }) => {
@@ -636,7 +647,7 @@ export default function App() {
                         {currentView === 'upload' && <Upload ai={ai} library={library} readingWpm={readerOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onSaveBook={saveBook} onSavePassage={(p) => saveToLibrary(p, 'import')} onOpenSaved={(id) => openSaved(id, { returnTo: 'documents' })} onDeleteSaved={deleteSaved} onOpenDocuments={() => navigate('documents')} addNotification={addNotification} />}
                         {currentView === 'recall' && <RecallCheck passage={activePassage} onDone={finishRecall} onExit={() => exitFocus('dashboard')} />}
                         {currentView === 'push' && <SpeedPush reading={reading} patchReading={patchReading} updateSettings={updateSettings} passage={activePassage} targetWpm={activeOpeningWpm} intensity={userStats.pushIntensity} settings={settings} onFinish={finishSession} onExit={() => exitFocus(returnView)} />}
-                        {currentView === 'reader' && <Reader key={activePassage?.id + ':' + (activePassage?.chapterIndex ?? '')} passage={activePassage} book={activeBook} onSelectChapter={activeBook ? selectBookChapter : null} settings={settings} reading={reading} patchReading={patchReading} updateSettings={updateSettings} customPresets={customPresets} onSavePresets={setCustomPresets} popoutWin={popoutWin} onPopoutChange={setPopoutWin} initialWpm={readerOpeningWpm} resumeFrom={activePassage?.resumeFrom ?? (isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id)))} onFinish={finishSession} onLeave={handleReaderLeave} onBookmark={!activePassage?.isCalibration ? bookmarkHere : null} onExit={() => exitFocus(activePassage?.isCalibration ? 'dashboard' : returnView)} addNotification={addNotification} />}
+                        {currentView === 'reader' && <Reader key={activePassage?.id + ':' + (activePassage?.chapterIndex ?? '')} passage={activePassage} book={activeBook} onSelectChapter={activeBook ? selectBookChapter : null} settings={settings} reading={reading} patchReading={patchReading} updateSettings={updateSettings} customPresets={customPresets} onSavePresets={setCustomPresets} popoutWin={popoutWin} onPopoutChange={setPopoutWin} initialWpm={readerOpeningWpm} resumeFrom={activePassage?.resumeFrom ?? (isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id)))} onFinish={finishSession} onLeave={handleReaderLeave} onBookmark={!activePassage?.isCalibration ? bookmarkHere : null} onGenerateQuiz={generateChapterQuiz} onExit={() => exitFocus(activePassage?.isCalibration ? 'dashboard' : returnView)} addNotification={addNotification} />}
                         {currentView === 'tools' && <Tools drills={drills} adaptiveStart={settings.autoAdaptive} onDrillComplete={handleDrillComplete} addNotification={addNotification} />}
                         {currentView === 'vocab' && <Vocabulary vocab={vocab} setVocab={setVocab} library={library} ai={ai} addNotification={addNotification} />}
                         {currentView === 'analytics' && <Analytics history={sessionHistory} drills={drills} stats={userStats} theme={theme} />}

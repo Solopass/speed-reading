@@ -2,8 +2,14 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Paragraph } from './PacedText';
 import { buildChunks, chunkIndexAt, pauseAfter, tokenize, wordWeights } from '../lib/chunker';
 import {
-    advanceByCost, gradientAnchors, gradientBackground, layoutLines, pacingCosts, textLooks
+    advanceByCost, easeCosts, gradientAnchors, gradientBackground, layoutLines, pacingCosts, textLooks
 } from '../lib/textColor';
+
+/** Above this many words, only paragraphs near the reading line are rendered. */
+const LONG_TEXT_WORDS = 12000;
+const WINDOW_BEFORE = 20;
+const WINDOW_AFTER = 30;
+const RECENTER_AFTER = 12;
 import { buildLineSpans, groupLineTops, isHeadingParagraph, wordIndexAtY } from '../lib/scrollUtils';
 import { DEFAULT_READING, LIMITS } from '../lib/readingStyle';
 
@@ -27,6 +33,26 @@ function measureWords(container, wordEls, needBoxes = false) {
     return { tops, lineTops, lineSpans: buildLineSpans(lineTops), boxes: boxes ?? [], width: base.width };
 }
 
+/**
+ * Fills in positions for words that are not rendered (windowed long texts):
+ * each gets the centre of an estimated line inside its paragraph's spacer
+ * space, so positions keep increasing through the whole text. Without this
+ * they read as 0, which looks like "already at the end" to the scroll.
+ */
+export function estimateHiddenTops(tops, paragraphs, winLo, winHi, totals, { linePx, perLine, afterBase }) {
+    const out = tops.slice();
+    const place = (p, base) => {
+        const para = paragraphs[p];
+        const lines = Math.max(1, Math.ceil(para.reduce((n, w) => n + w.word.length + 1, 0) / perLine));
+        para.forEach((w, k) => {
+            out[w.index] = base + Math.floor((k / para.length) * lines) * linePx + linePx / 2;
+        });
+    };
+    for (let p = 0; p < winLo; p++) place(p, totals[p]);
+    for (let p = winHi; p < paragraphs.length; p++) place(p, afterBase + totals[p] - totals[winHi]);
+    return out;
+}
+
 /** One line's height at the current reading settings, as CSS. */
 const LINE = 'calc(var(--reading-prose-size) * var(--reading-line-height))';
 
@@ -44,6 +70,7 @@ export default function ScrollText({
     isRunning,
     reading = DEFAULT_READING,
     rank = null,
+    difficulty = null,
     bionicReading = false,
     initialIndex = 0,
     seek = null,
@@ -98,8 +125,10 @@ export default function ScrollText({
         if (!scrollPacing) return null;
         const gaps = tokenize(text).map(t => t.gap);
         const pauses = words.map((w, i) => pauseAfter(w, gaps[i] ?? 0, words[i + 1]));
-        return pacingCosts(words, wordWeights(words, rarityPacing ? rank : null), pauses);
-    }, [text, words, scrollPacing, rarityPacing, rank]);
+        const base = pacingCosts(words, wordWeights(words, rarityPacing ? rank : null), pauses);
+        // Ease off just before dense stretches rather than in the middle of them.
+        return difficulty?.length === words.length ? easeCosts(base, difficulty) : base;
+    }, [text, words, scrollPacing, rarityPacing, rank, difficulty]);
     const costsRef = useRef(costs);
     useLayoutEffect(() => { costsRef.current = costs; });
 
@@ -117,6 +146,55 @@ export default function ScrollText({
     const progressRef = useRef(clampedInitial);
     const [readIndex, setReadIndex] = useState(Math.floor(clampedInitial));
     const readIndexRef = useRef(Math.floor(clampedInitial));
+
+    // --- Long chapters: render a window of paragraphs ------------------------
+    // Every paragraph of a 50,000-word chapter in the DOM makes each layout and
+    // re-measure slow. Above LONG_TEXT_WORDS only the paragraphs around the
+    // reading line are rendered; blank spacers of about the right height stand
+    // in for the rest. The scroll position follows the current word, so the
+    // spacers never need to be exact.
+    const windowed = totalWords > LONG_TEXT_WORDS;
+    const paraStarts = useMemo(() => paragraphs.map(pa => pa[0]?.index ?? 0), [paragraphs]);
+    const paraOf = useCallback((idx) => {
+        let lo = 0;
+        let hi = paraStarts.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (paraStarts[mid] <= idx) lo = mid; else hi = mid - 1;
+        }
+        return Math.max(0, lo);
+    }, [paraStarts]);
+    const [winCenter, setWinCenter] = useState(() => paraOf(Math.floor(clampedInitial)));
+    useEffect(() => {
+        if (!windowed) return undefined;
+        const cur = paraOf(readIndex);
+        if (Math.abs(cur - winCenter) <= RECENTER_AFTER) return undefined;
+        let live = true;
+        queueMicrotask(() => { if (live) setWinCenter(cur); });
+        return () => { live = false; };
+    }, [windowed, readIndex, winCenter, paraOf]);
+    const winLo = windowed ? Math.max(0, winCenter - WINDOW_BEFORE) : 0;
+    const winHi = windowed ? Math.min(paragraphs.length, winCenter + WINDOW_AFTER) : paragraphs.length;
+    // Estimated paragraph heights (px) for the spacers, as running totals.
+    // Calibrated against the rendered paragraphs after each measure, so the
+    // spacers (and constant glide's pixels-per-word) match the real layout.
+    const [spacerScale, setSpacerScale] = useState(1);
+    const spacerTotals = useMemo(() => {
+        if (!windowed) return null;
+        const linePx = proseSizePx * lineHeight * spacerScale;
+        const gapPx = paragraphGapEm * proseSizePx * spacerScale;
+        const perLine = Math.max(20, maxWidthCh * 1.1);
+        const totals = [0];
+        for (const pa of paragraphs) {
+            const chars = pa.reduce((n, w) => n + w.word.length + 1, 0);
+            totals.push(totals[totals.length - 1] + Math.ceil(chars / perLine) * linePx + gapPx);
+        }
+        return totals;
+    }, [windowed, paragraphs, proseSizePx, lineHeight, paragraphGapEm, maxWidthCh, spacerScale]);
+    const windowKey = `${winLo}-${winHi}`;
+    const bottomSpacerRef = useRef(null);
+    // First and last word index actually rendered (windowed texts only).
+    const renderedRangeRef = useRef(null);
     const [viewportHeight, setViewportHeight] = useState(360);
     const viewportHeightRef = useRef(360);
     const focalRef = useRef(focalPct);
@@ -177,9 +255,36 @@ export default function ScrollText({
             // the text column, so the scroll offset cancels out.
             const needBoxes = scrollColor === 'gradient';
             const m = measureWords(contentRef.current, wordRefs.current, needBoxes);
-            wordTopsRef.current = m.tops;
-            wordLineTopsRef.current = m.lineTops;
-            lineSpansRef.current = m.lineSpans;
+            if (windowed && spacerTotals && contentRef.current) {
+                // Words outside the window get estimated positions from the spacers.
+                const base = contentRef.current.getBoundingClientRect().top;
+                const afterBase = bottomSpacerRef.current
+                    ? bottomSpacerRef.current.getBoundingClientRect().top - base
+                    : spacerTotals[winHi];
+                const tops = estimateHiddenTops(m.tops, paragraphs, winLo, winHi, spacerTotals, {
+                    linePx: proseSizePx * lineHeight * spacerScale, perLine: Math.max(20, maxWidthCh * 1.1), afterBase
+                });
+                // How far the estimate was off for the paragraphs we can see.
+                if (bottomSpacerRef.current) {
+                    const real = afterBase - spacerTotals[winLo];
+                    const est = spacerTotals[winHi] - spacerTotals[winLo];
+                    if (est > 0 && real > 0) {
+                        const next = spacerScale * (real / est);
+                        if (Math.abs(next - spacerScale) / spacerScale > 0.03) setSpacerScale(next);
+                    }
+                }
+                const lineTops = groupLineTops(tops);
+                const firstIdx = paragraphs[winLo]?.[0]?.index ?? 0;
+                const lastPara = paragraphs[winHi - 1];
+                renderedRangeRef.current = lastPara ? [firstIdx, lastPara[lastPara.length - 1].index] : null;
+                wordTopsRef.current = tops;
+                wordLineTopsRef.current = lineTops;
+                lineSpansRef.current = buildLineSpans(lineTops);
+            } else {
+                wordTopsRef.current = m.tops;
+                wordLineTopsRef.current = m.lineTops;
+                lineSpansRef.current = m.lineSpans;
+            }
             if (needBoxes) {
                 setLayout(prev => {
                     const key = m.boxes.map(b => (b ? `${Math.round(b.top)}:${Math.round(b.left)}` : '-')).join(',') + `|${Math.round(m.width)}`;
@@ -194,7 +299,7 @@ export default function ScrollText({
         if (contentRef.current) observer.observe(contentRef.current);
         document.fonts?.ready.then(measure).catch(() => {});
         return () => observer.disconnect();
-    }, [paragraphs, bionicReading, totalWords, paint, layoutKey, scrollColor]);
+    }, [paragraphs, bionicReading, totalWords, paint, layoutKey, scrollColor, windowKey, windowed, spacerTotals, winLo, winHi, proseSizePx, lineHeight, maxWidthCh, spacerScale]);
 
     // Moving the reading line or switching motion repositions the text.
     useLayoutEffect(() => {
@@ -215,9 +320,13 @@ export default function ScrollText({
         if (!seek) return undefined;
         let cancelled = false;
         const index = Math.max(0, Math.min(totalWords, seek.index));
-        queueMicrotask(() => { if (!cancelled) moveTo(index); });
+        queueMicrotask(() => {
+            if (cancelled) return;
+            if (windowed) setWinCenter(paraOf(index));
+            moveTo(index);
+        });
         return () => { cancelled = true; };
-    }, [seek, totalWords, moveTo]);
+    }, [seek, totalWords, moveTo, windowed, paraOf]);
 
     useEffect(() => {
         if (!isRunning || totalWords === 0) return undefined;
@@ -232,8 +341,15 @@ export default function ScrollText({
                 const lineTops = wordLineTopsRef.current;
                 const firstY = lineTops[0] ?? 0;
                 const lastY = lineTops[lineTops.length - 1] ?? firstY;
+                // On windowed long texts the whole-text span includes estimated
+                // heights, so the pixels per word come from the rendered stretch.
+                const range = renderedRangeRef.current;
+                const measured = windowed && range && range[1] > range[0]
+                    ? (lineTops[range[1]] - lineTops[range[0]]) / (range[1] - range[0])
+                    : null;
                 const span = Math.max(1, lastY - firstY);
-                const pxPerMs = (span / Math.max(1, totalWords - 1)) * (wpm / 60000);
+                const pxPerWord = measured > 0 ? measured : span / Math.max(1, totalWords - 1);
+                const pxPerMs = pxPerWord * (wpm / 60000);
                 const nextY = Math.min(lastY, constantYRef.current + pxPerMs * delta);
                 constantYRef.current = nextY;
                 const focalY = viewportHeightRef.current * (focalRef.current / 100);
@@ -259,7 +375,7 @@ export default function ScrollText({
 
         frame = requestAnimationFrame(tick);
         return () => cancelAnimationFrame(frame);
-    }, [isRunning, wpm, totalWords, moveTo]);
+    }, [isRunning, wpm, totalWords, moveTo, windowed]);
 
     useEffect(() => {
         if (totalWords > 0 && readIndex >= totalWords) onComplete?.();
@@ -543,7 +659,9 @@ export default function ScrollText({
                     ref={contentRef}
                     className="w-full will-change-transform"
                 >
-                {paragraphs.map((para, p) => {
+                {windowed && winLo > 0 && <div aria-hidden="true" style={{ height: spacerTotals[winLo] }} />}
+                {paragraphs.slice(winLo, winHi).map((para, k) => {
+                    const p = winLo + k;
                     const start = para[0]?.index ?? 0;
                     const end = start + para.length;
                     // Clamp the highlight to this paragraph, so the memoised
@@ -567,6 +685,9 @@ export default function ScrollText({
                         />
                     );
                 })}
+                {windowed && winHi < paragraphs.length && (
+                    <div ref={bottomSpacerRef} aria-hidden="true" style={{ height: spacerTotals[paragraphs.length] - spacerTotals[winHi] }} />
+                )}
                 </div>
             </div>
 
