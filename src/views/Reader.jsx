@@ -157,7 +157,7 @@ function Reader({
     // leave the reading speed at 1,000 WPM.
     const [skimWpm, setSkimWpm] = useState(() => settings.skimWpm ?? skimStartWpm(initialWpm));
     const safeResume = Math.max(0, resumeFrom);
-    const [isPlaying, setIsPlaying] = useState(() => Boolean(passage?.autoStart) && !isCalibration);
+    const [isPlaying, setIsPlaying] = useState(() => Boolean(passage?.autoStart) && !isCalibration && (settings.readerMode || 'rsvp') !== 'natural');
     const [currentIndex, setCurrentIndex] = useState(safeResume);
     const [mode, setMode] = useState(isCalibration ? 'natural' : (settings.readerMode || 'rsvp'));
     const [isAudioReady, setIsAudioReady] = useState(false);
@@ -405,7 +405,8 @@ function Reader({
     const [checkStats, setCheckStats] = useState({ asked: 0, right: 0 });
     const lastCheckRef = useRef({ secs: 0, idx: safeResume });
     useEffect(() => {
-        if (!reading.checkpoints || isCalibration || mode === 'natural' || !isPlaying || checkpoint) return;
+        // Skim is read for gist, so a check on one exact word would be unfair there.
+        if (!reading.checkpoints || isCalibration || mode === 'natural' || mode === 'skim' || !isPlaying || checkpoint) return;
         const since = playSecs - lastCheckRef.current.secs;
         const every = reading.checkpointEveryMin * 60;
         if (since < every) return;
@@ -491,7 +492,7 @@ function Reader({
     const measuredWpm = useCallback((wordsRead) => {
         const ms = elapsedMs();
         if (ms < 500 || wordsRead <= 0) return wpm;
-        return Math.min(2000, Math.max(50, Math.round(wordsRead / (ms / 60000))));
+        return Math.min(2500, Math.max(50, Math.round(wordsRead / (ms / 60000))));
     }, [elapsedMs, wpm]);
 
     // Words covered *this sitting*, banked across every rewind and skip (see
@@ -549,8 +550,10 @@ function Reader({
             to = to > from && start <= from && nextStart < words.length ? nextStart : start;
         }
         if (!auto && to < cursorRef.current) rewindEventsRef.current.push(playSecsRef.current);
-        // The next checkpoint asks about text read from here on, not text jumped over.
-        lastCheckRef.current = { ...lastCheckRef.current, idx: to };
+        // The next checkpoint asks about text read, not text jumped over: a jump
+        // forward starts the window here; stepping back keeps what was already read.
+        const prevIdx = lastCheckRef.current.idx;
+        lastCheckRef.current = { ...lastCheckRef.current, idx: to > cursorRef.current ? to : Math.min(prevIdx, to) };
         countRef.current = jump(countRef.current, cursorRef.current, to);
         cursorRef.current = to;
         if (mode === 'rsvp') setCurrentIndex(to);
@@ -622,6 +625,10 @@ function Reader({
     // Timers and the pacer call the latest finish handler through a ref, so
     // their effects do not restart every time the parent re-renders (which
     // recreated the handler and reset the RSVP flash timer mid-word).
+    // Leaving while a chapter quiz is being written: its late answer must not
+    // finish the session from another page.
+    useEffect(() => () => { quizWritingCancelledRef.current = true; }, []);
+
     const finishRef = useRef(handleFinishReading);
     useLayoutEffect(() => { finishRef.current = handleFinishReading; });
 
@@ -634,7 +641,8 @@ function Reader({
     const lastBlinkRef = useRef(0);
     const blinkTimerRef = useRef(null);
     const playingRef = useRef(isPlaying);
-    useLayoutEffect(() => { playingRef.current = isPlaying; });
+    const rsvpIndexRef = useRef(currentIndex);
+    useLayoutEffect(() => { playingRef.current = isPlaying; rsvpIndexRef.current = currentIndex; });
     useEffect(() => {
         if (!isPlaying || mode !== 'rsvp' || words.length === 0 || currentIndex >= words.length) {
             rsvpDeadlineRef.current = 0;
@@ -680,10 +688,12 @@ function Reader({
                     lastBlinkRef.current = ts;
                     rsvpDeadlineRef.current = targetAt + BLINK_MS;
                     setBlinking(true);
+                    const blinkFrom = currentIndex;
                     blinkTimerRef.current = setTimeout(() => {
                         blinkTimerRef.current = null;
                         setBlinking(false);
-                        if (playingRef.current) advance();
+                        // A jump during the blink wins: do not drag the reader back.
+                        if (playingRef.current && rsvpIndexRef.current === blinkFrom) advance();
                     }, BLINK_MS);
                     return;
                 }
@@ -737,7 +747,7 @@ function Reader({
     const togglePlay = () => {
         if (countdown !== null) { setCountdown(null); return; }
         if (isPlaying) { setIsPlaying(false); return; }
-        if (mode === 'rsvp' && words.length > 0 && currentIndex >= words.length) seekTo(0);
+        if (mode !== 'natural' && words.length > 0 && cursorRef.current >= words.length) seekTo(0, { auto: true });
         // Stepping back a few words on resume picks the sentence back up.
         else if (hasPlayedRef.current && reading.rewindWords > 0 && cursorRef.current > 0) seekBy(-reading.rewindWords, { auto: true });
         if (reading.countdown) setCountdown(3);
