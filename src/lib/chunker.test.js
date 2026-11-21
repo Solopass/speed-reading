@@ -165,4 +165,12 @@ describe('quote and parenthetical grouping', () => {
         const chunks = buildChunks(text, { maxWords: 3 }).map(c => words.slice(c.start, c.end).join(' '));
         expect(chunks.some(c => c.includes('"not today"'))).toBe(true);
     });
+
+    it('merges tiny glue words with their neighbour when mergeShortWords is enabled in 1-word mode', () => {
+        const text = 'She walked in the rain to a quiet house.';
+        const words = text.split(/\s+/);
+        const chunks = buildChunks(text, { maxWords: 1, mergeShortWords: true }).map(c => words.slice(c.start, c.end).join(' '));
+        expect(chunks).toContain('in the');
+        expect(chunks).toContain('to a');
+    });
 });

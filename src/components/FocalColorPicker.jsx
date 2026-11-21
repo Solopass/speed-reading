@@ -1,12 +1,13 @@
 import { Check, Plus, X } from 'lucide-react';
-import { DEFAULT_READING, FOCAL_COLORS, normalizeHexColor } from '../lib/readingStyle';
+import { DEFAULT_READING, FOCAL_COLORS, FOCAL_SPANS, normalizeHexColor } from '../lib/readingStyle';
 
 /**
- * Preset focal-letter colours, custom colour chooser, and saved custom swatches.
- * Shared between the in-reader settings drawer and the Reading Setup page.
+ * Preset focal-letter colours, custom colour chooser, saved custom swatches,
+ * and highlight-span options. Shared between Reading Settings and Reading Setup.
  */
 export default function FocalColorPicker({ reading, onChange }) {
     const focalColorId = reading?.focalColorId ?? DEFAULT_READING.focalColorId;
+    const focalSpan = reading?.focalSpan ?? DEFAULT_READING.focalSpan;
     const customColor = normalizeHexColor(reading?.focalCustomColor, DEFAULT_READING.focalCustomColor);
     const saved = Array.isArray(reading?.savedFocalColors) ? reading.savedFocalColors : [];
     const alreadySaved = saved.includes(customColor);
@@ -125,6 +126,29 @@ export default function FocalColorPicker({ reading, onChange }) {
                     </div>
                 </div>
             )}
+
+            <div className="space-y-1.5 pt-1">
+                <div className="text-[11px] text-slate-400 font-medium">Highlight span</div>
+                <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Focal highlight span">
+                    {FOCAL_SPANS.map(s => (
+                        <button
+                            key={s.id}
+                            type="button"
+                            role="radio"
+                            aria-checked={focalSpan === s.id}
+                            title={s.note}
+                            onClick={() => onChange({ focalSpan: s.id })}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-colors ${
+                                focalSpan === s.id
+                                    ? 'border-purple-500 bg-purple-500/15 text-purple-200'
+                                    : 'border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200'
+                            }`}
+                        >
+                            {s.label}
+                        </button>
+                    ))}
+                </div>
+            </div>
         </div>
     );
 }

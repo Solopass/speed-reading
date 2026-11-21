@@ -96,3 +96,18 @@ export function orpIndex(word) {
     const orp = coreLen <= 1 ? 0 : coreLen <= 5 ? 1 : coreLen <= 9 ? 2 : coreLen <= 13 ? 3 : 4;
     return Math.min(str.length - 1, lead + orp);
 }
+
+/**
+ * Character span [start, end) around the ORP center for 'single' vs 'cluster'
+ * (3-letter anchor cluster) highlight modes.
+ */
+export function focalRange(word, spanMode = 'single') {
+    const str = String(word ?? '');
+    const center = orpIndex(str);
+    if (spanMode !== 'cluster' || str.length <= 1) {
+        return { start: center, center, end: Math.min(str.length, center + 1) };
+    }
+    const start = Math.max(0, center - 1);
+    const end = Math.min(str.length, center + 2);
+    return { start, center, end };
+}

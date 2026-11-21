@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
-    ArrowUpDown, Bookmark, ChevronLeft, ChevronRight, Maximize2, Minimize2, Minus, Pause, Play, Plus, RotateCcw, Settings2, SkipBack, SkipForward, Target, Volume2
+    ArrowUpDown, Bookmark, ChevronLeft, ChevronRight, ExternalLink, Maximize2, Minimize2, Minus, Pause, Play, Plus, RotateCcw, Settings2, SkipBack, SkipForward, Target, Volume2
 } from 'lucide-react';
 import { normalizeQuestions } from '../lib/quiz';
 import useHotkeys from '../lib/useHotkeys';
@@ -10,7 +11,7 @@ import PassageText from '../components/PassageText';
 import ReadingSurface from '../components/ReadingSurface';
 import ReaderSettings from '../components/ReaderSettings';
 import { focalColorFor, rampFactor } from '../lib/readingStyle';
-import { orpIndex, rsvpWordScale } from '../lib/scrollUtils';
+import { focalRange, orpIndex, rsvpWordScale } from '../lib/scrollUtils';
 import { clampIndex, clock, extractSections, jump, startCount, wordsCovered } from '../lib/readerNav';
 import { buildChunks, chunkIndexAt, joinFlashWords, pauseAfter, tokenize, wordWeights } from '../lib/chunker';
 import { loadFrequencyRank } from '../lib/vocab';
@@ -18,7 +19,7 @@ import Quiz from '../components/Quiz';
 
 /** Words skipped by the rewind and skip controls. */
 const SKIP_WORDS = 10;
-const WPM_PRESETS = [200, 300, 400, 500, 650, 800, 1000];
+const WPM_PRESETS = [200, 300, 400, 500, 650, 800, 1000, 1100, 1250, 1500];
 /** Flash text size for multi-word groups, relative to the single-word size, by "words per flash". */
 const MULTI_SCALE = { 2: 0.78, 3: 0.68, 4: 0.6, 5: 0.56 };
 /** Height of the flash box: fixed per setting so one- and two-line groups do not shift the page. */
@@ -48,7 +49,7 @@ function KeyboardHint() {
 }
 
 /** Skimming starts well past reading speed: below ~700 WPM it is just fast reading. */
-export const skimStartWpm = (targetWpm) => Math.min(2000, Math.max(700, Math.round((targetWpm * 2.5) / 50) * 50));
+export const skimStartWpm = (targetWpm) => Math.min(2500, Math.max(700, Math.round((targetWpm * 2.5) / 50) * 50));
 
 /**
  * Clickable progress bar. Clicking or using the arrow keys on it jumps the
@@ -159,6 +160,7 @@ function Reader({
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [countdown, setCountdown] = useState(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
+    const [popoutWin, setPopoutWin] = useState(null);
 
     const [pacedIndex, setPacedIndex] = useState(safeResume);
     const [pacedSeek, setPacedSeek] = useState(null);
@@ -221,8 +223,8 @@ function Reader({
     // slices (see chunker.js). Indices are the same as `words`.
     const smartChunks = settings.smartChunks !== false;
     const chunks = useMemo(
-        () => buildChunks(passage?.text ?? '', { maxWords: settings.chunkSize, smart: smartChunks }),
-        [passage?.text, settings.chunkSize, smartChunks]
+        () => buildChunks(passage?.text ?? '', { maxWords: settings.chunkSize, smart: smartChunks, mergeShortWords: reading.rsvpMergeShortWords }),
+        [passage?.text, settings.chunkSize, smartChunks, reading.rsvpMergeShortWords]
     );
     const gaps = useMemo(() => tokenize(passage?.text ?? '').map(t => t.gap), [passage?.text]);
     // Word frequencies, loaded once, so rare words can get a little more time.
@@ -279,9 +281,7 @@ function Reader({
         };
     }, []);
     const slowFactor = holdSlow && !isCalibration ? reading.holdSlowPct / 100 : 1;
-    const effectiveWpm = Math.min(2000, Math.max(50, Math.round((wpm * ramp + (isCalibration ? 0 : accelBonus)) * slowFactor)));
-
-    const timerRef = useRef(null);
+    const effectiveWpm = Math.min(2500, Math.max(50, Math.round((wpm * ramp + (isCalibration ? 0 : accelBonus)) * slowFactor)));
 
     // --- Reading clock -----------------------------------------------------
     // Wall-clock time spent actually reading, excluding pauses. The WPM control
@@ -505,9 +505,13 @@ function Reader({
     const finishRef = useRef(handleFinishReading);
     useLayoutEffect(() => { finishRef.current = handleFinishReading; });
 
-    // --- RSVP advance ------------------------------------------------------
+    // --- RSVP advance (zero-drift rAF accumulator for 1,000+ WPM) -----------
+    const rsvpDeadlineRef = useRef(0);
     useEffect(() => {
-        if (!isPlaying || mode !== 'rsvp' || words.length === 0 || currentIndex >= words.length) return;
+        if (!isPlaying || mode !== 'rsvp' || words.length === 0 || currentIndex >= words.length) {
+            rsvpDeadlineRef.current = 0;
+            return undefined;
+        }
 
         const end = flashEnd(currentIndex);
         const wordMs = 60000 / effectiveWpm;
@@ -521,19 +525,29 @@ function Reader({
             if (paraEnds.has(end - 1) && end < words.length) delayMs += Math.min(220, wordMs * 0.45);
         }
 
-        timerRef.current = setTimeout(() => {
-            const next = end;
-            if (next >= words.length) {
-                setCurrentIndex(words.length);
-                setIsPlaying(false);
-                // The last chunk has just been shown, so the whole rest counts.
-                finishRef.current(words.length);
-            } else {
-                setCurrentIndex(next);
-            }
-        }, delayMs);
+        const now = performance.now();
+        const base = rsvpDeadlineRef.current > 0 && now - rsvpDeadlineRef.current < 100 ? rsvpDeadlineRef.current : now;
+        const targetAt = base + delayMs;
+        let frame = 0;
 
-        return () => clearTimeout(timerRef.current);
+        const tick = (ts) => {
+            if (ts >= targetAt) {
+                rsvpDeadlineRef.current = targetAt;
+                if (end >= words.length) {
+                    setCurrentIndex(words.length);
+                    setIsPlaying(false);
+                    // The last chunk has just been shown, so the whole rest counts.
+                    finishRef.current(words.length);
+                } else {
+                    setCurrentIndex(end);
+                }
+                return;
+            }
+            frame = requestAnimationFrame(tick);
+        };
+
+        frame = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(frame);
     }, [isPlaying, currentIndex, effectiveWpm, mode, words, settings.punctuationPacing, flashEnd, weights, gaps, paraEnds]);
 
     // The pacer reports completion from its own animation loop; guard against
@@ -597,10 +611,50 @@ function Reader({
     const openSettings = () => { pause(); setSettingsOpen(true); };
     const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
+    const closePopout = useCallback(() => {
+        if (popoutWin && !popoutWin.closed) popoutWin.close();
+        setPopoutWin(null);
+    }, [popoutWin]);
+
+    const togglePopout = async () => {
+        if (popoutWin && !popoutWin.closed) {
+            closePopout();
+            return;
+        }
+        try {
+            let win = null;
+            if (window.documentPictureInPicture?.requestWindow) {
+                win = await window.documentPictureInPicture.requestWindow({
+                    width: 760,
+                    height: isScroll ? 520 : 340
+                });
+            } else {
+                win = window.open('', 'speedai-popout', `popup=yes,width=760,height=${isScroll ? 520 : 340}`);
+            }
+            if (!win) {
+                addNotification?.('Pop-out window was blocked by the browser.');
+                return;
+            }
+            win.document.title = passage?.title || 'SpeedAI Reader';
+            win.document.head.innerHTML = '';
+            for (const node of document.querySelectorAll('link[rel="stylesheet"], style')) {
+                win.document.head.appendChild(node.cloneNode(true));
+            }
+            win.document.body.className = 'bg-slate-950 text-slate-100 m-0 p-0 overflow-hidden';
+            setPopoutWin(win);
+        } catch (err) {
+            addNotification?.(err?.message || 'Could not open pop-out window.');
+        }
+    };
+
+    useEffect(() => () => {
+        if (popoutWin && !popoutWin.closed) popoutWin.close();
+    }, [popoutWin]);
+
     const restart = () => { pause(); seekTo(0); };
 
     const applyWpm = (targetWpm) => {
-        const next = Math.min(2000, Math.max(100, targetWpm));
+        const next = Math.min(2500, Math.max(100, targetWpm));
         setWpm(next);
         if (isSkim) {
             updateSettings?.({ skimWpm: next });
@@ -615,6 +669,24 @@ function Reader({
     };
 
     const nudgeWpm = (delta) => applyWpm(wpm + delta);
+
+    useEffect(() => {
+        if (!popoutWin) return undefined;
+        const onPageHide = () => setPopoutWin(null);
+        const onKey = (e) => {
+            if (e.key === ' ') { e.preventDefault(); if (mode !== 'natural') togglePlay(); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); nudgeWpm(wpm >= 800 ? 50 : 25); }
+            else if (e.key === 'ArrowDown') { e.preventDefault(); nudgeWpm(-(wpm >= 800 ? 50 : 25)); }
+            else if (e.key === '[') { e.preventDefault(); seekBy(-SKIP_WORDS); }
+            else if (e.key === ']') { e.preventDefault(); seekBy(SKIP_WORDS); }
+        };
+        popoutWin.addEventListener('pagehide', onPageHide);
+        popoutWin.addEventListener('keydown', onKey);
+        return () => {
+            popoutWin.removeEventListener('pagehide', onPageHide);
+            popoutWin.removeEventListener('keydown', onKey);
+        };
+    });
 
     const seekSentence = (dir) => {
         if (mode === 'natural' || words.length === 0) return;
@@ -653,12 +725,13 @@ function Reader({
 
     // You read with your eyes fixed on one point, so reaching for the mouse to
     // pause defeats the exercise.
+    const wpmStep = wpm >= 800 ? 50 : 25;
     useHotkeys({
         ' ': () => { if (mode !== 'natural') togglePlay(); },
-        ArrowUp: () => nudgeWpm(25),
-        ArrowRight: () => nudgeWpm(25),
-        ArrowDown: () => nudgeWpm(-25),
-        ArrowLeft: () => nudgeWpm(-25),
+        ArrowUp: () => nudgeWpm(wpmStep),
+        ArrowRight: () => nudgeWpm(wpmStep),
+        ArrowDown: () => nudgeWpm(-wpmStep),
+        ArrowLeft: () => nudgeWpm(-wpmStep),
         '[': () => seekBy(-SKIP_WORDS),
         ']': () => seekBy(SKIP_WORDS),
         '{': () => seekSentence(-1),
@@ -677,20 +750,23 @@ function Reader({
     const renderRsvpChunk = () => {
         const chunkWords = words.slice(currentIndex, flashEnd(currentIndex));
         if (chunkWords.length === 0) return null;
+        const focal = focalColorFor(reading);
+        const spanMode = reading.focalSpan ?? 'single';
+        const isGrad = spanMode === 'gradient';
 
-        if (settings.chunkSize > 1) {
+        if (chunkWords.length > 1) {
             // A phrase is taken in as a whole, centred on the fixation point.
-            // The size follows the setting, not the current group, so the text
-            // does not grow and shrink between flashes; a group too wide for
-            // one line wraps into two balanced lines instead of being clipped.
-            const scale = MULTI_SCALE[Math.min(settings.chunkSize, 5)] ?? 0.56;
+            const scale = MULTI_SCALE[Math.min(Math.max(settings.chunkSize, chunkWords.length), 5)] ?? 0.56;
             const joined = joinFlashWords(chunkWords);
             const parts = joined.split(' ');
             const midWordIdx = Math.floor(parts.length / 2);
             let offset = 0;
             for (let i = 0; i < midWordIdx; i++) offset += parts[i].length + 1;
-            const midCharIdx = Math.min(joined.length - 1, offset + orpIndex(parts[midWordIdx]));
-            const focal = focalColorFor(reading);
+            const midRange = focalRange(parts[midWordIdx], spanMode);
+            const midStart = offset + midRange.start;
+            const midCenter = offset + midRange.center;
+            const midEnd = offset + midRange.end;
+
             return (
                 <div className="w-full select-none px-5 md:px-8 flex items-center justify-center">
                     <p
@@ -707,20 +783,51 @@ function Reader({
                             maxWidth: '100%'
                         }}
                     >
-                        <span style={{ opacity: 0.85 }}>{joined.slice(0, midCharIdx)}</span>
-                        <span className="font-bold" style={{ color: focal ?? 'inherit' }}>{joined.charAt(midCharIdx)}</span>
-                        <span style={{ opacity: 0.85 }}>{joined.slice(midCharIdx + 1)}</span>
+                        {spanMode === 'allOrps' ? (
+                            parts.map((pw, wi) => {
+                                const cIdx = orpIndex(pw);
+                                return (
+                                    <span key={wi}>
+                                        {wi > 0 ? ' ' : ''}
+                                        <span style={{ opacity: 0.82 }}>{pw.slice(0, cIdx)}</span>
+                                        <span className="font-bold" style={{ color: focal ?? 'inherit' }}>{pw.charAt(cIdx)}</span>
+                                        <span style={{ opacity: 0.82 }}>{pw.slice(cIdx + 1)}</span>
+                                    </span>
+                                );
+                            })
+                        ) : (
+                            <>
+                                <span style={{ opacity: isGrad ? 0.9 : 0.85, color: isGrad && focal ? focal : undefined }}>
+                                    {joined.slice(0, midStart)}
+                                </span>
+                                {midStart < midCenter && (
+                                    <span className="font-bold" style={{ color: focal ?? 'inherit', opacity: 0.88 }}>
+                                        {joined.slice(midStart, midCenter)}
+                                    </span>
+                                )}
+                                <span className="font-bold" style={{ color: focal ?? 'inherit' }}>{joined.charAt(midCenter)}</span>
+                                {midCenter + 1 < midEnd && (
+                                    <span className="font-bold" style={{ color: focal ?? 'inherit', opacity: 0.88 }}>
+                                        {joined.slice(midCenter + 1, midEnd)}
+                                    </span>
+                                )}
+                                <span style={{ opacity: isGrad ? 0.9 : 0.85, color: isGrad && focal ? focal : undefined }}>
+                                    {joined.slice(midEnd)}
+                                </span>
+                            </>
+                        )}
                     </p>
                 </div>
             );
         }
 
         const chunk = chunkWords[0];
-        const centerIdx = orpIndex(chunk);
-
-        const start = chunk.slice(0, centerIdx);
-        const center = chunk.charAt(centerIdx);
-        const end = chunk.slice(centerIdx + 1);
+        const range = focalRange(chunk, spanMode);
+        const pre = chunk.slice(0, range.start);
+        const leftCluster = chunk.slice(range.start, range.center);
+        const center = chunk.charAt(range.center);
+        const rightCluster = chunk.slice(range.center + 1, range.end);
+        const post = chunk.slice(range.end);
         const scale = rsvpWordScale(chunk);
 
         return (
@@ -735,9 +842,15 @@ function Reader({
                     fontWeight: reading.rsvpWeight
                 }}
             >
-                <span className="flex-1 min-w-0 text-right whitespace-pre" style={{ opacity: 0.8 }}>{start}</span>
-                <span className="shrink-0 font-bold" style={{ color: focalColorFor(reading) ?? 'inherit' }}>{center}</span>
-                <span className="flex-1 min-w-0 text-left whitespace-pre" style={{ opacity: 0.8 }}>{end}</span>
+                <span className="flex-1 min-w-0 text-right whitespace-pre" style={{ opacity: isGrad ? 0.9 : 0.8 }}>
+                    {isGrad && focal ? <span style={{ color: focal, opacity: 0.55 }}>{pre}</span> : pre}
+                    {leftCluster && <span className="font-bold" style={{ color: focal ?? 'inherit', opacity: 0.85 }}>{leftCluster}</span>}
+                </span>
+                <span className="shrink-0 font-bold" style={{ color: focal ?? 'inherit' }}>{center}</span>
+                <span className="flex-1 min-w-0 text-left whitespace-pre" style={{ opacity: isGrad ? 0.9 : 0.8 }}>
+                    {rightCluster && <span className="font-bold" style={{ color: focal ?? 'inherit', opacity: 0.85 }}>{rightCluster}</span>}
+                    {isGrad && focal ? <span style={{ color: focal, opacity: 0.55 }}>{post}</span> : post}
+                </span>
             </div>
         );
     };
@@ -1045,6 +1158,21 @@ function Reader({
                             <Bookmark size={18} />
                         </button>
                     )}
+                    {(mode === 'rsvp' || isScroll) && !isCalibration && (
+                        <button
+                            type="button"
+                            onClick={togglePopout}
+                            aria-pressed={Boolean(popoutWin && !popoutWin.closed)}
+                            title={popoutWin && !popoutWin.closed ? 'Dock pop-out window back' : 'Pop out floating reader window'}
+                            className={`p-2.5 rounded-xl border transition-colors ${
+                                popoutWin && !popoutWin.closed
+                                    ? 'border-purple-500 bg-purple-600/20 text-purple-200'
+                                    : 'border-slate-800 text-slate-300 hover:text-white hover:border-slate-600'
+                            }`}
+                        >
+                            <ExternalLink size={18} />
+                        </button>
+                    )}
                     <button
                         onClick={openSettings} aria-label="Reading settings" title="Reading settings (S)"
                         className="p-2.5 rounded-xl border border-slate-800 text-slate-300 hover:text-white hover:border-slate-600 transition-colors"
@@ -1061,7 +1189,30 @@ function Reader({
                     </div>
                 )}
 
-                {mode === 'rsvp' ? (
+                {popoutWin && !popoutWin.closed && (mode === 'rsvp' || isScroll) ? (
+                    <div className="w-full max-w-lg rounded-3xl border border-slate-800 bg-slate-900/90 p-8 text-center space-y-4">
+                        <div className="text-sm font-bold text-white">Reading in floating pop-out window</div>
+                        <p className="text-xs text-slate-400">
+                            {pctDone}% · {cursorIndex} / {words.length} words · {effectiveWpm} WPM
+                        </p>
+                        <div className="flex items-center justify-center gap-3">
+                            <button
+                                type="button"
+                                onClick={togglePlay}
+                                className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-colors"
+                            >
+                                {isPlaying ? 'Pause' : 'Play'}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={closePopout}
+                                className="px-4 py-2 rounded-xl border border-slate-700 hover:border-slate-500 text-slate-200 text-xs font-bold transition-colors"
+                            >
+                                Dock back
+                            </button>
+                        </div>
+                    </div>
+                ) : mode === 'rsvp' ? (
                     <div className="w-full flex flex-col items-center">
                         <div
                             onWheel={handleWheelScrub}
@@ -1073,7 +1224,13 @@ function Reader({
                             {reading.rsvpContext && (
                                 <div
                                     aria-hidden="true"
-                                    className="h-16 md:h-20 w-full max-w-2xl px-6 pt-3 pb-1 flex items-end justify-center overflow-hidden select-none"
+                                    className={`h-16 md:h-20 w-full max-w-2xl px-6 pt-3 pb-1 flex items-end justify-center overflow-hidden select-none transition-opacity duration-200 ${
+                                        isPlaying && reading.rsvpContextPlay === 'hide'
+                                            ? 'opacity-0 pointer-events-none'
+                                            : isPlaying && reading.rsvpContextPlay === 'dim'
+                                                ? 'opacity-25'
+                                                : 'opacity-100'
+                                    }`}
                                     style={{
                                         maskImage: 'linear-gradient(to bottom, transparent 0%, black 55%)',
                                         WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 55%)'
@@ -1135,7 +1292,13 @@ function Reader({
                             {reading.rsvpContext && (
                                 <div
                                     aria-hidden="true"
-                                    className="h-16 md:h-20 w-full max-w-2xl px-6 pt-1 pb-3 flex items-start justify-center overflow-hidden select-none"
+                                    className={`h-16 md:h-20 w-full max-w-2xl px-6 pt-1 pb-3 flex items-start justify-center overflow-hidden select-none transition-opacity duration-200 ${
+                                        isPlaying && reading.rsvpContextPlay === 'hide'
+                                            ? 'opacity-0 pointer-events-none'
+                                            : isPlaying && reading.rsvpContextPlay === 'dim'
+                                                ? 'opacity-25'
+                                                : 'opacity-100'
+                                    }`}
                                     style={{
                                         maskImage: 'linear-gradient(to top, transparent 0%, black 55%)',
                                         WebkitMaskImage: 'linear-gradient(to top, transparent 0%, black 55%)'
@@ -1308,6 +1471,74 @@ function Reader({
                 reading={reading} patchReading={patchReading}
                 settings={settings} updateSettings={updateSettings}
             />
+            {popoutWin && !popoutWin.closed && (mode === 'rsvp' || isScroll) && createPortal(
+                <ReadingSurface reading={reading} className="h-screen w-screen flex flex-col justify-between p-4 select-none">
+                    <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800/60 shrink-0">
+                        <span className="text-xs font-bold truncate" style={{ color: 'var(--reading-fg)' }}>{passage.title}</span>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                            <button type="button" onClick={() => nudgeWpm(-(wpm >= 800 ? 50 : 25))} className="px-2 py-1 rounded bg-slate-800/80 text-slate-200 text-xs font-bold hover:bg-slate-700">-</button>
+                            <span className="text-xs font-mono font-bold px-1.5" style={{ color: 'var(--reading-fg)' }}>{effectiveWpm} WPM</span>
+                            <button type="button" onClick={() => nudgeWpm(wpm >= 800 ? 50 : 25)} className="px-2 py-1 rounded bg-slate-800/80 text-slate-200 text-xs font-bold hover:bg-slate-700">+</button>
+                            <button
+                                type="button"
+                                onClick={togglePlay}
+                                className="px-3 py-1 rounded bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold"
+                            >
+                                {isPlaying ? 'Pause' : 'Play'}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={closePopout}
+                                className="px-2.5 py-1 rounded border border-slate-700 text-slate-300 hover:text-white text-xs font-bold"
+                            >
+                                Dock
+                            </button>
+                        </div>
+                    </div>
+                    <div className="flex-1 flex flex-col justify-center items-center min-h-0 overflow-hidden">
+                        {mode === 'rsvp' ? (
+                            <button
+                                type="button"
+                                onClick={togglePlay}
+                                aria-label={isPlaying ? 'Pause reading' : 'Start reading'}
+                                className="flex items-center justify-center w-full h-full relative overflow-hidden cursor-pointer focus:outline-none"
+                            >
+                                {reading.showFocalGuide && (
+                                    <>
+                                        <div className="absolute top-0 left-1/2 w-0.5 h-3 -translate-x-1/2 pointer-events-none rounded-b" style={{ background: 'var(--reading-muted)', opacity: 0.55 }} />
+                                        <div className="absolute bottom-0 left-1/2 w-0.5 h-3 -translate-x-1/2 pointer-events-none rounded-t" style={{ background: 'var(--reading-muted)', opacity: 0.55 }} />
+                                    </>
+                                )}
+                                <div className="w-full flex flex-col items-center gap-2">
+                                    {renderRsvpChunk()}
+                                    {renderNextPreview()}
+                                </div>
+                            </button>
+                        ) : (
+                            <ScrollText
+                                text={passage.text}
+                                wpm={effectiveWpm}
+                                isRunning={isPlaying}
+                                reading={{ ...reading, scrollHeightVh: 76 }}
+                                rank={reading.rarityPacing ? rank : null}
+                                bionicReading={settings.bionicReading}
+                                initialIndex={pacedInitialIndex}
+                                seek={pacedSeek}
+                                onWordClick={seekTo}
+                                onProgress={setPacedIndex}
+                                onComplete={handlePacerComplete}
+                                onChangeWidth={(ch) => patchReading({ maxWidthCh: ch })}
+                                onChangeFocalPct={(pct) => patchReading({ scrollFocalPct: pct })}
+                            />
+                        )}
+                    </div>
+                    <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between text-[11px] font-mono shrink-0" style={{ color: 'var(--reading-muted)' }}>
+                        <span>{pctDone}% · {cursorIndex} / {words.length}</span>
+                        <span>{left} left</span>
+                    </div>
+                </ReadingSurface>,
+                popoutWin.document.body
+            )}
 
             {bookmarkOpen && (
                 <div className="fixed inset-0 z-[60] grid place-items-center p-4">

@@ -4,6 +4,7 @@ import {
     DEFAULT_READING, FONT_OPTIONS, LIMITS, THEMES,
     estimatedWordsPerLine, focalColorFor, normalizeReading
 } from '../lib/readingStyle';
+import { focalRange } from '../lib/scrollUtils';
 import FocalColorPicker from '../components/FocalColorPicker';
 import ReadingSurface, { proseStyle } from '../components/ReadingSurface';
 
@@ -52,7 +53,13 @@ function ReadingEnvironment({ reading, updateReading }) {
             : 'In the comfortable band most readers land in.';
 
     const focal = focalColorFor(current);
-    const mid = Math.max(0, Math.floor(previewWord.length / 2) - 1);
+    const range = focalRange(previewWord, current.focalSpan);
+    const isGrad = current.focalSpan === 'gradient';
+    const pre = previewWord.slice(0, range.start);
+    const leftCluster = previewWord.slice(range.start, range.center);
+    const center = previewWord.charAt(range.center);
+    const rightCluster = previewWord.slice(range.center + 1, range.end);
+    const post = previewWord.slice(range.end);
 
     return (
         <div className="max-w-5xl mx-auto space-y-6 animate-in slide-in-from-bottom-4 pb-12">
@@ -94,9 +101,15 @@ function ReadingEnvironment({ reading, updateReading }) {
                         {current.showFocalGuide && (
                             <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2" style={{ background: 'var(--reading-muted)', opacity: 0.35 }} />
                         )}
-                        <span className="flex-1 text-right whitespace-pre" style={{ opacity: 0.8 }}>{previewWord.slice(0, mid)}</span>
-                        <span className="shrink-0 font-bold" style={{ color: focal }}>{previewWord.charAt(mid)}</span>
-                        <span className="flex-1 text-left whitespace-pre" style={{ opacity: 0.8 }}>{previewWord.slice(mid + 1)}</span>
+                        <span className="flex-1 text-right whitespace-pre" style={{ opacity: isGrad ? 0.9 : 0.8 }}>
+                            {isGrad && focal ? <span style={{ color: focal, opacity: 0.55 }}>{pre}</span> : pre}
+                            {leftCluster && <span className="font-bold" style={{ color: focal ?? 'inherit', opacity: 0.85 }}>{leftCluster}</span>}
+                        </span>
+                        <span className="shrink-0 font-bold" style={{ color: focal ?? 'inherit' }}>{center}</span>
+                        <span className="flex-1 text-left whitespace-pre" style={{ opacity: isGrad ? 0.9 : 0.8 }}>
+                            {rightCluster && <span className="font-bold" style={{ color: focal ?? 'inherit', opacity: 0.85 }}>{rightCluster}</span>}
+                            {isGrad && focal ? <span style={{ color: focal, opacity: 0.55 }}>{post}</span> : post}
+                        </span>
                     </div>
 
                     <div className="mx-auto" style={{ maxWidth: 'var(--reading-max-width)' }}>

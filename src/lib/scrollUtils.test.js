@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLineSpans, groupLineTops, isHeadingParagraph, orpIndex, rsvpWordScale } from './scrollUtils';
+import { buildLineSpans, focalRange, groupLineTops, isHeadingParagraph, orpIndex, rsvpWordScale } from './scrollUtils';
 
 describe('scrollUtils', () => {
     it('groups word vertical centers into shared visual-line centers', () => {
@@ -45,5 +45,10 @@ describe('scrollUtils', () => {
         expect(orpIndex('a')).toBe(0);
         expect(orpIndex('“Hello')).toBe(2);
         expect(orpIndex('reading')).toBe(2);
+    });
+
+    it('computes focalRange for single and 3-letter cluster modes', () => {
+        expect(focalRange('reading', 'single')).toEqual({ start: 2, center: 2, end: 3 });
+        expect(focalRange('reading', 'cluster')).toEqual({ start: 1, center: 2, end: 4 });
     });
 });

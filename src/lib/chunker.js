@@ -113,11 +113,25 @@ function hardBreaks(tokens) {
  * @param {string} text the passage text
  * @param {{ maxWords?: number, minWords?: number, smart?: boolean }} options
  */
-export function buildChunks(text, { maxWords = 1, minWords, smart = true } = {}) {
+export function buildChunks(text, { maxWords = 1, minWords, smart = true, mergeShortWords = false } = {}) {
     const tokens = tokenize(text);
     const max = Math.max(1, Math.min(8, Math.round(maxWords)));
     const chunks = [];
     if (!tokens.length) return chunks;
+    if (max === 1 && mergeShortWords) {
+        const hard = hardBreaks(tokens);
+        let i = 0;
+        while (i < tokens.length) {
+            const w = tokens[i].word;
+            const next = tokens[i + 1]?.word;
+            const canMerge = !hard[i] && next && !PUNCT_ONLY_RE.test(w) && !PUNCT_ONLY_RE.test(next)
+                && w.length <= 3 && LEANS_FORWARD.has(bare(w)) && (w.length + next.length + 1) <= 14;
+            const end = canMerge ? i + 2 : i + 1;
+            chunks.push({ start: i, end });
+            i = end;
+        }
+        return chunks;
+    }
     if (max === 1 || !smart) {
         for (let i = 0; i < tokens.length; i += max) chunks.push({ start: i, end: Math.min(tokens.length, i + max) });
         return chunks;

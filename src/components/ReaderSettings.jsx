@@ -1,8 +1,8 @@
 import { useEffect } from 'react';
 import { RotateCcw, X } from 'lucide-react';
 import {
-    DEFAULT_READING, FONT_OPTIONS, LIMITS, PACER_STYLES, SCROLL_COLOR_MODES, SCROLL_GUIDES,
-    SCROLL_MARKERS, SCROLL_MOTIONS, SCROLL_PALETTES, THEMES
+    DEFAULT_READING, FONT_OPTIONS, LIMITS, PACER_STYLES, RSVP_CONTEXT_PLAY_MODES, SCROLL_COLOR_MODES,
+    SCROLL_GUIDES, SCROLL_MARKERS, SCROLL_MOTIONS, SCROLL_PALETTES, THEMES
 } from '../lib/readingStyle';
 import FocalColorPicker from './FocalColorPicker';
 
@@ -224,6 +224,20 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                         </div>
                         <Switch label="Centre guide" hint="A faint line through the focal letter." checked={reading.showFocalGuide} onChange={(v) => set({ showFocalGuide: v })} />
                         <Switch label="Show surrounding words" hint="Before and after text above and below the flash, so you keep your place." checked={reading.rsvpContext} onChange={(v) => set({ rsvpContext: v })} />
+                        {reading.rsvpContext && (
+                            <div>
+                                <div className="text-sm text-slate-300 mb-1.5">Context while playing</div>
+                                <Chips label="Context while playing" options={RSVP_CONTEXT_PLAY_MODES} value={reading.rsvpContextPlay} onChange={(id) => set({ rsvpContextPlay: id })} />
+                            </div>
+                        )}
+                        {settings.chunkSize === 1 && (
+                            <Switch
+                                label="Merge tiny glue words"
+                                hint='Pairs short words ("in the", "of a") in 1-word mode to cut flicker at 1,000+ WPM.'
+                                checked={reading.rsvpMergeShortWords}
+                                onChange={(v) => set({ rsvpMergeShortWords: v })}
+                            />
+                        )}
                         <Switch label="Pause at punctuation" hint="A beat after commas and full stops." checked={settings.punctuationPacing} onChange={(v) => updateSettings({ punctuationPacing: v })} />
                         <Switch label="More time for rare words" hint="Unfamiliar words and names stay up a little longer, everyday words a little less; your average speed is unchanged." checked={reading.rarityPacing} onChange={(v) => set({ rarityPacing: v })} />
                         <Switch label="Preview the next group" hint="Shows what comes next, faintly, under the flash." checked={reading.rsvpPreviewNext} onChange={(v) => set({ rsvpPreviewNext: v })} />

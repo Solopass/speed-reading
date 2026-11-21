@@ -70,6 +70,19 @@ export const FOCAL_COLORS = [
     { id: 'none', label: 'None', value: null }
 ];
 
+export const FOCAL_SPANS = [
+    { id: 'single', label: '1 letter', note: 'Classic single-letter ORP anchor' },
+    { id: 'cluster', label: '3-letter cluster', note: 'Highlights the focal letter and its two neighbours for faster high-WPM locking' },
+    { id: 'allOrps', label: "Every word's ORP", note: 'In multi-word flashes, highlights the ORP of every word' },
+    { id: 'gradient', label: 'Focal fade', note: 'Strongest at the focal letter, tapering outward' }
+];
+
+export const RSVP_CONTEXT_PLAY_MODES = [
+    { id: 'show', label: 'Show', note: 'Keep surrounding lines visible while playing' },
+    { id: 'dim', label: 'Dim', note: 'Fade surrounding lines while playing' },
+    { id: 'hide', label: 'Hide', note: 'Hide surrounding lines while playing for pure tunnel focus' }
+];
+
 const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
 export const normalizeHexColor = (val, fallback = '#f43f5e') =>
     (typeof val === 'string' && HEX_COLOR_RE.test(val.trim()) ? val.trim().toLowerCase() : fallback);
@@ -115,6 +128,7 @@ export const DEFAULT_READING = {
     focalColorId: 'red',
     focalCustomColor: '#f43f5e',
     savedFocalColors: [],
+    focalSpan: 'single',
     showFocalGuide: true,
     bionicStrength: 0.5,  // fraction of each word emboldened
     // In-reader behaviour, adjustable from the reader's settings drawer.
@@ -145,11 +159,13 @@ export const DEFAULT_READING = {
     rarityPacing: true,   // more time for rare words (RSVP and Scroll smart pacing)
     holdSlowPct: 60,      // speed while Shift is held down
     rsvpPreviewNext: false, // show the next group faintly under the flash
+    rsvpContextPlay: 'dim', // show | dim | hide surrounding context while playing
+    rsvpMergeShortWords: false, // pair tiny glue words with their neighbour in 1-word RSVP
     speedRamp: false,     // ease in from 70% of the target over the first quarter
     zen: false            // hide the controls while playing
 };
 
-const BOOLEAN_PREFS = ['dimRead', 'rsvpContext', 'countdown', 'speedRamp', 'zen', 'scrollFadeFunctionWords', 'scrollPacing', 'rarityPacing', 'rsvpPreviewNext'];
+const BOOLEAN_PREFS = ['dimRead', 'rsvpContext', 'countdown', 'speedRamp', 'zen', 'scrollFadeFunctionWords', 'scrollPacing', 'rarityPacing', 'rsvpPreviewNext', 'rsvpMergeShortWords'];
 
 /**
  * Speed multiplier for the warm-up ramp: 70% at the first word, rising to full
@@ -211,6 +227,8 @@ export function normalizeReading(raw) {
     result.focalColorId = source.focalColorId === 'custom'
         ? 'custom'
         : byId(FOCAL_COLORS, source.focalColorId, 'red').id;
+    result.focalSpan = byId(FOCAL_SPANS, source.focalSpan, 'single').id;
+    result.rsvpContextPlay = byId(RSVP_CONTEXT_PLAY_MODES, source.rsvpContextPlay, 'dim').id;
     result.focalCustomColor = normalizeHexColor(source.focalCustomColor, DEFAULT_READING.focalCustomColor);
     result.savedFocalColors = Array.isArray(source.savedFocalColors)
         ? [...new Set(source.savedFocalColors.map(c => normalizeHexColor(c, '')).filter(Boolean))].slice(0, 12)

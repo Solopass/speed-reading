@@ -202,4 +202,16 @@ describe('reader QOL settings', () => {
         expect(r.savedFocalColors).toEqual(['#00ff88', '#123456']);
         expect(focalColorFor(r)).toBe('#00ff88');
     });
+
+    it('defaults and validates focalSpan, rsvpContextPlay, and rsvpMergeShortWords', () => {
+        const d = normalizeReading({});
+        expect(d.focalSpan).toBe('single');
+        expect(d.rsvpContextPlay).toBe('dim');
+        expect(d.rsvpMergeShortWords).toBe(false);
+
+        const c = normalizeReading({ focalSpan: 'cluster', rsvpContextPlay: 'hide', rsvpMergeShortWords: true });
+        expect(c.focalSpan).toBe('cluster');
+        expect(c.rsvpContextPlay).toBe('hide');
+        expect(c.rsvpMergeShortWords).toBe(true);
+    });
 });
