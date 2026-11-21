@@ -56,11 +56,23 @@ export const THEMES = [
 
 export const FOCAL_COLORS = [
     { id: 'red', label: 'Red', value: '#ef4444' },
+    { id: 'coral', label: 'Coral', value: '#fb7185' },
     { id: 'amber', label: 'Amber', value: '#f59e0b' },
-    { id: 'purple', label: 'Purple', value: '#a855f7' },
+    { id: 'gold', label: 'Gold', value: '#eab308' },
+    { id: 'lime', label: 'Lime', value: '#84cc16' },
+    { id: 'emerald', label: 'Emerald', value: '#10b981' },
+    { id: 'teal', label: 'Teal', value: '#14b8a6' },
     { id: 'cyan', label: 'Cyan', value: '#22d3ee' },
+    { id: 'sky', label: 'Sky', value: '#38bdf8' },
+    { id: 'indigo', label: 'Indigo', value: '#818cf8' },
+    { id: 'purple', label: 'Purple', value: '#a855f7' },
+    { id: 'pink', label: 'Pink', value: '#ec4899' },
     { id: 'none', label: 'None', value: null }
 ];
+
+const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
+export const normalizeHexColor = (val, fallback = '#f43f5e') =>
+    (typeof val === 'string' && HEX_COLOR_RE.test(val.trim()) ? val.trim().toLowerCase() : fallback);
 
 /** How the Paced and Skim modes mark your place. */
 export const PACER_STYLES = [
@@ -101,6 +113,8 @@ export const DEFAULT_READING = {
     justify: false,
     paragraphGapEm: 1.2,
     focalColorId: 'red',
+    focalCustomColor: '#f43f5e',
+    savedFocalColors: [],
     showFocalGuide: true,
     bionicStrength: 0.5,  // fraction of each word emboldened
     // In-reader behaviour, adjustable from the reader's settings drawer.
@@ -179,7 +193,10 @@ const byId = (list, id, fallbackId) =>
 
 export const fontFor = (reading) => byId(FONT_OPTIONS, reading.fontId, 'sans');
 export const themeFor = (reading) => byId(THEMES, reading.themeId, 'dark');
-export const focalColorFor = (reading) => byId(FOCAL_COLORS, reading.focalColorId, 'red').value;
+export const focalColorFor = (reading) => {
+    if (reading?.focalColorId === 'custom') return normalizeHexColor(reading?.focalCustomColor);
+    return byId(FOCAL_COLORS, reading?.focalColorId, 'red').value;
+};
 
 /** Validates anything that may have come from storage or an imported backup. */
 export function normalizeReading(raw) {
@@ -191,7 +208,13 @@ export function normalizeReading(raw) {
     }
     result.fontId = byId(FONT_OPTIONS, source.fontId, 'sans').id;
     result.themeId = byId(THEMES, source.themeId, 'dark').id;
-    result.focalColorId = byId(FOCAL_COLORS, source.focalColorId, 'red').id;
+    result.focalColorId = source.focalColorId === 'custom'
+        ? 'custom'
+        : byId(FOCAL_COLORS, source.focalColorId, 'red').id;
+    result.focalCustomColor = normalizeHexColor(source.focalCustomColor, DEFAULT_READING.focalCustomColor);
+    result.savedFocalColors = Array.isArray(source.savedFocalColors)
+        ? [...new Set(source.savedFocalColors.map(c => normalizeHexColor(c, '')).filter(Boolean))].slice(0, 12)
+        : [];
     result.justify = source.justify === true;
     result.showFocalGuide = source.showFocalGuide !== false;
     result.pacerStyle = byId(PACER_STYLES, source.pacerStyle, 'band').id;

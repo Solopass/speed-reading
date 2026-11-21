@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { RotateCcw, Type } from 'lucide-react';
 import {
-    DEFAULT_READING, FOCAL_COLORS, FONT_OPTIONS, LIMITS, THEMES,
+    DEFAULT_READING, FONT_OPTIONS, LIMITS, THEMES,
     estimatedWordsPerLine, focalColorFor, normalizeReading
 } from '../lib/readingStyle';
+import FocalColorPicker from '../components/FocalColorPicker';
 import ReadingSurface, { proseStyle } from '../components/ReadingSurface';
 
 const SAMPLE = `The eye does not glide smoothly across a line of text. It moves in short jumps called saccades, pausing between them at fixation points where the reading actually happens.
@@ -149,20 +150,7 @@ function ReadingEnvironment({ reading, updateReading }) {
 
                     <div>
                         <div className="text-sm font-bold text-slate-300 mb-2">Focal letter</div>
-                        <div className="flex gap-2 flex-wrap">
-                            {FOCAL_COLORS.map(colour => (
-                                <button
-                                    key={colour.id}
-                                    onClick={() => set({ focalColorId: colour.id })}
-                                    className={`px-3 py-2 rounded-lg border text-xs font-bold transition-colors ${
-                                        current.focalColorId === colour.id ? 'border-purple-500 text-white' : 'border-slate-800 text-slate-400 hover:border-slate-600'
-                                    }`}
-                                >
-                                    <span className="inline-block w-2.5 h-2.5 rounded-full mr-1.5 align-middle" style={{ background: colour.value ?? 'transparent', border: colour.value ? 'none' : '1px solid currentColor' }} />
-                                    {colour.label}
-                                </button>
-                            ))}
-                        </div>
+                        <FocalColorPicker reading={current} onChange={set} />
                         <label className="flex items-center gap-2 mt-3 text-sm text-slate-300 cursor-pointer">
                             <input
                                 type="checkbox" checked={current.showFocalGuide}

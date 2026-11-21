@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLineSpans, groupLineTops, isHeadingParagraph, rsvpWordScale } from './scrollUtils';
+import { buildLineSpans, groupLineTops, isHeadingParagraph, orpIndex, rsvpWordScale } from './scrollUtils';
 
 describe('scrollUtils', () => {
     it('groups word vertical centers into shared visual-line centers', () => {
@@ -39,5 +39,11 @@ describe('scrollUtils', () => {
         expect(spans.lineStart).toEqual([0, 0, 0, 3, 3, 5]);
         expect(spans.lineLen).toEqual([3, 3, 3, 2, 2, 1]);
         expect(spans.nextLineTop).toEqual([130, 130, 130, 160, 160, 160]);
+    });
+
+    it('computes ORP index skipping leading punctuation', () => {
+        expect(orpIndex('a')).toBe(0);
+        expect(orpIndex('“Hello')).toBe(2);
+        expect(orpIndex('reading')).toBe(2);
     });
 });

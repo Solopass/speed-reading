@@ -1,9 +1,10 @@
 import { useEffect } from 'react';
 import { RotateCcw, X } from 'lucide-react';
 import {
-    DEFAULT_READING, FOCAL_COLORS, FONT_OPTIONS, LIMITS, PACER_STYLES, SCROLL_COLOR_MODES, SCROLL_GUIDES,
+    DEFAULT_READING, FONT_OPTIONS, LIMITS, PACER_STYLES, SCROLL_COLOR_MODES, SCROLL_GUIDES,
     SCROLL_MARKERS, SCROLL_MOTIONS, SCROLL_PALETTES, THEMES
 } from '../lib/readingStyle';
+import FocalColorPicker from './FocalColorPicker';
 
 function Section({ title, children }) {
     return (
@@ -219,7 +220,7 @@ export default function ReaderSettings({ open, onClose, reading, patchReading, s
                         )}
                         <div>
                             <div className="text-sm text-slate-300 mb-1.5">Focal letter</div>
-                            <Chips label="Focal letter colour" options={FOCAL_COLORS} value={reading.focalColorId} onChange={(id) => set({ focalColorId: id })} />
+                            <FocalColorPicker reading={reading} onChange={set} />
                         </div>
                         <Switch label="Centre guide" hint="A faint line through the focal letter." checked={reading.showFocalGuide} onChange={(v) => set({ showFocalGuide: v })} />
                         <Switch label="Show surrounding words" hint="Before and after text above and below the flash, so you keep your place." checked={reading.rsvpContext} onChange={(v) => set({ rsvpContext: v })} />

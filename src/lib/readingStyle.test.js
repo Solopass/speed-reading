@@ -190,4 +190,16 @@ describe('reader QOL settings', () => {
         expect(normalizeReading({ scrollTunnel: 50 }).scrollTunnel).toBe(35);
         expect(normalizeReading({ scrollTunnel: -5 }).scrollTunnel).toBe(0);
     });
+
+    it('supports custom focal colours and normalizes saved custom swatches', () => {
+        const r = normalizeReading({
+            focalColorId: 'custom',
+            focalCustomColor: '#00FF88',
+            savedFocalColors: ['#00FF88', '#00ff88', 'not-a-hex', '#123456']
+        });
+        expect(r.focalColorId).toBe('custom');
+        expect(r.focalCustomColor).toBe('#00ff88');
+        expect(r.savedFocalColors).toEqual(['#00ff88', '#123456']);
+        expect(focalColorFor(r)).toBe('#00ff88');
+    });
 });

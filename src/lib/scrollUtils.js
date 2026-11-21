@@ -83,3 +83,16 @@ export function rsvpWordScale(word) {
     if (len <= 11) return 1;
     return Math.max(0.58, Number((11 / len).toFixed(3)));
 }
+
+/**
+ * Optimal Recognition Point character index inside a word (skipping leading
+ * quotes/brackets so "Hello" pivots on the word itself).
+ */
+export function orpIndex(word) {
+    const str = String(word ?? '');
+    if (!str) return 0;
+    const lead = str.match(/^[^\p{L}\p{N}]*/u)[0].length;
+    const coreLen = [...str.slice(lead).replace(/[^\p{L}\p{N}]+$/u, '')].length;
+    const orp = coreLen <= 1 ? 0 : coreLen <= 5 ? 1 : coreLen <= 9 ? 2 : coreLen <= 13 ? 3 : 4;
+    return Math.min(str.length - 1, lead + orp);
+}

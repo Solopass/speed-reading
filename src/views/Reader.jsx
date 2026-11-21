@@ -10,7 +10,7 @@ import PassageText from '../components/PassageText';
 import ReadingSurface from '../components/ReadingSurface';
 import ReaderSettings from '../components/ReaderSettings';
 import { focalColorFor, rampFactor } from '../lib/readingStyle';
-import { rsvpWordScale } from '../lib/scrollUtils';
+import { orpIndex, rsvpWordScale } from '../lib/scrollUtils';
 import { clampIndex, clock, extractSections, jump, startCount, wordsCovered } from '../lib/readerNav';
 import { buildChunks, chunkIndexAt, joinFlashWords, pauseAfter, tokenize, wordWeights } from '../lib/chunker';
 import { loadFrequencyRank } from '../lib/vocab';
@@ -684,6 +684,13 @@ function Reader({
             // does not grow and shrink between flashes; a group too wide for
             // one line wraps into two balanced lines instead of being clipped.
             const scale = MULTI_SCALE[Math.min(settings.chunkSize, 5)] ?? 0.56;
+            const joined = joinFlashWords(chunkWords);
+            const parts = joined.split(' ');
+            const midWordIdx = Math.floor(parts.length / 2);
+            let offset = 0;
+            for (let i = 0; i < midWordIdx; i++) offset += parts[i].length + 1;
+            const midCharIdx = Math.min(joined.length - 1, offset + orpIndex(parts[midWordIdx]));
+            const focal = focalColorFor(reading);
             return (
                 <div className="w-full select-none px-5 md:px-8 flex items-center justify-center">
                     <p
@@ -700,19 +707,16 @@ function Reader({
                             maxWidth: '100%'
                         }}
                     >
-                        {joinFlashWords(chunkWords)}
+                        <span style={{ opacity: 0.85 }}>{joined.slice(0, midCharIdx)}</span>
+                        <span className="font-bold" style={{ color: focal ?? 'inherit' }}>{joined.charAt(midCharIdx)}</span>
+                        <span style={{ opacity: 0.85 }}>{joined.slice(midCharIdx + 1)}</span>
                     </p>
                 </div>
             );
         }
 
         const chunk = chunkWords[0];
-        // Optimal recognition point: a little left of centre, skipping any
-        // opening quote or bracket so "“Hello" pivots on the word itself.
-        const lead = chunk.match(/^[^\p{L}\p{N}]*/u)[0].length;
-        const coreLen = [...chunk.slice(lead).replace(/[^\p{L}\p{N}]+$/u, '')].length;
-        const orp = coreLen <= 1 ? 0 : coreLen <= 5 ? 1 : coreLen <= 9 ? 2 : coreLen <= 13 ? 3 : 4;
-        const centerIdx = Math.min(chunk.length - 1, lead + orp);
+        const centerIdx = orpIndex(chunk);
 
         const start = chunk.slice(0, centerIdx);
         const center = chunk.charAt(centerIdx);
