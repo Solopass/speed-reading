@@ -532,21 +532,29 @@ export default function App() {
             }));
         }
 
-        setActivePassage(null);
-        setIsRecall(false);
-        setCurrentView('dashboard');
+        const book = bookChapter ? findEntry(library, bookChapter.bookId) : null;
+        const nextChapterIdx = bookChapter && !isSkim && currentView === 'reader' && book?.chapters[bookChapter.chapterIndex + 1]
+            ? bookChapter.chapterIndex + 1
+            : -1;
+
+        if (nextChapterIdx >= 0) {
+            setActivePassage({ ...chapterPassage(book, nextChapterIdx, 0), autoStart: !session.scored });
+            setIsRecall(false);
+        } else {
+            setActivePassage(null);
+            setIsRecall(false);
+            setCurrentView('dashboard');
+        }
 
         if (isBaseline) {
             addNotification(`Baseline reading logged — ${wpm} WPM at ${score}% retention.`, 'success');
         } else if (isSkim) {
             addNotification(session.scored ? `Skim logged — ${wpm} WPM, ${score}% on the check.` : `Skim logged — ${wpm} WPM.`, 'success');
         } else if (bookChapter) {
-            const book = findEntry(library, bookChapter.bookId);
-            const next = book?.chapters.findIndex((c, i) => i > bookChapter.chapterIndex && !c.completedAt) ?? -1;
             const scoreNote = session.scored ? ` at ${score}% retention` : '';
-            addNotification(next === -1
-                ? `Chapter done at ${wpm} WPM${scoreNote}.`
-                : `Chapter done at ${wpm} WPM${scoreNote}. Next: ${book.chapters[next].title}.`, 'success');
+            addNotification(nextChapterIdx < 0
+                ? `Book complete — finished at ${wpm} WPM${scoreNote}.`
+                : `Chapter done at ${wpm} WPM${scoreNote}. Continuing: ${book.chapters[nextChapterIdx].title}.`, 'success');
         } else {
             addNotification(
                 session.scored

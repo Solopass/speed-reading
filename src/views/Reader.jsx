@@ -145,7 +145,7 @@ function Reader({
     // leave the reading speed at 1,000 WPM.
     const [skimWpm, setSkimWpm] = useState(() => settings.skimWpm ?? skimStartWpm(initialWpm));
     const safeResume = Math.max(0, resumeFrom);
-    const [isPlaying, setIsPlaying] = useState(false);
+    const [isPlaying, setIsPlaying] = useState(() => Boolean(passage?.autoStart) && !isCalibration);
     const [currentIndex, setCurrentIndex] = useState(safeResume);
     const [mode, setMode] = useState(isCalibration ? 'natural' : (settings.readerMode || 'rsvp'));
     const [isAudioReady, setIsAudioReady] = useState(false);
