@@ -96,6 +96,12 @@ Working and verified:
   speed); hold Shift to slow down; Paced and Scroll remember their own speed
   relative to RSVP; RSVP can preview the next group; books chart your measured
   speed by chapter.
+- **Automatic backups** — in Chrome or Edge, pick a folder once and a dated
+  backup is written there daily (or every 6 hours / weekly) and after
+  sessions, keeping the newest N files. Backups now include reading presets.
+- **Installable app** — manifest, icons and an offline service worker (in the
+  production build): installs from Chrome/Edge or Add to Home Screen on iPad,
+  and opens without a connection.
 - **Vocabulary ranked by real word frequency** — the top 20,000 English words
   from wordfreq (CC BY-SA 4.0, see `src/data/WORDFREQ-NOTICE.md`), loaded only
   when the Vocabulary page opens.

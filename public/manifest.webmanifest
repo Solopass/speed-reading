@@ -1,0 +1,16 @@
+{
+  "name": "Speed AI — Reading Trainer",
+  "short_name": "Speed AI",
+  "description": "Train your reading speed with RSVP, a guided pacer and a scrolling reader, checked by comprehension.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

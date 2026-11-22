@@ -4,11 +4,13 @@ import { BASELINE_SAMPLES, WPM_MAX, WPM_MIN, clampWpm } from '../lib/stats';
 import { PUSH_PHASES, intensityLabel, phaseMultiplier } from '../lib/protocol';
 import { describeBackup } from '../lib/backup';
 import Toggle from '../components/Toggle';
+import FolderBackupPanel from '../components/FolderBackupPanel';
+import InstallAppPanel from '../components/InstallAppPanel';
 import { THEME_OPTIONS, normalizeTheme } from '../lib/theme';
 
 const plural = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
-function DataPanel({ onExport, onImport, lastBackupAt }) {
+function DataPanel({ onExport, onImport, lastBackupAt, folderBackup }) {
     const fileRef = useRef(null);
     const [pending, setPending] = useState(null);
     const [error, setError] = useState(null);
@@ -62,6 +64,9 @@ function DataPanel({ onExport, onImport, lastBackupAt }) {
                     onChange={(e) => { inspect(e.target.files?.[0]); e.target.value = ''; }}
                 />
             </div>
+
+            <FolderBackupPanel backup={folderBackup} />
+            <InstallAppPanel />
 
             {error && <p className="text-sm text-red-400">{error}</p>}
 
@@ -315,7 +320,7 @@ function AiPanel({ settings, updateSettings, apiKeyPresent, ai, localAi, onReche
     );
 }
 
-function SettingsPanel({ settings, updateSettings, apiKeyPresent, ai, localAi, onRecheckLocalAi, hasBaseline, baselineSamples = [], lastBackupAt, adaptiveTargetWpm, pushIntensity, onExport, onImport, onRecalibrate, onAddBaseline }) {
+function SettingsPanel({ settings, updateSettings, apiKeyPresent, ai, localAi, onRecheckLocalAi, hasBaseline, baselineSamples = [], lastBackupAt, folderBackup = null, adaptiveTargetWpm, pushIntensity, onExport, onImport, onRecalibrate, onAddBaseline }) {
     return (
         <div className="max-w-2xl mx-auto space-y-8 animate-in slide-in-from-bottom-4 pb-12">
             <div>
@@ -401,7 +406,7 @@ function SettingsPanel({ settings, updateSettings, apiKeyPresent, ai, localAi, o
                     </div>
                 </div>
 
-                <DataPanel onExport={onExport} onImport={onImport} lastBackupAt={lastBackupAt} />
+                <DataPanel onExport={onExport} onImport={onImport} lastBackupAt={lastBackupAt} folderBackup={folderBackup} />
 
                 <AiPanel
                     settings={settings} updateSettings={updateSettings} apiKeyPresent={apiKeyPresent}

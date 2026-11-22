@@ -10,7 +10,7 @@ import { migrateVocab } from './vocab';
 
 export const BACKUP_VERSION = 1;
 
-export function createBackup({ settings, stats, history, library, drills, plans = [], vocab = [] }) {
+export function createBackup({ settings, stats, history, library, drills, plans = [], vocab = [], presets = [] }) {
     return {
         app: 'speed-ai-reading-trainer',
         version: BACKUP_VERSION,
@@ -21,7 +21,9 @@ export function createBackup({ settings, stats, history, library, drills, plans 
         library,
         drills,
         plans,
-        vocab
+        vocab,
+        // Saved reading presets (Reader settings > Presets).
+        presets
     };
 }
 
@@ -72,7 +74,9 @@ export function readBackup(parsed, defaultSettings) {
         // Absent in v1 backups, which predate plans — an empty list, not a loss.
         plans: migratePlans(parsed.plans),
         // Absent in backups from before the vocabulary trainer.
-        vocab: migrateVocab(parsed.vocab)
+        vocab: migrateVocab(parsed.vocab),
+        // Absent in backups from before reading presets.
+        presets: Array.isArray(parsed.presets) ? parsed.presets : []
     };
 }
 

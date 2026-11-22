@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Activity } from 'lucide-react';
 import { hasApiKey } from './lib/gemini';
 import { listModels } from './lib/ollama';
@@ -12,6 +12,9 @@ import { CALIBRATION_PASSAGES } from './lib/calibration';
 import { intensityLabel, nextPushIntensity } from './lib/protocol';
 import { MAX_DRILL_HISTORY, migrateDrills } from './lib/drillStats';
 import { createBackup, downloadBackup, readBackup } from './lib/backup';
+import {
+    autoBackupDue, chooseBackupFolder, folderPermission, forgetFolder, loadFolderHandle, supportsFolderBackup, writeBackupToFolder
+} from './lib/autoBackup';
 import { DEFAULT_READING, normalizePreset, normalizeReading } from './lib/readingStyle';
 import { STEP_KINDS, migratePlans, removePlan, upsertPlan } from './lib/plans';
 import {
@@ -48,6 +51,22 @@ const SettingsPanel = lazy(() => import('./views/SettingsPanel'));
 const Vocabulary = lazy(() => import('./views/Vocabulary'));
 const Documents = lazy(() => import('./views/Documents'));
 const Upload = lazy(() => import('./views/Upload'));
+
+/**
+ * The installed app should work offline, but the screens above load on demand,
+ * so a screen never opened would be missing. In the production build, once the
+ * app is idle, they are all fetched once (the service worker keeps them).
+ */
+function warmOfflineCache() {
+    const loaders = [
+        () => import('./views/Dashboard'), () => import('./views/Analytics'), () => import('./views/Tools'),
+        () => import('./views/Plans'), () => import('./views/Guide'), () => import('./views/AICoach'),
+        () => import('./views/VideoSummary'), () => import('./views/ReadingEnvironment'), () => import('./views/SettingsPanel'),
+        () => import('./views/Vocabulary'), () => import('./views/Documents'), () => import('./views/Upload'),
+        () => import('./lib/vocab').then(m => m.loadFrequencyRank())
+    ];
+    for (const load of loaders) load().catch(() => {});
+}
 
 const DEFAULT_SETTINGS = {
     reading: DEFAULT_READING,
@@ -109,6 +128,9 @@ export default function App() {
         }
     });
     const libraryReadyRef = useRef(false);
+    // Also as state, so automatic backups wait until the full library has loaded
+    // (a large library starts out empty here until IndexedDB answers).
+    const [libraryLoaded, setLibraryLoaded] = useState(false);
     const latestLibraryRef = useRef(null);
 
     useEffect(() => {
@@ -116,6 +138,7 @@ export default function App() {
         loadLibraryIdb().then((stored) => {
             if (cancelled) return;
             libraryReadyRef.current = true;
+            setLibraryLoaded(true);
             if (stored !== null) {
                 setLibrary(migrateLibrary(stored));
             } else {
@@ -340,8 +363,124 @@ export default function App() {
             : `Found in ${result.metric}s.`, 'success');
     };
 
+    const currentBackup = () => createBackup({ settings, stats: userStats, history: sessionHistory, library, drills, plans, vocab, presets: customPresets });
+
+    // --- Automatic backups to a folder (see lib/autoBackup.js) ----------------
+    useEffect(() => {
+        if (!import.meta.env.PROD || !('serviceWorker' in navigator)) return undefined;
+        const idle = window.requestIdleCallback ?? ((fn) => setTimeout(fn, 3000));
+        const id = idle(() => warmOfflineCache());
+        return () => (window.cancelIdleCallback ?? clearTimeout)(id);
+    }, []);
+
+    const [backupFolder, setBackupFolder] = useState(null);
+    const [backupFolderState, setBackupFolderState] = useState(null);
+    useEffect(() => {
+        if (!supportsFolderBackup()) return;
+        loadFolderHandle().then(async (handle) => {
+            if (!handle) return;
+            setBackupFolder(handle);
+            setBackupFolderState(await folderPermission(handle).catch(() => 'prompt'));
+        });
+    }, []);
+    const autoBackup = { enabled: false, everyHours: 24, keep: 14, ...(settings.autoBackup ?? {}) };
+
+    const backupInFlightRef = useRef(false);
+    const runFolderBackup = async ({ manual = false } = {}) => {
+        if (!backupFolder || backupInFlightRef.current) return false;
+        if (!libraryReadyRef.current) return false;
+        backupInFlightRef.current = true;
+        try {
+            return await writeFolderBackup(manual);
+        } finally {
+            backupInFlightRef.current = false;
+        }
+    };
+    const writeFolderBackup = async (manual) => {
+        const state = await folderPermission(backupFolder, { request: manual }).catch(() => 'prompt');
+        setBackupFolderState(state);
+        if (state !== 'granted') {
+            if (manual) addNotification('The browser did not allow writing to that folder.');
+            return false;
+        }
+        try {
+            const name = await writeBackupToFolder(backupFolder, currentBackup(), { keep: autoBackup.keep });
+            updateSettings({ autoBackupLastAt: new Date().toISOString() });
+            setUserStats(prev => markBackedUp(prev));
+            if (manual) addNotification(`Backed up to ${backupFolder.name}/${name}.`, 'success');
+            return true;
+        } catch (error) {
+            if (error?.name === 'NotFoundError') {
+                // The folder was moved or deleted: stop trying until a folder is chosen again.
+                setBackupFolderState('missing');
+                addNotification(`The backup folder "${backupFolder.name}" is gone. Choose a folder again in Settings.`);
+            } else {
+                addNotification(`Automatic backup failed: ${error.message || 'could not write the file'}.`);
+            }
+            return false;
+        }
+    };
+    // The scheduler calls the latest version, so it always backs up current data.
+    const runFolderBackupRef = useRef(runFolderBackup);
+    useLayoutEffect(() => { runFolderBackupRef.current = runFolderBackup; });
+    // Due on open, after each finished session, and checked hourly.
+    useEffect(() => {
+        if (!autoBackup.enabled || backupFolderState !== 'granted' || !libraryLoaded) return undefined;
+        const check = () => {
+            if (autoBackupDue(settings.autoBackupLastAt, autoBackup.everyHours)) runFolderBackupRef.current();
+        };
+        check();
+        const id = setInterval(check, 60 * 60 * 1000);
+        return () => clearInterval(id);
+    }, [autoBackup.enabled, autoBackup.everyHours, backupFolderState, settings.autoBackupLastAt, libraryLoaded]);
+    // A finished session is backed up straight away (counted from when the library loaded).
+    const sessionsAtLoadRef = useRef(null);
+    useEffect(() => {
+        if (!libraryLoaded) return;
+        if (sessionsAtLoadRef.current === null) { sessionsAtLoadRef.current = sessionHistory.length; return; }
+        if (sessionHistory.length === sessionsAtLoadRef.current) return;
+        sessionsAtLoadRef.current = sessionHistory.length;
+        if (autoBackup.enabled && backupFolderState === 'granted') runFolderBackupRef.current();
+    }, [sessionHistory.length, libraryLoaded, autoBackup.enabled, backupFolderState]);
+
+    const pickBackupFolder = async () => {
+        try {
+            const handle = await chooseBackupFolder();
+            if (!handle) return;
+            setBackupFolder(handle);
+            setBackupFolderState('granted');
+            updateSettings({ autoBackup: { ...autoBackup, enabled: true } });
+            addNotification(`Automatic backups will go to "${handle.name}".`, 'success');
+        } catch (error) {
+            addNotification(error.message || 'Could not use that folder.');
+        }
+    };
+    const allowBackupFolder = async () => {
+        const state = await folderPermission(backupFolder, { request: true }).catch(() => 'denied');
+        setBackupFolderState(state);
+        if (state === 'granted' && autoBackupDue(settings.autoBackupLastAt, autoBackup.everyHours)) runFolderBackupRef.current();
+    };
+    const stopFolderBackups = async () => {
+        await forgetFolder().catch(() => {});
+        setBackupFolder(null);
+        setBackupFolderState(null);
+        updateSettings({ autoBackup: { ...autoBackup, enabled: false } });
+    };
+    const folderBackupProps = {
+        supported: supportsFolderBackup(),
+        folderName: backupFolder?.name ?? null,
+        folderState: backupFolderState,
+        config: autoBackup,
+        lastAt: settings.autoBackupLastAt ?? null,
+        onChooseFolder: pickBackupFolder,
+        onAllow: allowBackupFolder,
+        onBackupNow: () => runFolderBackup({ manual: true }),
+        onStop: stopFolderBackups,
+        onChange: (patch) => updateSettings({ autoBackup: { ...autoBackup, ...patch } })
+    };
+
     const exportBackup = () => {
-        downloadBackup(createBackup({ settings, stats: userStats, history: sessionHistory, library, drills, plans, vocab }));
+        downloadBackup(currentBackup());
         setUserStats(prev => markBackedUp(prev));
         addNotification('Backup downloaded.', 'success');
     };
@@ -358,6 +497,7 @@ export default function App() {
             setDrills(restored.drills);
             setPlans(restored.plans);
             setVocab(restored.vocab);
+            setCustomPresets(restored.presets);
             setCurrentView('dashboard');
             addNotification(`Restored ${restored.history.length} sessions.`, 'success');
         } catch (error) {
@@ -637,6 +777,7 @@ export default function App() {
                                 stats={userStats} history={sessionHistory} settings={settings} theme={theme}
                                 recallDue={recallDue} nextAction={nextAction} onAction={runNextAction}
                                 backupDue={backupReminderDue(userStats)} onBackup={exportBackup}
+                                backupPaused={autoBackup.enabled && backupFolderState === 'prompt'} onAllowBackup={allowBackupFolder} backupFolderName={backupFolder?.name}
                                 onSnoozeBackup={() => setUserStats(prev => snoozeBackup(prev))}
                                 onRecall={(id) => openSaved(id, { recall: true })}
                                 onStart={() => navigate('library')}
@@ -651,7 +792,7 @@ export default function App() {
                         {currentView === 'tools' && <Tools drills={drills} adaptiveStart={settings.autoAdaptive} onDrillComplete={handleDrillComplete} addNotification={addNotification} />}
                         {currentView === 'vocab' && <Vocabulary vocab={vocab} setVocab={setVocab} library={library} ai={ai} addNotification={addNotification} />}
                         {currentView === 'analytics' && <Analytics history={sessionHistory} drills={drills} stats={userStats} theme={theme} />}
-                        {currentView === 'settings' && <SettingsPanel settings={settings} updateSettings={updateSettings} apiKeyPresent={apiKeyPresent} ai={ai} localAi={localAi} onRecheckLocalAi={recheckLocalAi} hasBaseline={userStats.baselineWpm !== null} baselineSamples={userStats.baselineSamples} lastBackupAt={userStats.lastBackupAt} adaptiveTargetWpm={userStats.targetWpm} pushIntensity={userStats.pushIntensity} onExport={exportBackup} onImport={importBackup} onRecalibrate={() => startBaseline(0, { fresh: true })} onAddBaseline={() => startBaseline(userStats.baselineSamples.length, { fresh: false })} />}
+                        {currentView === 'settings' && <SettingsPanel settings={settings} updateSettings={updateSettings} apiKeyPresent={apiKeyPresent} ai={ai} localAi={localAi} onRecheckLocalAi={recheckLocalAi} hasBaseline={userStats.baselineWpm !== null} baselineSamples={userStats.baselineSamples} lastBackupAt={userStats.lastBackupAt} folderBackup={folderBackupProps} adaptiveTargetWpm={userStats.targetWpm} pushIntensity={userStats.pushIntensity} onExport={exportBackup} onImport={importBackup} onRecalibrate={() => startBaseline(0, { fresh: true })} onAddBaseline={() => startBaseline(userStats.baselineSamples.length, { fresh: false })} />}
                         {currentView === 'coach' && <AICoach stats={userStats} history={sessionHistory} ai={ai} addNotification={addNotification} />}
                         {currentView === 'youtube' && <VideoSummary ai={ai} onStartPassage={startPassage} addNotification={addNotification} />}
                         {currentView === 'plans' && <Plans plans={plans} onSavePlan={savePlan} onDeletePlan={deletePlan} onRunStep={runPlanStep} addNotification={addNotification} />}

@@ -93,7 +93,8 @@ function ActivityHeatmap({ history, streak }) {
 }
 
 function Dashboard({
-    stats, history, settings, theme, recallDue = [], nextAction, onAction, backupDue, onBackup, onSnoozeBackup, onRecall, onStart
+    stats, history, settings, theme, recallDue = [], nextAction, onAction, backupDue, onBackup, onSnoozeBackup, onRecall, onStart,
+    backupPaused = false, onAllowBackup, backupFolderName
 }) {
     const colors = chartColors(theme);
     const hasBaseline = stats.baselineWpm !== null;
@@ -153,7 +154,20 @@ function Dashboard({
                 </section>
             )}
 
-            {backupDue && (
+            {backupPaused && (
+                // The browser forgets folder access after a restart; one click restores it.
+                <div className="rounded-2xl border border-amber-800/60 bg-amber-950/30 p-4 flex flex-col sm:flex-row sm:items-center gap-3" role="status">
+                    <HardDriveDownload size={20} className="text-amber-400 shrink-0" />
+                    <p className="text-sm text-slate-300 flex-1">
+                        <strong className="text-white">Automatic backups are paused.</strong> The browser needs your OK again to write to {backupFolderName ? `"${backupFolderName}"` : 'your backup folder'}.
+                    </p>
+                    <button onClick={onAllowBackup} className="bg-amber-600 hover:bg-amber-500 text-white text-sm font-bold px-4 py-2 rounded-lg transition-colors">
+                        Allow backups
+                    </button>
+                </div>
+            )}
+
+            {backupDue && !backupPaused && (
                 <div className="rounded-2xl border border-amber-800/60 bg-amber-950/30 p-4 flex flex-col sm:flex-row sm:items-center gap-3" role="status">
                     <HardDriveDownload size={20} className="text-amber-400 shrink-0" />
                     <p className="text-sm text-slate-300 flex-1">
