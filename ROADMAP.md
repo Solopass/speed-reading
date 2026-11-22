@@ -102,6 +102,11 @@ Working and verified:
 - **Installable app** — manifest, icons and an offline service worker (in the
   production build): installs from Chrome/Edge or Add to Home Screen on iPad,
   and opens without a connection.
+- **Drill packs** — Neuro-Drill material made from your own documents:
+  real phrases for Chunk Perception, key terms in their own paragraphs for
+  Target Scanning, and AI-written "Meaning at a Glance" items (each checked
+  against the text). Packs show your best scores and can be shared as a link
+  (opens in the online app, asks before adding) or a file.
 - **Vocabulary ranked by real word frequency** — the top 20,000 English words
   from wordfreq (CC BY-SA 4.0, see `src/data/WORDFREQ-NOTICE.md`), loaded only
   when the Vocabulary page opens.

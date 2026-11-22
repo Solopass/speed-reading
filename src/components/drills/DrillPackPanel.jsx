@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
-import { BookOpen, Package, Plus, Trash2, X } from 'lucide-react';
-import { buildDrillPack } from '../../lib/drillPack';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Activity, BookOpen, Download, Link2, Package, Plus, Sparkles, Trash2, Upload, X } from 'lucide-react';
+import { buildDrillPack, newPackId } from '../../lib/drillPack';
 import { isBook } from '../../lib/book';
 import { loadFrequencyRank } from '../../lib/vocab';
+import { meaningDrillSpec, validateMeaningItems } from '../../lib/aiDrills';
+import { MAX_LINK_CHARS, downloadPackFile, packFromFileText, packToLink } from '../../lib/packShare';
 
 /** Every book, chapter and passage in the library that has text, as pack sources. */
 function packSources(library) {
@@ -100,47 +102,173 @@ function MakePackDialog({ library, onSave, onClose, addNotification }) {
     );
 }
 
+/** Best score on each drill for runs made with this pack. */
+function packBests(drills, packId) {
+    const runs = (drills ?? []).filter(d => d.packId === packId);
+    const best = (kind, higher) => {
+        const ms = runs.filter(r => r.kind === kind).map(r => r.metric);
+        return ms.length ? (higher ? Math.max(...ms) : Math.min(...ms)) : null;
+    };
+    return { chunk: best('chunk', true), scanning: best('scanning', false), meaning: best('meaning', false), runs: runs.length };
+}
+
+function PackCard({ pack, active, onSelect, onSave, onDelete, drills, ai, addNotification }) {
+    const [busy, setBusy] = useState(null);   // 'ai' | 'link' | null
+    const [shownLink, setShownLink] = useState(null);
+    const bests = packBests(drills, pack.id);
+    const phraseCount = Object.values(pack.phrases).reduce((n, l) => n + l.length, 0);
+    const canAi = Boolean(ai?.generate) && pack.passages.length > 0;
+
+    const addAiDrills = async () => {
+        setBusy('ai');
+        try {
+            const spec = meaningDrillSpec({ title: pack.title, passages: pack.passages, terms: pack.terms, round: Math.floor(pack.meaning.length / 6) });
+            const reply = await ai.generate({ prompt: spec.prompt, schema: spec.schema });
+            const items = validateMeaningItems(reply?.items, pack.passages.join('\n\n'), pack.terms);
+            if (items.length < 3) {
+                addNotification?.('The AI did not return enough usable items (each phrase must come from the text). Try again.');
+                return;
+            }
+            const meaning = [...pack.meaning, ...items].slice(0, 30);
+            // Only updates the pack if it still exists (it may have been deleted meanwhile).
+            onSave({ ...pack, meaning }, { updateOnly: true });
+            addNotification?.(`Added ${items.length} Meaning at a Glance items to "${pack.title}".`, 'success');
+        } catch (error) {
+            addNotification?.(error.message || 'AI drill generation failed.');
+        } finally {
+            setBusy(null);
+        }
+    };
+
+    const copyLink = async () => {
+        setBusy('link');
+        try {
+            const link = await packToLink(pack);
+            if (link.length > MAX_LINK_CHARS) {
+                downloadPackFile(pack);
+                addNotification?.('This pack is too big for a link, so it was saved as a file to send instead.');
+                return;
+            }
+            try {
+                await navigator.clipboard.writeText(link);
+                setShownLink(null);
+                addNotification?.('Share link copied. It opens the pack in the online app.', 'success');
+            } catch {
+                // No clipboard here (or the browser refused): show it to copy by hand.
+                setShownLink(link);
+            }
+        } catch (error) {
+            addNotification?.(error.message || 'Could not make a share link.');
+        } finally {
+            setBusy(null);
+        }
+    };
+
+    return (
+        <div className={`rounded-2xl border p-3 space-y-2 ${active ? 'border-purple-500 bg-purple-500/10' : 'border-slate-700'}`}>
+            <button type="button" role="radio" aria-checked={active} onClick={() => onSelect(pack.id)} className="w-full text-left">
+                <span className="font-bold text-white flex items-center gap-1.5"><BookOpen size={14} className="text-purple-400 shrink-0" /><span className="truncate">{pack.title}</span></span>
+                <span className="block text-[11px] text-slate-400 mt-0.5">
+                    {phraseCount} phrases · {pack.terms.length} terms · {pack.passages.length} passages{pack.meaning.length ? ` · ${pack.meaning.length} AI items` : ''} · {pack.createdAt}
+                </span>
+                {bests.runs > 0 && (
+                    <span className="block text-[11px] text-emerald-300/90 mt-0.5">
+                        Best: {[
+                            bests.chunk !== null && `${bests.chunk} words`,
+                            bests.scanning !== null && `${bests.scanning}s scan`,
+                            bests.meaning !== null && `${bests.meaning} ms/word`
+                        ].filter(Boolean).join(' · ')}
+                    </span>
+                )}
+            </button>
+            <div className="flex flex-wrap gap-1.5 text-[11px]">
+                {canAi && (
+                    <button type="button" onClick={addAiDrills} disabled={busy !== null} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-violet-700/60 text-violet-300 hover:text-white disabled:opacity-40">
+                        {busy === 'ai' ? <Activity size={11} className="animate-spin" /> : <Sparkles size={11} />}
+                        {busy === 'ai' ? `Writing on ${ai.label}…` : pack.meaning.length ? 'More AI drills' : 'Add AI drills'}
+                    </button>
+                )}
+                <button type="button" onClick={copyLink} disabled={busy !== null} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-slate-700 text-slate-300 hover:text-white disabled:opacity-40">
+                    <Link2 size={11} /> Copy share link
+                </button>
+                <button type="button" onClick={() => downloadPackFile(pack)} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-slate-700 text-slate-300 hover:text-white">
+                    <Download size={11} /> File
+                </button>
+                {shownLink && (
+                    <input
+                        readOnly value={shownLink} aria-label="Share link" onFocus={(e) => e.target.select()}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-slate-300 font-mono"
+                    />
+                )}
+                <button type="button" onClick={() => onDelete(pack.id)} aria-label={`Delete pack ${pack.title}`} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-slate-500 hover:text-red-400 ml-auto">
+                    <Trash2 size={11} /> Delete
+                </button>
+            </div>
+        </div>
+    );
+}
+
 /**
  * Chooses what the word drills practise on: the built-in word list, or a pack
- * made from one of your documents.
+ * made from one of your documents. Packs can get AI-written drills, and can be
+ * shared as a link or a file.
  */
-export default function DrillPackPanel({ packs, activePackId, onSelect, onSave, onDelete, library, addNotification }) {
+export default function DrillPackPanel({ packs, activePackId, onSelect, onSave, onDelete, library, drills = [], ai = null, addNotification }) {
     const [making, setMaking] = useState(false);
-    const chip = (active) => `px-3 py-2 rounded-xl border text-left text-sm transition-colors ${active
-        ? 'border-purple-500 bg-purple-500/15 text-white'
-        : 'border-slate-700 text-slate-300 hover:border-slate-500'}`;
+    const fileRef = useRef(null);
+
+    const importFile = (file) => {
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            try {
+                const pack = packFromFileText(String(reader.result));
+                // A pack already here keeps its copy; an import never overwrites it silently.
+                const exists = packs.some(p => p.id === pack.id);
+                const saved = exists ? { ...pack, id: newPackId() } : pack;
+                onSave(saved);
+                onSelect(saved.id);
+                addNotification?.(`Imported "${saved.title}".`, 'success');
+            } catch (error) {
+                addNotification?.(error.message);
+            }
+        };
+        reader.readAsText(file);
+    };
 
     return (
         <section className="bg-slate-900 border border-slate-800 rounded-3xl p-5 space-y-3" aria-label="Practice material">
             <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div>
                     <h2 className="text-lg font-bold text-white">Practice material</h2>
-                    <p className="text-xs text-slate-400">For Chunk Perception and Target Scanning. Schulte and Peripheral use numbers and letters, so they work the same either way.</p>
+                    <p className="text-xs text-slate-400">For Chunk Perception, Target Scanning and Meaning at a Glance. Schulte and Peripheral use numbers and letters, so they work the same either way.</p>
                 </div>
-                <button type="button" onClick={() => setMaking(true)} className="inline-flex items-center gap-1.5 text-sm font-bold bg-purple-600 hover:bg-purple-500 text-white px-3 py-2 rounded-xl">
-                    <Plus size={15} /> Make a pack
-                </button>
+                <div className="flex gap-2">
+                    <button type="button" onClick={() => fileRef.current?.click()} className="inline-flex items-center gap-1.5 text-sm font-bold border border-slate-700 hover:border-purple-500 text-slate-200 px-3 py-2 rounded-xl">
+                        <Upload size={15} /> Import pack
+                    </button>
+                    <button type="button" onClick={() => setMaking(true)} className="inline-flex items-center gap-1.5 text-sm font-bold bg-purple-600 hover:bg-purple-500 text-white px-3 py-2 rounded-xl">
+                        <Plus size={15} /> Make a pack
+                    </button>
+                    <input ref={fileRef} type="file" accept=".json,application/json" className="hidden" aria-label="Choose a drill pack file"
+                        onChange={(e) => { importFile(e.target.files?.[0]); e.target.value = ''; }} />
+                </div>
             </div>
-            <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Practice material">
-                <button type="button" role="radio" aria-checked={!activePackId} onClick={() => onSelect(null)} className={chip(!activePackId)}>
-                    <span className="font-bold block">Built-in words</span>
+            <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Practice material">
+                <button type="button" role="radio" aria-checked={!activePackId} onClick={() => onSelect(null)}
+                    className={`rounded-2xl border p-3 text-left ${!activePackId ? 'border-purple-500 bg-purple-500/10' : 'border-slate-700 hover:border-slate-500'}`}>
+                    <span className="font-bold text-white block">Built-in words</span>
                     <span className="text-[11px] text-slate-400">Everyday words, the same every time</span>
                 </button>
                 {packs.map(p => (
-                    <div key={p.id} className="relative group">
-                        <button type="button" role="radio" aria-checked={activePackId === p.id} onClick={() => onSelect(p.id)} className={`${chip(activePackId === p.id)} pr-9`}>
-                            <span className="font-bold flex items-center gap-1.5"><BookOpen size={13} className="text-purple-400" />{p.title}</span>
-                            <span className="text-[11px] text-slate-400">{p.terms.length} terms · {p.passages.length} passages · {p.createdAt}</span>
-                        </button>
-                        <button
-                            type="button" onClick={() => onDelete(p.id)} aria-label={`Delete pack ${p.title}`}
-                            className="absolute top-2 right-2 p-1 text-slate-600 hover:text-red-400"
-                        >
-                            <Trash2 size={13} />
-                        </button>
-                    </div>
+                    <PackCard key={p.id} pack={p} active={activePackId === p.id} onSelect={onSelect} onSave={onSave} onDelete={onDelete} drills={drills} ai={ai} addNotification={addNotification} />
                 ))}
             </div>
+            {packs.length > 0 && (
+                <p className="text-[11px] text-slate-500">
+                    A shared pack contains its phrases, key terms, AI items and up to 8 paragraphs of the source text, nothing else. Only share text you are happy to pass on.
+                </p>
+            )}
             {making && <MakePackDialog library={library} onSave={(pack) => { onSave(pack); onSelect(pack.id); }} onClose={() => setMaking(false)} addNotification={addNotification} />}
         </section>
     );

@@ -10,9 +10,11 @@ import {
 } from './lib/stats';
 import { CALIBRATION_PASSAGES } from './lib/calibration';
 import { intensityLabel, nextPushIntensity } from './lib/protocol';
-import { MAX_DRILL_HISTORY, migrateDrills } from './lib/drillStats';
+import { DRILL_META, MAX_DRILL_HISTORY, migrateDrills } from './lib/drillStats';
 import { createBackup, downloadBackup, readBackup } from './lib/backup';
-import { normalizePack } from './lib/drillPack';
+import { newPackId, normalizePack } from './lib/drillPack';
+import { packFromHash } from './lib/packShare';
+import SharedPackPrompt from './components/SharedPackPrompt';
 import {
     autoBackupDue, chooseBackupFolder, folderPermission, forgetFolder, loadFolderHandle, supportsFolderBackup, writeBackupToFolder
 } from './lib/autoBackup';
@@ -179,6 +181,8 @@ export default function App() {
     const [drills, setDrills] = usePersistentState('speedReadDrills', (raw) => migrateDrills(raw ?? []), [], onSaveError);
     // Drill packs: Neuro-Drill material made from your documents (lib/drillPack.js).
     const [drillPacks, setDrillPacks] = usePersistentState('speedReadDrillPacks', (raw) => (Array.isArray(raw) ? raw.map(normalizePack).filter(Boolean) : []), [], onSaveError);
+    // Opened from a shared pack link (#pack=…): ask before adding it, then clear the address.
+    const [sharedPack, setSharedPack] = useState(null);
     const [vocab, setVocab] = usePersistentState('speedReadVocab', migrateVocab, [], onSaveError);
     const [customPresets, setCustomPresets] = usePersistentState('speedReadPresets', (raw) => (Array.isArray(raw) ? raw.map(normalizePreset).filter(Boolean) : []), [], onSaveError);
     const [popoutWin, setPopoutWin] = useState(null);
@@ -213,6 +217,18 @@ export default function App() {
         setNotifications(prev => [...prev.slice(-3), { id, msg, tone }]);
         setTimeout(() => dismissNotification(id), 4500);
     }, [dismissNotification]);
+
+    useEffect(() => {
+        if (!window.location.hash.startsWith('#pack=')) return;
+        const hash = window.location.hash;
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        packFromHash(hash).then((pack) => {
+            if (pack) setSharedPack(pack);
+            else addNotification('That share link is damaged or incomplete, so no pack was added.');
+        });
+        // Runs once, on opening the app.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const warnedSave = useRef(false);
     useEffect(() => {
@@ -360,9 +376,9 @@ export default function App() {
     // speed, not reading, so they never touch session stats or the target WPM.
     const handleDrillComplete = (result) => {
         setDrills(prev => [...prev, result].slice(-MAX_DRILL_HISTORY));
-        addNotification(result.kind === 'peripheral'
-            ? `Span threshold: ${result.metric}ms.`
-            : `Found in ${result.metric}s.`, 'success');
+        // Each drill's own label and unit (ms, words, seconds, ms/word).
+        const meta = DRILL_META[result.kind];
+        addNotification(meta ? `${meta.label}: ${result.metric}${meta.unit}.` : 'Drill saved.', 'success');
     };
 
     const currentBackup = () => createBackup({ settings, stats: userStats, history: sessionHistory, library, drills, plans, vocab, presets: customPresets, drillPacks });
@@ -801,7 +817,14 @@ export default function App() {
                                 drills={drills} adaptiveStart={settings.autoAdaptive} onDrillComplete={handleDrillComplete} addNotification={addNotification}
                                 packs={drillPacks} library={library}
                                 activePackId={settings.drillPackId ?? null} onSelectPack={(id) => updateSettings({ drillPackId: id })}
-                                onSavePack={(pack) => setDrillPacks(prev => [pack, ...prev.filter(p => p.id !== pack.id)].slice(0, 50))}
+                                ai={ai}
+                                onSavePack={(pack, { updateOnly = false } = {}) => {
+                                    const clean = normalizePack(pack);
+                                    if (!clean) return;
+                                    setDrillPacks(prev => (updateOnly && !prev.some(p => p.id === clean.id)
+                                        ? prev
+                                        : [clean, ...prev.filter(p => p.id !== clean.id)].slice(0, 50)));
+                                }}
                                 onDeletePack={(id) => {
                                     setDrillPacks(prev => prev.filter(p => p.id !== id));
                                     if (settings.drillPackId === id) updateSettings({ drillPackId: null });
@@ -822,6 +845,21 @@ export default function App() {
 
             {!focus && <PhoneTabBar current={currentView} onSelect={navigate} badges={badges} />}
             <Toasts items={notifications} onDismiss={dismissNotification} />
+            {sharedPack && (
+                <SharedPackPrompt
+                    pack={sharedPack}
+                    onDismiss={() => setSharedPack(null)}
+                    onAdd={() => {
+                        // A pack with the same id already here is kept; the shared copy gets its own id.
+                        const pack = drillPacks.some(p => p.id === sharedPack.id) ? { ...sharedPack, id: newPackId() } : sharedPack;
+                        setDrillPacks(prev => [pack, ...prev].slice(0, 50));
+                        updateSettings({ drillPackId: pack.id });
+                        setSharedPack(null);
+                        navigate('tools');
+                        addNotification(`Added "${pack.title}" to your drills.`, 'success');
+                    }}
+                />
+            )}
         </div>
     );
 }

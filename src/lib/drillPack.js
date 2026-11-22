@@ -10,6 +10,7 @@
 import { endsSentence } from './chunker';
 import { isFunctionWord } from './textColor';
 import { rankOf } from './vocab';
+import { normalizeMeaningItems } from './aiDrills';
 
 export const PACK_VERSION = 1;
 export const PHRASE_SIZES = [1, 2, 3, 4, 5, 6, 7];
@@ -123,6 +124,9 @@ export function extractPassages(text, limit = MAX_PASSAGES) {
     return Array.from({ length: limit }, (_, i) => paras[Math.floor(i * step)]);
 }
 
+/** A new, unique pack id (used for fresh packs and for copies of shared ones). */
+export const newPackId = () => `pack-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
 /** Builds a pack from a text. Throws when the text is too short to drill on. */
 export function buildDrillPack({ title, text, source = {}, rank = null, random = Math.random, now = new Date() }) {
     const phrases = extractPhrases(text, { random });
@@ -132,14 +136,15 @@ export function buildDrillPack({ title, text, source = {}, rank = null, random =
     return {
         kind: 'drill-pack',
         version: PACK_VERSION,
-        id: `pack-${now.getTime()}`,
+        id: `pack-${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`,
         title: String(title || 'Drill pack').slice(0, 120),
         source: { title: String(source.title ?? title ?? '').slice(0, 120), ...(source.chapter ? { chapter: String(source.chapter).slice(0, 120) } : {}) },
         createdAt: now.toISOString().slice(0, 10),
         phrases,
         wordBank: extractWordBank(text),
         terms: extractTerms(text, rank),
-        passages
+        passages,
+        meaning: []
     };
 }
 
@@ -167,7 +172,9 @@ export function normalizePack(raw) {
         phrases,
         wordBank: strings(raw.wordBank, 200, 20),
         terms: strings(raw.terms, MAX_TERMS, 40),
-        passages: strings(raw.passages, MAX_PASSAGES, 1500)
+        passages: strings(raw.passages, MAX_PASSAGES, 1500),
+        // AI-written "Meaning at a glance" items (lib/aiDrills.js), when added.
+        meaning: normalizeMeaningItems(raw.meaning)
     };
     const hasContent = Object.values(pack.phrases).some(l => l.length) || pack.passages.length;
     return hasContent ? pack : null;

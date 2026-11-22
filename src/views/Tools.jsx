@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronRight, Grid3x3, Layers, Maximize, Target, TrendingUp } from 'lucide-react';
+import { ChevronRight, Grid3x3, Layers, Lightbulb, Maximize, Target, TrendingUp } from 'lucide-react';
 import SchulteDrill from '../components/drills/SchulteDrill';
 import ChunkFlashDrill from '../components/drills/ChunkFlashDrill';
 import DrillPackPanel from '../components/drills/DrillPackPanel';
+import MeaningFlashDrill from '../components/drills/MeaningFlashDrill';
 import { pickScanRound } from '../lib/drillPack';
 import {
     PERIPHERAL_ROUNDS, PERIPHERAL_START_MS, bestMetric, createDrillResult,
@@ -12,14 +13,14 @@ import {
 
 function Tools({
     drills, adaptiveStart = true, onDrillComplete, addNotification,
-    packs = [], library = [], activePackId = null, onSelectPack, onSavePack, onDeletePack
+    packs = [], library = [], activePackId = null, onSelectPack, onSavePack, onDeletePack, ai = null
 }) {
     const [activeDrill, setActiveDrill] = useState(null);
     const activePack = packs.find(p => p.id === activePackId) ?? null;
 
     // Runs of the two word drills remember the pack they used.
     const finish = (kind, metric, detail, usedPack = true) => {
-        const usesPack = usedPack && activePack && (kind === 'chunk' || kind === 'scanning');
+        const usesPack = usedPack && activePack && (kind === 'chunk' || kind === 'scanning' || kind === 'meaning');
         onDrillComplete(createDrillResult({ kind, metric, detail, packId: usesPack ? activePack.id : null }));
         setActiveDrill(null);
     };
@@ -55,6 +56,16 @@ function Tools({
             />
         );
     }
+    if (activeDrill === 'meaning' && activePack?.meaning.length >= 3) {
+        return (
+            <MeaningFlashDrill
+                pack={activePack}
+                previousBest={bestMetric(drills.filter(d => d.packId === activePack.id), 'meaning')}
+                onExit={() => setActiveDrill(null)}
+                onFinish={(metric, detail) => finish('meaning', metric, detail)}
+            />
+        );
+    }
     if (activeDrill === 'schulte') {
         return (
             <SchulteDrill
@@ -76,7 +87,7 @@ function Tools({
 
             {onSelectPack && (
                 <DrillPackPanel
-                    packs={packs} activePackId={activePack?.id ?? null} library={library}
+                    packs={packs} activePackId={activePack?.id ?? null} library={library} drills={drills} ai={ai}
                     onSelect={onSelectPack} onSave={onSavePack} onDelete={onDeletePack} addNotification={addNotification}
                 />
             )}
@@ -115,6 +126,21 @@ function Tools({
                     best={bestMetric(drills, 'scanning')} latest={latestMetric(drills, 'scanning')}
                     trend={drillTrend(drills, 'scanning')} runs={drillsOfKind(drills, 'scanning').length}
                     onClick={() => setActiveDrill('scanning')}
+                />
+                <DrillCard
+                    source={activePack?.meaning.length >= 3 ? activePack.title : null}
+                    title="Meaning at a Glance" icon={<Lightbulb size={32} />} color="text-violet-400" bg="bg-violet-500/10"
+                    desc={activePack?.meaning.length >= 3
+                        ? 'A phrase, sentence or key term from your document flashes, then you pick what it meant. The flash shortens as you get them right: reading for meaning, not just seeing words.'
+                        : 'Needs a pack with AI drills: make a pack from a document, then press "Add AI drills" on it (needs the local AI or a Gemini key).'}
+                    unit=" ms/word"
+                    best={bestMetric(drills, 'meaning')} latest={latestMetric(drills, 'meaning')}
+                    trend={drillTrend(drills, 'meaning')} runs={drillsOfKind(drills, 'meaning').length}
+                    onClick={() => (activePack?.meaning.length >= 3
+                        ? setActiveDrill('meaning')
+                        : addNotification?.(activePack?.meaning.length
+                            ? 'This pack has fewer than 3 AI items. Press "More AI drills" on it first.'
+                            : 'Choose a pack with AI drills first (Practice material above).'))}
                 />
             </div>
 

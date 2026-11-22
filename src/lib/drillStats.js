@@ -18,7 +18,9 @@ export const DRILL_META = {
     peripheral: { label: 'Peripheral Expansion', unit: 'ms', lowerIsBetter: true },
     chunk: { label: 'Chunk Perception', unit: ' words', lowerIsBetter: false },
     schulte: { label: 'Schulte Table', unit: 's', lowerIsBetter: true },
-    scanning: { label: 'Target Scanning', unit: 's', lowerIsBetter: true }
+    scanning: { label: 'Target Scanning', unit: 's', lowerIsBetter: true },
+    // How briefly a phrase can flash and still be understood, per word.
+    meaning: { label: 'Meaning at a Glance', unit: 'ms/word', lowerIsBetter: true }
 };
 
 export const DRILL_KINDS = Object.keys(DRILL_META);
