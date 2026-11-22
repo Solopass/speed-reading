@@ -1,3 +1,4 @@
+import { bestSpeed, findInLibrary, speedTrend } from './library';
 import { describe, expect, it } from 'vitest';
 import {
     RECALL_INTERVALS,
@@ -264,5 +265,52 @@ describe('library cap and books', () => {
 
         const removed = removePassageBookmark(migrated, 'd1', migrated[0].bookmarks[0].id);
         expect(removed[0].bookmarks).toHaveLength(0);
+    });
+});
+
+describe('findInLibrary', () => {
+    const item = (id, over) => ({ id, title: `T ${id}`, source: 'import', words: 100, questions: [], attempts: [], progressIndex: 0, completedAt: null, createdAt: '2026-11-01', lastReadAt: null, ...over });
+    const items = [
+        item('a', { title: 'Rivers of Europe', lastReadAt: '2026-11-20', progressIndex: 30 }),
+        item('b', { title: 'Bridges', questions: [{}], completedAt: '2026-11-10', attempts: [{ date: '2026-11-10', wpm: 400, score: 80, kind: 'read' }], lastReadAt: '2026-11-10' }),
+        item('c', { title: 'Canals', attempts: [{ date: '2026-11-15', wpm: 520, score: 60, kind: 'read' }, { date: '2026-11-18', wpm: 560, score: 90, kind: 'read' }], completedAt: '2026-11-18', lastReadAt: '2026-11-18' }),
+        item('d', { title: 'Deserts' })
+    ];
+
+    it('searches titles, filters by state and sorts', () => {
+        expect(findInLibrary(items, { query: 'rIV' }).map(i => i.id)).toEqual(['a']);
+        expect(findInLibrary(items, { filter: 'inProgress' }).map(i => i.id)).toEqual(['a']);
+        expect(findInLibrary(items, { filter: 'unread' }).map(i => i.id)).toEqual(['d']);
+        expect(findInLibrary(items, { filter: 'quizzed' }).map(i => i.id)).toEqual(['b']);
+        expect(findInLibrary(items, { filter: 'finished', sort: 'speed' }).map(i => i.id)).toEqual(['c', 'b']);
+        expect(findInLibrary(items, { sort: 'score' }).map(i => i.id).slice(0, 2)).toEqual(['c', 'b']);
+        expect(findInLibrary(items, { sort: 'title' }).map(i => i.title)).toEqual(['Bridges', 'Canals', 'Deserts', 'Rivers of Europe']);
+        expect(findInLibrary(items).map(i => i.id)[0]).toBe('a');
+    });
+
+    it('a re-test is due once its date has come', () => {
+        expect(findInLibrary(items, { filter: 'due' }, '2026-11-11').map(i => i.id)).toEqual([]);
+        expect(findInLibrary(items, { filter: 'due' }, '2026-12-30').map(i => i.id)).toEqual(['b']);
+    });
+
+    it('speedTrend lists attempt speeds in order', () => {
+        expect(speedTrend(items[2])).toEqual([520, 560]);
+    });
+});
+
+describe('skims in the library hub', () => {
+    const skimmed = { id: 's', title: 'Skimmed', words: 100, questions: [], progressIndex: 0, completedAt: null, createdAt: '2026-11-01', lastReadAt: '2026-11-19',
+        attempts: [{ date: '2026-11-18', wpm: 350, kind: 'read' }, { date: '2026-11-19', wpm: 1200, kind: 'skim' }] };
+    const onlySkim = { ...skimmed, id: 'o', attempts: [{ date: '2026-11-19', wpm: 1200, kind: 'skim' }] };
+
+    it('leaves skim speeds out of best speed and the trend', () => {
+        expect(bestSpeed(skimmed)).toBe(350);
+        expect(speedTrend(skimmed)).toEqual([350]);
+        expect(bestSpeed(onlySkim)).toBeNull();
+    });
+
+    it('lists a skimmed-only passage as in progress', () => {
+        expect(findInLibrary([onlySkim], { filter: 'inProgress' }).map(i => i.id)).toEqual(['o']);
+        expect(findInLibrary([onlySkim], { filter: 'unread' })).toEqual([]);
     });
 });

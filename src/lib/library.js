@@ -195,3 +195,63 @@ export function migrateLibrary(raw) {
         }))
         .filter(Boolean);
 }
+
+// --- Finding things in the library (search, filters, sort) -------------------
+
+export const LIBRARY_FILTERS = [
+    { id: 'all', label: 'All' },
+    { id: 'inProgress', label: 'In progress' },
+    { id: 'unread', label: 'Not started' },
+    { id: 'quizzed', label: 'Has a quiz' },
+    { id: 'due', label: 'Re-test due' },
+    { id: 'finished', label: 'Finished' }
+];
+
+export const LIBRARY_SORTS = [
+    { id: 'recent', label: 'Recently read' },
+    { id: 'speed', label: 'Best speed' },
+    { id: 'score', label: 'Best score' },
+    { id: 'title', label: 'Title' }
+];
+
+// Skims only sample the text, so their speeds don't count as reading speeds.
+const fullReads = (item) => (item.attempts ?? []).filter(a => a.kind !== 'skim');
+
+const bestOf = (item, key) => {
+    const vals = fullReads(item).map(a => a[key]).filter(v => typeof v === 'number');
+    return vals.length ? Math.max(...vals) : null;
+};
+
+/** Best full-read speed of a passage (skims left out); null if none. */
+export const bestSpeed = (item) => bestOf(item, 'wpm');
+
+/** Speeds of the item's full reads in order, for its trend line. */
+export const speedTrend = (item) => fullReads(item).map(a => a.wpm).filter(v => typeof v === 'number' && v > 0);
+
+/**
+ * Passages matching a search (title or source), a filter and a sort.
+ * `today` decides which re-tests are due.
+ */
+export function findInLibrary(items, { query = '', filter = 'all', sort = 'recent' } = {}, today = todayKey()) {
+    const q = query.trim().toLowerCase();
+    const matches = (item) => {
+        if (q && !`${item.title ?? ''} ${item.source ?? ''}`.toLowerCase().includes(q)) return false;
+        switch (filter) {
+            // A passage that was only skimmed counts as in progress: it was started, not finished.
+            case 'inProgress': return !item.completedAt && (isPartiallyRead(item) || (item.attempts ?? []).length > 0);
+            case 'unread': return !isPartiallyRead(item) && (item.attempts ?? []).length === 0 && !item.completedAt;
+            case 'quizzed': return (item.questions ?? []).length > 0;
+            case 'due': { const due = nextRecallOn(item); return Boolean(due) && due <= today; }
+            case 'finished': return Boolean(item.completedAt);
+            default: return true;
+        }
+    };
+    const recent = (item) => item.lastReadAt ?? item.createdAt ?? '';
+    const by = {
+        recent: (a, b) => (recent(a) < recent(b) ? 1 : recent(a) > recent(b) ? -1 : 0),
+        speed: (a, b) => (bestOf(b, 'wpm') ?? -1) - (bestOf(a, 'wpm') ?? -1),
+        score: (a, b) => (bestOf(b, 'score') ?? -1) - (bestOf(a, 'score') ?? -1),
+        title: (a, b) => String(a.title ?? '').localeCompare(String(b.title ?? ''))
+    };
+    return (Array.isArray(items) ? items : []).filter(matches).sort(by[sort] ?? by.recent);
+}

@@ -12,7 +12,8 @@ import { CALIBRATION_PASSAGES } from './lib/calibration';
 import { intensityLabel, nextPushIntensity } from './lib/protocol';
 import { DRILL_META, MAX_DRILL_HISTORY, migrateDrills } from './lib/drillStats';
 import { createBackup, downloadBackup, readBackup } from './lib/backup';
-import { newPackId, normalizePack } from './lib/drillPack';
+import { buildDrillPack, newPackId, normalizePack } from './lib/drillPack';
+import { loadFrequencyRank } from './lib/vocab';
 import { packFromHash } from './lib/packShare';
 import SharedPackPrompt from './components/SharedPackPrompt';
 import {
@@ -604,6 +605,21 @@ export default function App() {
         addNotification(`Saved ${questions.length} chapter question${questions.length === 1 ? '' : 's'}.`, 'success');
     };
 
+    // "Practise on this chapter": a drill pack from it, selected, and Neuro-Drills opened.
+    const practiseChapter = async (book, chapterIndex) => {
+        const ch = book.chapters[chapterIndex];
+        try {
+            const rank = await loadFrequencyRank().catch(() => null);
+            const pack = buildDrillPack({ title: `${book.title}: ${ch.title}`, text: ch.text, source: { title: book.title, chapter: ch.title }, rank });
+            setDrillPacks(prev => [pack, ...prev].slice(0, 50));
+            updateSettings({ drillPackId: pack.id });
+            navigate('tools');
+            addNotification(`Made a drill pack from "${ch.title}". Chunk Perception and Target Scanning now use it.`, 'success');
+        } catch (error) {
+            addNotification(error.message || 'Could not make a drill pack from that chapter.');
+        }
+    };
+
     // At the end of a book chapter with no quiz, the reader asks for one so the
     // chapter counts as measured training; the questions are kept with the chapter.
     const generateChapterQuiz = ai?.generate ? async (p) => {
@@ -806,8 +822,8 @@ export default function App() {
                                 onStart={() => navigate('library')}
                             />
                         )}
-                        {currentView === 'library' && <Library library={library} ai={ai} verifyQuestions={settings.verifyQuestions} readingWpm={activeOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onOpenSaved={openSaved} onDeleteSaved={deleteSaved} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} addNotification={addNotification} />}
-                        {currentView === 'documents' && <Documents ai={ai} verifyQuestions={settings.verifyQuestions} library={library} readingWpm={readerOpeningWpm} onOpenSaved={(id, opts) => openSaved(id, { ...opts, returnTo: 'documents' })} onDeleteSaved={deleteSaved} onUpdateDocumentText={updateDocumentText} onUpdateChapterText={updateChapterText} onUpdateDocumentQuestions={updateDocumentQuestions} onUpdateChapterQuestions={updateChapterQuestions} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} onRemovePassageBookmark={(id, bmId) => setLibrary(prev => removePassageBookmark(prev, id, bmId))} onOpenUpload={() => navigate('upload')} addNotification={addNotification} />}
+                        {currentView === 'library' && <Library onPractiseChapter={practiseChapter} library={library} ai={ai} verifyQuestions={settings.verifyQuestions} readingWpm={activeOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onOpenSaved={openSaved} onDeleteSaved={deleteSaved} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} addNotification={addNotification} />}
+                        {currentView === 'documents' && <Documents onPractiseChapter={practiseChapter} ai={ai} verifyQuestions={settings.verifyQuestions} library={library} readingWpm={readerOpeningWpm} onOpenSaved={(id, opts) => openSaved(id, { ...opts, returnTo: 'documents' })} onDeleteSaved={deleteSaved} onUpdateDocumentText={updateDocumentText} onUpdateChapterText={updateChapterText} onUpdateDocumentQuestions={updateDocumentQuestions} onUpdateChapterQuestions={updateChapterQuestions} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} onRemovePassageBookmark={(id, bmId) => setLibrary(prev => removePassageBookmark(prev, id, bmId))} onOpenUpload={() => navigate('upload')} addNotification={addNotification} />}
                         {currentView === 'upload' && <Upload ai={ai} library={library} readingWpm={readerOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onSaveBook={saveBook} onSavePassage={(p) => saveToLibrary(p, 'import')} onOpenSaved={(id) => openSaved(id, { returnTo: 'documents' })} onDeleteSaved={deleteSaved} onOpenDocuments={() => navigate('documents')} addNotification={addNotification} />}
                         {currentView === 'recall' && <RecallCheck passage={activePassage} onDone={finishRecall} onExit={() => exitFocus('dashboard')} />}
                         {currentView === 'push' && <SpeedPush reading={reading} patchReading={patchReading} updateSettings={updateSettings} passage={activePassage} targetWpm={activeOpeningWpm} intensity={userStats.pushIntensity} settings={settings} onFinish={finishSession} onExit={() => exitFocus(returnView)} />}

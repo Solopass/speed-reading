@@ -449,7 +449,7 @@ function UploadedPassages({ passages, wpm, onOpenSaved, onDeleteSaved, onRemoveP
 export default function Documents({
     ai, verifyQuestions = true, library, readingWpm = 300, onOpenSaved, onDeleteSaved,
     onUpdateDocumentText, onUpdateChapterText, onUpdateDocumentQuestions, onUpdateChapterQuestions,
-    onOpenChapter, onRemoveBookmark, onRemovePassageBookmark, onOpenUpload, addNotification
+    onOpenChapter, onRemoveBookmark, onRemovePassageBookmark, onOpenUpload, addNotification, onPractiseChapter = null
 }) {
     const [query, setQuery] = useState('');
     const [cleaningTarget, setCleaningTarget] = useState(null);
@@ -541,6 +541,7 @@ export default function Documents({
                             title: `${book.title} · ${book.chapters[chIdx].title}`,
                             text: book.chapters[chIdx].text
                         })}
+                        onPractiseChapter={onPractiseChapter}
                         onQuizChapter={(book, chIdx) => setQuizTarget({
                             kind: 'chapter',
                             bookId: book.id,

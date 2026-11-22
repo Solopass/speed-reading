@@ -1,10 +1,10 @@
-import { Bookmark, BookOpen, Brain, Check, ChevronRight, Play, Sparkles, Trash2, X } from 'lucide-react';
+import { Bookmark, BookOpen, Brain, Check, ChevronRight, Layers, Play, Sparkles, Trash2, X } from 'lucide-react';
 import { bookProgress, chapterSpeeds, nextChapterIndex } from '../lib/book';
 import ChapterSpeedChart from './ChapterSpeedChart';
 
 const minutes = (words, wpm) => Math.max(1, Math.round(words / Math.max(100, wpm)));
 
-function BookCard({ book, wpm, onOpenChapter, onRemoveBookmark, onDelete, onCleanChapter, onQuizChapter }) {
+function BookCard({ book, wpm, onOpenChapter, onRemoveBookmark, onDelete, onCleanChapter, onQuizChapter, onPractiseChapter }) {
     const progress = bookProgress(book);
     const next = nextChapterIndex(book);
     const nextChapter = book.chapters[next];
@@ -82,6 +82,17 @@ function BookCard({ book, wpm, onOpenChapter, onRemoveBookmark, onDelete, onClea
                                         <Sparkles size={13} />
                                     </button>
                                 )}
+                                {onPractiseChapter && (
+                                    <button
+                                        type="button"
+                                        onClick={() => onPractiseChapter(book, i)}
+                                        title={`Make a drill pack from ${ch.title}`}
+                                        aria-label={`Make a drill pack from ${ch.title}`}
+                                        className="p-2 text-slate-500 hover:text-blue-400 rounded-lg hover:bg-slate-800/70 transition-colors shrink-0"
+                                    >
+                                        <Layers size={13} />
+                                    </button>
+                                )}
                                 {onQuizChapter && (
                                     <button
                                         type="button"
@@ -131,7 +142,7 @@ function BookCard({ book, wpm, onOpenChapter, onRemoveBookmark, onDelete, onClea
 }
 
 /** Imported books, with per-chapter progress and bookmarks. */
-export default function BookShelf({ books, wpm, onOpenChapter, onRemoveBookmark, onDelete, onCleanChapter, onQuizChapter }) {
+export default function BookShelf({ books, wpm, onOpenChapter, onRemoveBookmark, onDelete, onCleanChapter, onQuizChapter, onPractiseChapter }) {
     if (books.length === 0) return null;
     return (
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-7">
@@ -151,6 +162,7 @@ export default function BookShelf({ books, wpm, onOpenChapter, onRemoveBookmark,
                         key={book.id} book={book} wpm={wpm}
                         onOpenChapter={onOpenChapter} onRemoveBookmark={onRemoveBookmark} onDelete={onDelete}
                         onCleanChapter={onCleanChapter} onQuizChapter={onQuizChapter}
+                        onPractiseChapter={onPractiseChapter}
                     />
                 ))}
             </div>

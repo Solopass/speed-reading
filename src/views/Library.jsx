@@ -5,7 +5,8 @@ import {
 import { dropGuessableQuestions, passageSpec, pushSpec, verifySpec } from '../lib/ai';
 import { normalizeQuestions } from '../lib/quiz';
 import { PUSH_DRILL_PASSAGE } from '../lib/drills';
-import { isPartiallyRead, nextRecallOn, resumePoint } from '../lib/library';
+import { LIBRARY_FILTERS, LIBRARY_SORTS, bestSpeed, findInLibrary, isPartiallyRead, nextRecallOn, resumePoint, speedTrend } from '../lib/library';
+import SpeedSparkline from '../components/SpeedSparkline';
 import ManualAiPanel from '../components/ManualAiPanel';
 import BookShelf from '../components/BookShelf';
 import { isBook } from '../lib/book';
@@ -69,6 +70,11 @@ function OutputChooser({ value, onChange }) {
 }
 
 function SavedPassages({ library, onOpenSaved, onDeleteSaved }) {
+    const [query, setQuery] = useState('');
+    const [filter, setFilter] = useState('all');
+    const [sort, setSort] = useState('recent');
+    const shown = findInLibrary(library, { query, filter, sort });
+
     if (library.length === 0) {
         return (
             <Card>
@@ -101,11 +107,44 @@ function SavedPassages({ library, onOpenSaved, onDeleteSaved }) {
                         </p>
                     </div>
                 </div>
-                <span className="text-sm text-slate-500 shrink-0">{library.length}</span>
+                <span className="text-sm text-slate-500 shrink-0">{shown.length === library.length ? library.length : `${shown.length} of ${library.length}`}</span>
             </div>
 
+            {/* Search, filter and sort. */}
+            <div className="space-y-2 mb-4">
+                <div className="flex gap-2">
+                    <input
+                        type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search titles…"
+                        aria-label="Search your library"
+                        className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-purple-500"
+                    />
+                    <select
+                        value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort by"
+                        className="bg-slate-950 border border-slate-700 rounded-xl px-2 py-2 text-sm text-white"
+                    >
+                        {LIBRARY_SORTS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                    </select>
+                </div>
+                <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Show">
+                    {LIBRARY_FILTERS.map(f => (
+                        <button
+                            key={f.id} type="button" role="radio" aria-checked={filter === f.id} onClick={() => setFilter(f.id)}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-colors ${filter === f.id
+                                ? 'border-purple-500 bg-purple-500/15 text-purple-200'
+                                : 'border-slate-700 text-slate-400 hover:border-slate-500'}`}
+                        >
+                            {f.label}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {shown.length === 0 && (
+                <p className="text-sm text-slate-500 py-6 text-center">Nothing matches. Try another search or filter.</p>
+            )}
+
             <div className="space-y-2">
-                {library.map(item => {
+                {shown.map(item => {
                     const partial = isPartiallyRead(item);
                     const due = nextRecallOn(item);
                     const scored = item.attempts.filter(a => typeof a.score === 'number');
@@ -123,13 +162,15 @@ function SavedPassages({ library, onOpenSaved, onDeleteSaved }) {
                                 </div>
                                 <div className="text-xs text-slate-500 mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
                                     <span>{item.words.toLocaleString()} words</span>
+                                    {bestSpeed(item) != null && <span>best {bestSpeed(item)} WPM</span>}
                                     {scored.length > 0 && <span>best {Math.max(...scored.map(a => a.score))}%</span>}
                                     {item.attempts.length > 0 && <span>{item.attempts.length} attempt{item.attempts.length === 1 ? '' : 's'}</span>}
                                     {partial && <span className="text-amber-400">{Math.round((resumePoint(item) / item.words) * 100)}% read</span>}
                                     {due && <span className="text-purple-400">re-test {due}</span>}
                                 </div>
                             </div>
-                            <div className="flex gap-2 shrink-0">
+                            <div className="flex items-center gap-2 shrink-0">
+                                <SpeedSparkline values={speedTrend(item)} />
                                 <button
                                     onClick={() => onOpenSaved(item.id)}
                                     className="bg-slate-800 hover:bg-slate-700 text-white text-sm font-bold px-4 py-2 rounded-lg transition-colors"
@@ -162,7 +203,7 @@ function SavedPassages({ library, onOpenSaved, onDeleteSaved }) {
 
 function Library({
     library, ai, verifyQuestions, readingWpm = 300, onStartPassage, onStartPushDrill, onOpenSaved, onDeleteSaved,
-    onOpenChapter, onRemoveBookmark, addNotification
+    onOpenChapter, onRemoveBookmark, addNotification, onPractiseChapter = null
 }) {
     const useApi = Boolean(ai?.generate);
     const [topic, setTopic] = useState('');
@@ -275,8 +316,8 @@ function Library({
             <div>
                 <h1 className="text-3xl font-bold text-white">Library</h1>
                 <p className="text-slate-400 mt-2 max-w-2xl leading-relaxed">
-                    Two ways in — a ready-made drill, or something written for you by an AI. To upload and read your own
-                    documents, use the Documents tab. Everything you read is saved below.
+                    Practice lives here: a ready-made drill, or something written for you by an AI, and everything you have read
+                    below, searchable. Your own books are in Documents; the drill-pack button on any chapter turns it into Neuro-Drill practice.
                 </p>
             </div>
 
@@ -420,7 +461,7 @@ function Library({
                 </div>
             </Card>
 
-            <BookShelf books={books} wpm={readingWpm} onOpenChapter={onOpenChapter} onRemoveBookmark={onRemoveBookmark} onDelete={onDeleteSaved} />
+            <BookShelf books={books} wpm={readingWpm} onOpenChapter={onOpenChapter} onRemoveBookmark={onRemoveBookmark} onDelete={onDeleteSaved} onPractiseChapter={onPractiseChapter} />
 
             <SavedPassages library={passages} onOpenSaved={onOpenSaved} onDeleteSaved={onDeleteSaved} />
         </div>
