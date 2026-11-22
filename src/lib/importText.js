@@ -6,6 +6,7 @@
 // never use would be a poor trade.
 
 import { loadFrequencyRank, rankOf } from './vocab';
+import { GUTENBERG_HTML_SELECTOR, isPublisherMatter, labelForEpubType, stripGutenberg, stripGutenbergChapters } from './bookBoilerplate';
 
 export const SUPPORTED_EXTENSIONS = [
     '.txt', '.text', '.md', '.markdown', '.html', '.htm', '.epub', '.docx', '.pdf'
@@ -709,6 +710,16 @@ const EPUB_BOILERPLATE_SELECTOR = 'script, style, noscript, svg, nav, [epub\\:ty
 export function extractFromHtml(html, { article = true } = {}) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     doc.querySelectorAll(article ? BOILERPLATE_SELECTOR : EPUB_BOILERPLATE_SELECTOR).forEach(el => el.remove());
+    // Project Gutenberg's header and license, in its HTML and EPUB editions.
+    let matterRemoved = 0;
+    doc.querySelectorAll(GUTENBERG_HTML_SELECTOR).forEach(el => { el.remove(); matterRemoved += 1; });
+    // An EPUB's title page, imprint, colophon and copyright page are the publisher's, not the book's.
+    // Sections only: <body> can carry several types at once ("bodymatter toc"), and a whole file is never dropped.
+    if (!article) {
+        doc.querySelectorAll('section[epub\\:type], div[epub\\:type], article[epub\\:type], aside[epub\\:type]').forEach(el => {
+            if (el.isConnected && isPublisherMatter(el.getAttribute('epub:type'))) { el.remove(); matterRemoved += 1; }
+        });
+    }
 
     // A web page needs its article found; an EPUB chapter file is the content.
     const root = article ? pickArticleRoot(doc) : (doc.body ?? doc.documentElement);
@@ -719,7 +730,12 @@ export function extractFromHtml(html, { article = true } = {}) {
         .filter(Boolean);
 
     const text = blocks.length ? blocks.join('\n\n') : (root?.textContent ?? '');
+    // An untitled EPUB file (a dedication, a preface) is named by its structural type.
+    const typed = article ? [] : [doc.body, ...(doc.body?.children ?? [])];
+    const label = typed.map(el => labelForEpubType(el?.getAttribute?.('epub:type'))).find(Boolean) ?? null;
     return {
+        matterRemoved,
+        label,
         title: doc.querySelector('title')?.textContent?.trim() || null,
         // The first heading names the chapter when this is one EPUB spine file.
         heading: root?.querySelector('h1, h2, h3')?.textContent?.replace(/\s+/g, ' ').trim()
@@ -751,21 +767,22 @@ async function readTextFile(file) {
 }
 
 async function readPlain(file, options) {
-    const rawText = await readTextFile(file);
+    const { text: rawText, removed: gutenberg } = stripGutenberg(await readTextFile(file));
     const { text, stats, cuts } = normalizeTextWithStats(rawText, options);
-    return { title: null, text, rawText, stats, cuts };
+    return { title: null, text, rawText, stats: { ...stats, gutenberg }, cuts };
 }
 
 async function readMarkdown(file, options) {
-    const rawText = await readTextFile(file);
+    const { text: rawText, removed: gutenberg } = stripGutenberg(await readTextFile(file));
     const { text, stats, cuts } = normalizeTextWithStats(stripMarkdown(rawText), options);
-    return { title: null, text, rawText, stats, cuts, chapters: chaptersFromHeadings(markdownParagraphs(rawText), options) };
+    return { title: null, text, rawText, stats: { ...stats, gutenberg }, cuts, chapters: chaptersFromHeadings(markdownParagraphs(rawText), options) };
 }
 
 async function readHtml(file, options) {
     const res = extractFromHtml(await readTextFile(file));
-    const { text, stats, cuts } = normalizeTextWithStats(res.text, options);
-    return { ...res, text, rawText: res.text, stats, cuts };
+    const { text: rawText, removed } = stripGutenberg(res.text);
+    const { text, stats, cuts } = normalizeTextWithStats(rawText, options);
+    return { ...res, text, rawText, stats: { ...stats, gutenberg: removed || res.matterRemoved > 0 }, cuts };
 }
 
 const decode = (bytes) => new TextDecoder('utf-8').decode(bytes);
@@ -794,15 +811,17 @@ async function readEpub(file, options = {}) {
         [...opf.querySelectorAll('manifest > item')].map(item => [item.getAttribute('id'), item.getAttribute('href')])
     );
 
-    const chapters = [...opf.querySelectorAll('spine > itemref')]
+    const files = [...opf.querySelectorAll('spine > itemref')]
         .map(ref => hrefById.get(ref.getAttribute('idref')))
         .filter(Boolean)
         // Zip paths are relative to the OPF, and may contain ../ segments.
         .map(href => new URL(href, `file:///${baseDir}`).pathname.replace(/^\//, ''))
         .map(path => zip[path] ?? zip[decodeURIComponent(path)])
         .filter(Boolean)
-        .map(bytes => extractFromHtml(decode(bytes), { article: false }))
-        .filter(ch => ch.text);
+        .map(bytes => extractFromHtml(decode(bytes), { article: false }));
+    const matterPages = files.reduce((n, ch) => n + ch.matterRemoved, 0);
+    // Gutenberg EPUBs from before 2021 carry the header and license as plain text.
+    const { chapters, removed: gutenberg } = stripGutenbergChapters(files.filter(ch => ch.text));
 
     if (!chapters.length) throw new Error('No readable chapters found in that EPUB.');
 
@@ -812,11 +831,11 @@ async function readEpub(file, options = {}) {
         title: opf.querySelector('metadata title')?.textContent?.trim() || null,
         text,
         rawText,
-        stats,
+        stats: { ...stats, gutenberg, matterPages },
         cuts,
         // Kept separate as well, so book mode can use the file's own chapters.
         chapters: chapters
-            .map((ch, i) => ({ title: ch.heading || `Chapter ${i + 1}`, text: normalizeText(ch.text, options) }))
+            .map((ch, i) => ({ title: ch.heading || ch.label || `Chapter ${i + 1}`, text: normalizeText(ch.text, options) }))
             .filter(ch => ch.text)
     };
 }

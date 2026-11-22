@@ -19,6 +19,8 @@ const nextId = (prefix) => `${prefix}-${Date.now()}`;
 function formatCleanSummary(stats) {
     if (!stats) return '';
     const parts = [];
+    if (stats.gutenberg) parts.push('Project Gutenberg header and license');
+    if (stats.matterPages) parts.push(`${stats.matterPages} title/imprint page${stats.matterPages === 1 ? '' : 's'}`);
     if (stats.repeatedHeaders) parts.push(`${stats.repeatedHeaders} page header/footer${stats.repeatedHeaders === 1 ? '' : 's'}`);
     if (stats.pageNumbers) parts.push(`${stats.pageNumbers} page number${stats.pageNumbers === 1 ? '' : 's'}`);
     if (stats.rejoinedHyphens) parts.push(`${stats.rejoinedHyphens} hyphenated wrap${stats.rejoinedHyphens === 1 ? '' : 's'}`);

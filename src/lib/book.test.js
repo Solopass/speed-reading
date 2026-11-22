@@ -40,6 +40,22 @@ describe('chapter detection', () => {
 });
 
 describe('buildChapters', () => {
+    it('keeps a full chapter’s name when a dedication and preface fold into it', () => {
+        const chapters = buildChapters({
+            text: '',
+            chapters: [{ title: 'Dedication', text: words(5) }, { title: 'Preface', text: words(70) }, { title: 'I', text: words(400) }, { title: 'II', text: words(400) }]
+        });
+        expect(chapters.map(c => c.title)).toEqual(['I', 'II']);
+    });
+
+    it('names a short chapter by the longer front matter merged into it', () => {
+        const chapters = buildChapters({
+            text: '',
+            chapters: [{ title: 'Part One', text: words(120) }, { title: 'Opening', text: words(150) }, { title: 'Next', text: words(400) }]
+        });
+        expect(chapters[0].title).toBe('Part One');
+    });
+
     it('uses file chapters, merging tiny front matter forward', () => {
         const chapters = buildChapters({
             text: '',

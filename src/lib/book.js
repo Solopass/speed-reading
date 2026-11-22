@@ -80,7 +80,10 @@ export function tidyChapters(chapters) {
     let carry = null;
     for (const ch of chapters) {
         const text = (carry ? `${carry.text}\n\n` : '') + ch.text.trim();
-        const title = carry && countWords(carry.text) >= 40 ? carry.title : ch.title;
+        // Short front matter folded into a chapter that stands on its own keeps that chapter's name
+        // (a dedication must not rename chapter I); otherwise a carry of some length names the whole.
+        const ownWords = countWords(ch.text);
+        const title = carry && countWords(carry.text) >= 40 && ownWords < MIN_CHAPTER_WORDS ? carry.title : (ch.title || carry?.title);
         if (!text.trim()) continue;
         if (countWords(text) < MIN_CHAPTER_WORDS) { carry = { title, text }; continue; }
         merged.push({ title, text });
