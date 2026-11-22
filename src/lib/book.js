@@ -114,10 +114,12 @@ export function buildChapters({ text, chapters = null }) {
 
 // --- Book entries -----------------------------------------------------------
 
-export function createBook({ id, title, source = 'import', chapters }) {
+export function createBook({ id, title, source = 'import', chapters, freeBookId = null }) {
     return {
         id: id ?? `b-${Date.now()}`,
         kind: 'book',
+        // Set when the book came from the Free books shelf, so the shelf can show it as added.
+        ...(typeof freeBookId === 'string' && freeBookId ? { freeBookId } : {}),
         title: title || 'Untitled book',
         source,
         text: null, sectionA: null, sectionB: null,
@@ -261,7 +263,7 @@ export function migrateBook(raw) {
         });
     if (!chapters.length) return null;
     return {
-        ...createBook({ id: raw.id, title: raw.title, source: raw.source ?? 'import', chapters }),
+        ...createBook({ id: raw.id, title: raw.title, source: raw.source ?? 'import', chapters, freeBookId: raw.freeBookId }),
         chapters,
         currentChapter: remap.get(raw.currentChapter) ?? 0,
         bookmarks: Array.isArray(raw.bookmarks)
