@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { BookmarkPlus, RotateCcw, Trash2, X } from 'lucide-react';
 import {
     BUILTIN_PRESETS, DEFAULT_READING, FONT_OPTIONS, LIMITS, PACER_STYLES, RSVP_CONTEXT_PLAY_MODES,
@@ -92,13 +92,17 @@ function Palettes({ value, onChange }) {
  */
 export default function ReaderSettings({
     open, onClose, reading, patchReading, settings, updateSettings, mode,
-    customPresets = [], onSavePresets = null
+    customPresets = [], onSavePresets = null,
+    // 'drawer' slides in over the reader; 'page' renders the same tabs inline
+    // (the Reading Setup screen), so both edit through one set of controls.
+    variant = 'drawer', onTabChange = null
 }) {
+    const isPage = variant === 'page';
     const [tabOverride, setTabOverride] = useState(null);
     const [presetName, setPresetName] = useState('');
 
     useEffect(() => {
-        if (!open) return undefined;
+        if (!open || isPage) return undefined;
         const onKey = (e) => {
             if (e.key === 'Escape') {
                 e.stopPropagation();
@@ -108,13 +112,21 @@ export default function ReaderSettings({
         };
         window.addEventListener('keydown', onKey, true);
         return () => window.removeEventListener('keydown', onKey, true);
-    }, [open, onClose]);
-
-    if (!open) return null;
+    }, [open, onClose, isPage]);
 
     const defaultTab = mode === 'scroll' ? 'scroll' : mode === 'rsvp' ? 'rsvp' : 'general';
     const activeTab = tabOverride ?? defaultTab;
-    const close = () => { setTabOverride(null); onClose(); };
+    // Reported only when the tab really changes, not on every render.
+    const reportedTabRef = useRef(null);
+    useEffect(() => {
+        if (reportedTabRef.current === activeTab) return;
+        reportedTabRef.current = activeTab;
+        onTabChange?.(activeTab);
+    }, [activeTab, onTabChange]);
+
+    if (!open && !isPage) return null;
+
+    const close = () => { setTabOverride(null); onClose?.(); };
 
     const set = (patch) => patchReading(patch);
     const resetLook = () => patchReading({ ...DEFAULT_READING });
@@ -198,19 +210,9 @@ export default function ReaderSettings({
         </Section>
     );
 
-    return (
-        <div className="fixed inset-0 z-[55] flex justify-end">
-            <button aria-label="Close reading settings" className="absolute inset-0 bg-black/40" onClick={close} />
-            <aside
-                className="relative w-full max-w-sm h-full bg-slate-900 border-l border-slate-800 shadow-2xl flex flex-col animate-in slide-in-from-right-8"
-                role="dialog" aria-label="Reading settings"
-            >
-                <header className="flex items-center justify-between px-5 h-14 border-b border-slate-800 shrink-0">
-                    <span className="font-bold text-white">Reading settings</span>
-                    <button onClick={close} aria-label="Close" className="p-2 -mr-2 text-slate-400 hover:text-white"><X size={18} /></button>
-                </header>
-
-                <div className="flex gap-1 px-4 py-2.5 border-b border-slate-800 bg-slate-950/50 shrink-0" role="tablist" aria-label="Settings sections">
+    const body = (
+        <>
+                <div className={`flex gap-1 px-4 py-2.5 border-b border-slate-800 bg-slate-950/50 shrink-0 ${isPage ? 'flex-wrap' : ''}`} role="tablist" aria-label="Settings sections">
                     {[
                         ['rsvp', 'Speed Reader'],
                         ['scroll', 'Scroll'],
@@ -235,7 +237,7 @@ export default function ReaderSettings({
                     ))}
                 </div>
 
-                <div className="flex-1 overflow-y-auto px-5 py-5 space-y-7">
+                <div className={isPage ? 'px-5 md:px-6 py-6 space-y-7' : 'flex-1 overflow-y-auto px-5 py-5 space-y-7'}>
                     {activeTab === 'scroll' && scrollSection}
 
                     {activeTab === 'training' && (
@@ -457,6 +459,30 @@ export default function ReaderSettings({
                     </button>
                     <span className="text-[11px] text-slate-600">Saved automatically</span>
                 </footer>
+        </>
+    );
+
+    if (isPage) {
+        return (
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl flex flex-col overflow-hidden" role="region" aria-label="Reading settings">
+                {body}
+            </div>
+        );
+    }
+
+    return (
+        <div className="fixed inset-0 z-[55] flex justify-end">
+            <button aria-label="Close reading settings" className="absolute inset-0 bg-black/40" onClick={close} />
+            <aside
+                className="relative w-full max-w-sm h-full bg-slate-900 border-l border-slate-800 shadow-2xl flex flex-col animate-in slide-in-from-right-8"
+                role="dialog" aria-label="Reading settings"
+            >
+                <header className="flex items-center justify-between px-5 h-14 border-b border-slate-800 shrink-0">
+                    <span className="font-bold text-white">Reading settings</span>
+                    <button onClick={close} aria-label="Close" className="p-2 -mr-2 text-slate-400 hover:text-white"><X size={18} /></button>
+                </header>
+
+                {body}
             </aside>
         </div>
     );

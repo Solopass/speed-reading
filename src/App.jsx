@@ -223,7 +223,6 @@ export default function App() {
     // Always read through the normalizer, so a stored or imported value that is
     // out of range degrades to something usable rather than blanking the page.
     const reading = normalizeReading(settings.reading);
-    const updateReading = (next) => updateSettings({ reading: normalizeReading(next) });
     // Merges into the latest stored value, so several quick changes (the
     // reader's settings drawer) cannot overwrite one another.
     const patchReading = (patch) => setSettings(prev => ({ ...prev, reading: normalizeReading({ ...prev.reading, ...patch }) }));
@@ -778,6 +777,10 @@ export default function App() {
                                 recallDue={recallDue} nextAction={nextAction} onAction={runNextAction}
                                 backupDue={backupReminderDue(userStats)} onBackup={exportBackup}
                                 backupPaused={autoBackup.enabled && backupFolderState === 'prompt'} onAllowBackup={allowBackupFolder} backupFolderName={backupFolder?.name}
+                                library={library}
+                                onContinue={(item) => (item.kind === 'book'
+                                    ? openBookChapter(item.id, item.chapterIndex, null, 'dashboard')
+                                    : openSaved(item.id, { returnTo: 'dashboard' }))}
                                 onSnoozeBackup={() => setUserStats(prev => snoozeBackup(prev))}
                                 onRecall={(id) => openSaved(id, { recall: true })}
                                 onStart={() => navigate('library')}
@@ -796,7 +799,7 @@ export default function App() {
                         {currentView === 'coach' && <AICoach stats={userStats} history={sessionHistory} ai={ai} addNotification={addNotification} />}
                         {currentView === 'youtube' && <VideoSummary ai={ai} onStartPassage={startPassage} addNotification={addNotification} />}
                         {currentView === 'plans' && <Plans plans={plans} onSavePlan={savePlan} onDeletePlan={deletePlan} onRunStep={runPlanStep} addNotification={addNotification} />}
-                        {currentView === 'reading' && <ReadingEnvironment reading={reading} updateReading={updateReading} />}
+                        {currentView === 'reading' && <ReadingEnvironment reading={reading} patchReading={patchReading} settings={settings} updateSettings={updateSettings} customPresets={customPresets} onSavePresets={setCustomPresets} />}
                         {currentView === 'guide' && <Guide />}
                     </Suspense>
                 </div>

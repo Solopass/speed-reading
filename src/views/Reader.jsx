@@ -18,6 +18,7 @@ import { buildCheckpoint, difficultyBuckets, difficultyScores, nextChunkSize, sp
 import { MAX_WPM, autoStartPlays, blinkDue as isBlinkDue, blinkMayAdvance, checkWindowAfterSeek, checkpointDue, restartsFromTop } from '../lib/readerLogic';
 import { loadFrequencyRank } from '../lib/vocab';
 import Quiz from '../components/Quiz';
+import { todayKey } from '../lib/stats';
 import CheckpointCard from '../components/CheckpointCard';
 import SpeedTraceLine from '../components/SpeedTraceLine';
 
@@ -430,7 +431,7 @@ function Reader({
         setCheckpoint({ ...checkpoint, picked: i });
         setCheckStats(st => ({ asked: st.asked + 1, right: st.right + (ok ? 1 : 0) }));
         // Kept with the speed and date, for the dashboard's comprehension-at-speed chart.
-        const entry = { ok, size: settings.chunkSize, mode, wpm: effectiveWpm, date: new Date().toISOString().slice(0, 10), kind: checkpoint.cloze.kind ?? 'word' };
+        const entry = { ok, size: settings.chunkSize, mode, wpm: effectiveWpm, date: todayKey(), kind: checkpoint.cloze.kind ?? 'word' };
         const log = [...(Array.isArray(settings.checkpointLog) ? settings.checkpointLog : []), entry].slice(-300);
         const patch = { checkpointLog: log };
         // Words per flash follows how well the checks go, between 2 and 5.

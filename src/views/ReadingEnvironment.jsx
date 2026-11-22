@@ -1,241 +1,179 @@
-import { useState } from 'react';
-import { RotateCcw, Type } from 'lucide-react';
-import {
-    DEFAULT_READING, FONT_OPTIONS, LIMITS, THEMES,
-    estimatedWordsPerLine, focalColorFor, normalizeReading
-} from '../lib/readingStyle';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Pause, Play, Type } from 'lucide-react';
+import { estimatedWordsPerLine, focalColorFor, normalizeReading } from '../lib/readingStyle';
 import { focalRange } from '../lib/scrollUtils';
-import FocalColorPicker from '../components/FocalColorPicker';
+import { buildChunks, joinFlashWords } from '../lib/chunker';
+import ReaderSettings from '../components/ReaderSettings';
 import ReadingSurface, { proseStyle } from '../components/ReadingSurface';
+import ScrollText from '../components/ScrollText';
 
 const SAMPLE = `The eye does not glide smoothly across a line of text. It moves in short jumps called saccades, pausing between them at fixation points where the reading actually happens.
 
 Tune this page until a line feels like one comfortable sweep rather than a journey. That is the setting worth training on.`;
 
-function Slider({ label, hint, value, onChange, range, step = 1, format = (v) => v }) {
-    const [min, max] = range;
+// A longer sample for the moving previews, so they have something to scroll and flash through.
+const LONG_SAMPLE = `${SAMPLE}
+
+Every fixation takes in a small window of letters, sharpest at the centre and fading quickly to either side. Fast readers do not move their eyes faster; they take in more of each window and go back less often.
+
+That is why the shape of the text matters. A line that is too long makes the return sweep miss; letters packed too tightly blur into one another; a page that is too bright tires the eyes before the mind. Small changes here add up over a long chapter.
+
+When the settings feel right, open a document and read. The reader uses exactly what you see in this preview.`;
+
+const PREVIEW_WPM = 300;
+
+/** The flash preview: one word with its focal letter, or a phrase when more words per flash are set. */
+function FlashPreview({ reading, chunkSize, word, playing }) {
+    const words = useMemo(() => LONG_SAMPLE.trim().split(/\s+/), []);
+    const chunks = useMemo(() => buildChunks(LONG_SAMPLE, { maxWords: chunkSize }), [chunkSize]);
+    const [k, setK] = useState(0);
+    useEffect(() => {
+        if (!playing || chunks.length === 0) return undefined;
+        const c = chunks[k % chunks.length];
+        const ms = (60000 / PREVIEW_WPM) * (c.end - c.start) + 120;
+        const t = setTimeout(() => setK(i => (i + 1) % chunks.length), ms);
+        return () => clearTimeout(t);
+    }, [playing, k, chunks]);
+
+    const focal = focalColorFor(reading);
+    // Paused, it shows your own word; playing, it runs through the sample.
+    const group = playing && chunks.length ? words.slice(chunks[k % chunks.length].start, chunks[k % chunks.length].end) : [word];
+
+    if (group.length > 1) {
+        return (
+            <div className="text-center py-6" style={{ fontSize: 'calc(var(--reading-rsvp-size) * 0.6)', fontFamily: 'var(--reading-font)', fontWeight: reading.rsvpWeight, lineHeight: 1.2 }}>
+                {joinFlashWords(group)}
+            </div>
+        );
+    }
+
+    const w = group[0] ?? '';
+    const range = focalRange(w, reading.focalSpan);
+    const isGrad = reading.focalSpan === 'gradient';
+    const pre = w.slice(0, range.start);
+    const leftCluster = w.slice(range.start, range.center);
+    const center = w.charAt(range.center);
+    const rightCluster = w.slice(range.center + 1, range.end);
+    const post = w.slice(range.end);
     return (
-        <div>
-            <label className="flex justify-between items-baseline text-sm font-bold text-slate-300 mb-1.5">
-                <span>{label}</span>
-                <span className="text-purple-400 font-mono text-xs">{format(value)}</span>
-            </label>
-            <input
-                type="range" min={min} max={max} step={step} value={value}
-                onChange={(e) => onChange(Number(e.target.value))}
-                aria-label={label}
-                className="w-full accent-purple-500 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer"
-            />
-            {hint && <p className="text-[11px] text-slate-500 mt-1">{hint}</p>}
+        <div className="flex items-center justify-center py-6 relative" style={{ fontSize: 'var(--reading-rsvp-size)', fontFamily: 'var(--reading-font)', fontWeight: reading.rsvpWeight, lineHeight: 1.1 }}>
+            {reading.showFocalGuide && (
+                <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2" style={{ background: 'var(--reading-muted)', opacity: 0.35 }} />
+            )}
+            <span className="flex-1 text-right whitespace-pre" style={{ opacity: reading.rsvpFlankOpacity ?? 0.8 }}>
+                {isGrad && focal ? <span style={{ color: focal, opacity: 0.55 }}>{pre}</span> : pre}
+                {leftCluster && <span className="font-bold" style={{ color: focal ?? 'inherit', opacity: 0.85 }}>{leftCluster}</span>}
+            </span>
+            <span className="shrink-0 font-bold" style={{ color: focal ?? 'inherit' }}>{center}</span>
+            <span className="flex-1 text-left whitespace-pre" style={{ opacity: reading.rsvpFlankOpacity ?? 0.8 }}>
+                {rightCluster && <span className="font-bold" style={{ color: focal ?? 'inherit', opacity: 0.85 }}>{rightCluster}</span>}
+                {isGrad && focal ? <span style={{ color: focal, opacity: 0.55 }}>{post}</span> : post}
+            </span>
         </div>
     );
 }
 
-function Section({ title, children }) {
-    return (
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-5">
-            <h2 className="text-lg font-bold text-white">{title}</h2>
-            {children}
-        </div>
-    );
-}
-
-function ReadingEnvironment({ reading, updateReading }) {
+/**
+ * Reading Setup: the same settings as the reader's drawer (one set of
+ * controls, so the two cannot drift apart), laid out as a page, with a live
+ * preview beside them that shows whichever mode the open tab is about.
+ */
+function ReadingEnvironment({ reading, patchReading, settings, updateSettings, customPresets, onSavePresets }) {
     const current = normalizeReading(reading);
-    const [previewWord, setPreviewWord] = useState('recalibrating');
-    const set = (patch) => updateReading({ ...current, ...patch });
+    const [tab, setTab] = useState('rsvp');
+    const [word, setWord] = useState('recalibrating');
+    const [playing, setPlaying] = useState(false);
+    // Bumped when the scroll preview reaches the end, so the next Play starts over.
+    const [scrollRun, setScrollRun] = useState(0);
+    // Changing tab stops the moving preview.
+    const changeTab = useCallback((next) => { setTab(next); setPlaying(false); }, [setTab, setPlaying]);
 
-    const wordsPerLine = estimatedWordsPerLine(current);
-    const widthVerdict = current.maxWidthCh < 45
-        ? 'Narrow — more return sweeps per paragraph.'
-        : current.maxWidthCh > 80
-            ? 'Wide — easy to lose your place on the return sweep.'
-            : 'In the comfortable band most readers land in.';
-
-    const focal = focalColorFor(current);
-    const range = focalRange(previewWord, current.focalSpan);
-    const isGrad = current.focalSpan === 'gradient';
-    const pre = previewWord.slice(0, range.start);
-    const leftCluster = previewWord.slice(range.start, range.center);
-    const center = previewWord.charAt(range.center);
-    const rightCluster = previewWord.slice(range.center + 1, range.end);
-    const post = previewWord.slice(range.end);
+    const previewMode = tab === 'rsvp' ? 'rsvp' : tab === 'scroll' ? 'scroll' : 'page';
+    const canPlay = previewMode !== 'page';
+    // The window height setting is honoured but capped, so the preview fits beside the controls.
+    const scrollPreviewReading = { ...current, scrollHeightVh: Math.min(current.scrollHeightVh, 45) };
 
     return (
-        <div className="max-w-5xl mx-auto space-y-6 animate-in slide-in-from-bottom-4 pb-12">
-            <div className="flex items-start justify-between gap-4 flex-wrap">
-                <div>
-                    <h1 className="text-3xl font-bold text-white flex items-center gap-3">
-                        <Type className="text-purple-500 w-7 h-7" /> Reading Setup
-                    </h1>
-                    <p className="text-slate-400 mt-2 max-w-2xl">
-                        How text is set changes how fast you can read it. Line width decides how many saccades a line costs, spacing
-                        decides whether your eye finds the next line without slipping back. Tune it here; every mode uses these settings.
-                    </p>
-                </div>
-                <button
-                    onClick={() => updateReading({ ...DEFAULT_READING })}
-                    className="flex items-center gap-2 text-slate-400 hover:text-white text-sm font-medium border border-slate-800 hover:border-slate-600 px-4 py-2 rounded-xl transition-colors"
-                >
-                    <RotateCcw size={14} /> Reset
-                </button>
+        <div className="max-w-6xl mx-auto space-y-6 animate-in slide-in-from-bottom-4 pb-12">
+            <div>
+                <h1 className="text-3xl font-bold text-white flex items-center gap-3">
+                    <Type className="text-purple-500 w-7 h-7" /> Reading Setup
+                </h1>
+                <p className="text-slate-400 mt-2 max-w-3xl">
+                    How text is set changes how fast you can read it. These are the same settings as the reader&apos;s settings
+                    drawer, so changes here show up in every mode and the other way round.
+                </p>
             </div>
 
-            {/* Live preview, pinned so it stays visible while the controls scroll. */}
-            <ReadingSurface reading={current} className="rounded-3xl border border-slate-800 overflow-hidden sticky top-0 z-10 shadow-xl">
-                <div className="p-6 md:p-8">
-                    <div className="flex items-center justify-between mb-5 flex-wrap gap-2">
-                        <span className="text-[11px] font-bold uppercase tracking-widest" style={{ color: 'var(--reading-muted)' }}>
-                            Live preview
-                        </span>
-                        <span className="text-[11px] font-mono" style={{ color: 'var(--reading-muted)' }}>
-                            ~{wordsPerLine} words per line · {current.maxWidthCh}ch
-                        </span>
-                    </div>
+            <div className="grid lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] gap-6 items-start">
+                <div className="lg:order-2 lg:sticky lg:top-4 space-y-3">
+                    <ReadingSurface reading={current} className="rounded-3xl border border-slate-800 overflow-hidden">
+                        <div className="p-5 md:p-6">
+                            <div className="flex items-center justify-between mb-3 gap-2">
+                                <span className="text-[11px] font-bold uppercase tracking-widest" style={{ color: 'var(--reading-muted)' }}>
+                                    Live preview · {previewMode === 'rsvp' ? 'Speed Reader' : previewMode === 'scroll' ? 'Scroll' : 'Page'}
+                                </span>
+                                <span className="flex items-center gap-3">
+                                    <span className="text-[11px] font-mono" style={{ color: 'var(--reading-muted)' }}>
+                                        ~{estimatedWordsPerLine(current)} words per line · {current.maxWidthCh}ch
+                                    </span>
+                                    {canPlay && (
+                                        <button
+                                            type="button" onClick={() => setPlaying(p => !p)}
+                                            aria-label={playing ? 'Pause preview' : 'Play preview'}
+                                            className="p-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white"
+                                        >
+                                            {playing ? <Pause size={13} /> : <Play size={13} />}
+                                        </button>
+                                    )}
+                                </span>
+                            </div>
 
-                    {/* RSVP sample: the focal letter is what your eye locks onto. */}
-                    <div
-                        className="flex items-center justify-center py-4 mb-6 relative"
-                        style={{ fontSize: 'var(--reading-rsvp-size)', fontFamily: 'var(--reading-font)', lineHeight: 1.1 }}
-                    >
-                        {current.showFocalGuide && (
-                            <div className="absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2" style={{ background: 'var(--reading-muted)', opacity: 0.35 }} />
-                        )}
-                        <span className="flex-1 text-right whitespace-pre" style={{ opacity: isGrad ? 0.9 : 0.8 }}>
-                            {isGrad && focal ? <span style={{ color: focal, opacity: 0.55 }}>{pre}</span> : pre}
-                            {leftCluster && <span className="font-bold" style={{ color: focal ?? 'inherit', opacity: 0.85 }}>{leftCluster}</span>}
-                        </span>
-                        <span className="shrink-0 font-bold" style={{ color: focal ?? 'inherit' }}>{center}</span>
-                        <span className="flex-1 text-left whitespace-pre" style={{ opacity: isGrad ? 0.9 : 0.8 }}>
-                            {rightCluster && <span className="font-bold" style={{ color: focal ?? 'inherit', opacity: 0.85 }}>{rightCluster}</span>}
-                            {isGrad && focal ? <span style={{ color: focal, opacity: 0.55 }}>{post}</span> : post}
-                        </span>
-                    </div>
+                            {previewMode === 'rsvp' && (
+                                <FlashPreview reading={current} chunkSize={settings.chunkSize ?? 1} word={word || 'recalibrating'} playing={playing} />
+                            )}
+                            {previewMode === 'scroll' && (
+                                <ScrollText
+                                    key={scrollRun} text={LONG_SAMPLE} wpm={PREVIEW_WPM} isRunning={playing}
+                                    reading={scrollPreviewReading} bionicReading={settings.bionicReading}
+                                    onComplete={() => { setPlaying(false); setScrollRun(n => n + 1); }}
+                                />
+                            )}
+                            {previewMode === 'page' && (
+                                <div className="mx-auto" style={{ maxWidth: 'var(--reading-max-width)' }}>
+                                    {SAMPLE.split('\n\n').map((para, i) => (
+                                        <p key={i} style={{ ...proseStyle, marginBottom: 'var(--reading-paragraph-gap)' }}>{para}</p>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    </ReadingSurface>
 
-                    <div className="mx-auto" style={{ maxWidth: 'var(--reading-max-width)' }}>
-                        {SAMPLE.split('\n\n').map((para, i) => (
-                            <p key={i} style={{ ...proseStyle, marginBottom: 'var(--reading-paragraph-gap)' }}>{para}</p>
-                        ))}
-                    </div>
-                </div>
-            </ReadingSurface>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <Section title="Typeface">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {FONT_OPTIONS.map(font => (
-                            <button
-                                key={font.id}
-                                onClick={() => set({ fontId: font.id })}
-                                style={{ fontFamily: font.stack }}
-                                className={`text-left px-4 py-3 rounded-xl border transition-colors ${
-                                    current.fontId === font.id
-                                        ? 'border-purple-500 bg-purple-950/30 text-white'
-                                        : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-600'
-                                }`}
-                            >
-                                <div className="font-bold">{font.label}</div>
-                                <div className="text-[11px] opacity-70 mt-0.5">{font.note}</div>
-                            </button>
-                        ))}
-                    </div>
-                    <p className="text-[11px] text-slate-500">
-                        The last three download on selection; the first three are already on your machine and work offline.
-                    </p>
-                </Section>
-
-                <Section title="Colour">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {THEMES.map(theme => (
-                            <button
-                                key={theme.id}
-                                onClick={() => set({ themeId: theme.id })}
-                                className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition-colors ${
-                                    current.themeId === theme.id ? 'border-purple-500' : 'border-slate-800 hover:border-slate-600'
-                                }`}
-                                style={{ background: theme.bg, color: theme.fg }}
-                            >
-                                <span className="w-5 h-5 rounded-full border" style={{ background: theme.fg, borderColor: theme.muted }} />
-                                <span className="font-bold text-sm">{theme.label}</span>
-                            </button>
-                        ))}
-                    </div>
-
-                    <div>
-                        <div className="text-sm font-bold text-slate-300 mb-2">Focal letter</div>
-                        <FocalColorPicker reading={current} onChange={set} />
-                        <label className="flex items-center gap-2 mt-3 text-sm text-slate-300 cursor-pointer">
+                    {previewMode === 'rsvp' && (
+                        <label className="block bg-slate-900 border border-slate-800 rounded-2xl px-4 py-3">
+                            <span className="text-xs font-bold text-slate-400">Try your own word (shown while paused)</span>
                             <input
-                                type="checkbox" checked={current.showFocalGuide}
-                                onChange={(e) => set({ showFocalGuide: e.target.checked })}
-                                className="accent-purple-500 w-4 h-4"
+                                value={word} onChange={(e) => setWord(e.target.value.replace(/\s+/g, ''))}
+                                className="mt-1.5 w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-purple-500"
                             />
-                            Show the centre guide line in RSVP
                         </label>
-                    </div>
-                </Section>
+                    )}
+                </div>
 
-                <Section title="Size">
-                    <Slider
-                        label="Prose size" value={current.proseSizePx} range={LIMITS.proseSizePx}
-                        onChange={(v) => set({ proseSizePx: v })} format={(v) => `${v}px`}
-                        hint="Used by Natural and Paced reading."
+                <div className="lg:order-1 min-w-0">
+                    <ReaderSettings
+                        variant="page"
+                        open
+                        reading={current}
+                        patchReading={patchReading}
+                        settings={settings}
+                        updateSettings={updateSettings}
+                        mode="rsvp"
+                        customPresets={customPresets}
+                        onSavePresets={onSavePresets}
+                        onTabChange={changeTab}
                     />
-                    <Slider
-                        label="RSVP word size" value={current.rsvpSizePx} range={LIMITS.rsvpSizePx}
-                        onChange={(v) => set({ rsvpSizePx: v })} format={(v) => `${v}px`}
-                        hint="Large enough to read without moving your eyes at all."
-                    />
-                    <Slider
-                        label="Bionic bold" value={current.bionicStrength} range={LIMITS.bionicStrength} step={0.05}
-                        onChange={(v) => set({ bionicStrength: v })} format={(v) => `${Math.round(v * 100)}%`}
-                        hint="How much of each word is emboldened when Bionic Reading is on."
-                    />
-                </Section>
-
-                <Section title="Spacing and layout">
-                    <Slider
-                        label="Line width" value={current.maxWidthCh} range={LIMITS.maxWidthCh}
-                        onChange={(v) => set({ maxWidthCh: v })} format={(v) => `${v}ch`}
-                        hint={widthVerdict}
-                    />
-                    <Slider
-                        label="Line height" value={current.lineHeight} range={LIMITS.lineHeight} step={0.05}
-                        onChange={(v) => set({ lineHeight: v })} format={(v) => v.toFixed(2)}
-                        hint="Too tight and the return sweep lands on the wrong line."
-                    />
-                    <Slider
-                        label="Letter spacing" value={current.letterSpacing} range={LIMITS.letterSpacing} step={0.005}
-                        onChange={(v) => set({ letterSpacing: v })} format={(v) => `${v.toFixed(3)}em`}
-                    />
-                    <Slider
-                        label="Word spacing" value={current.wordSpacing} range={LIMITS.wordSpacing} step={0.02}
-                        onChange={(v) => set({ wordSpacing: v })} format={(v) => `${v.toFixed(2)}em`}
-                        hint="Wider gaps make word boundaries easier to chunk."
-                    />
-                    <Slider
-                        label="Paragraph gap" value={current.paragraphGapEm} range={LIMITS.paragraphGapEm} step={0.1}
-                        onChange={(v) => set({ paragraphGapEm: v })} format={(v) => `${v.toFixed(1)}em`}
-                    />
-                    <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
-                        <input
-                            type="checkbox" checked={current.justify}
-                            onChange={(e) => set({ justify: e.target.checked })}
-                            className="accent-purple-500 w-4 h-4"
-                        />
-                        Justify text
-                        <span className="text-[11px] text-slate-500">(even edges, but uneven word gaps)</span>
-                    </label>
-                </Section>
-            </div>
-
-            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6">
-                <label htmlFor="preview-word" className="block text-sm font-bold text-slate-300 mb-2">Try your own word in the RSVP preview</label>
-                <input
-                    id="preview-word" type="text" value={previewWord}
-                    onChange={(e) => setPreviewWord(e.target.value || ' ')}
-                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-purple-500 transition-colors"
-                />
+                </div>
             </div>
         </div>
     );

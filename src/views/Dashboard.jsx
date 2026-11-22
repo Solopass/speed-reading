@@ -11,6 +11,8 @@ import {
 } from '../lib/stats';
 import { chartColors, tooltipStyle } from '../lib/theme';
 import ComprehensionBySpeed from '../components/ComprehensionBySpeed';
+import ContinueReading from '../components/ContinueReading';
+import WeekSummary from '../components/WeekSummary';
 
 const ACTION_ICONS = { baseline: Target, 'baseline-more': Target, recall: Bookmark, plan: Map, push: Zap, read: BookOpen, book: BookOpen };
 const ACTION_CTA = {
@@ -94,7 +96,7 @@ function ActivityHeatmap({ history, streak }) {
 
 function Dashboard({
     stats, history, settings, theme, recallDue = [], nextAction, onAction, backupDue, onBackup, onSnoozeBackup, onRecall, onStart,
-    backupPaused = false, onAllowBackup, backupFolderName
+    backupPaused = false, onAllowBackup, backupFolderName, library = [], onContinue
 }) {
     const colors = chartColors(theme);
     const hasBaseline = stats.baselineWpm !== null;
@@ -132,6 +134,8 @@ function Dashboard({
                     </button>
                 )}
             </header>
+
+            {onContinue && <ContinueReading library={library} mode={settings.readerMode} onContinue={onContinue} />}
 
             {nextAction && (
                 <section className="relative overflow-hidden rounded-3xl border border-purple-800/60 bg-gradient-to-br from-purple-950/60 via-slate-900 to-slate-900 p-5 md:p-7" aria-label="Do this next">
@@ -232,6 +236,8 @@ function Dashboard({
                     </div>
                 </div>
             )}
+
+            <WeekSummary history={history} checkpointLog={settings.checkpointLog} />
 
             <div className="grid lg:grid-cols-5 gap-4">
                 <div className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-3xl p-5 md:p-6">
