@@ -10,11 +10,12 @@ import {
     normalizeTextWithStats, restoreCutItem, selectBlocksForAiClean, validateAiCuts, aiCutIndex
 } from '../lib/importText';
 import { BOOK_MIN_WORDS, buildChapters, createBook, mergeWithNext, renameChapter, splitChapterAt } from '../lib/book';
+import { importDocumentFile, newDocumentId } from '../lib/importDocument';
 import CutReviewPanel from '../components/CutReviewPanel';
 import CleanupTools from '../components/CleanupTools';
 import ManualAiPanel from '../components/ManualAiPanel';
 
-const nextId = (prefix) => `${prefix}-${Date.now()}`;
+const nextId = newDocumentId;
 
 function formatCleanSummary(stats) {
     if (!stats) return '';
@@ -73,21 +74,17 @@ export default function Upload({
         let added = 0;
         for (const file of files) {
             try {
-                const res = await extractText(file, {
+                const doc = await importDocumentFile(file, {
                     stripUrls,
                     stripCitations,
                     onProgress: (p) => setPdfProgress({ ...p, name: file.name })
                 });
-                const wc = res.text.trim().split(/\s+/).length;
-                if (wc >= BOOK_MIN_WORDS || (res.chapters?.length ?? 0) > 1) {
-                    const chapters = buildChapters({ text: res.text, chapters: res.chapters });
-                    if (chapters.length >= 2) {
-                        if (onSaveBook(createBook({ title: res.title, chapters })) !== false) added += 1;
-                        continue;
-                    }
+                if (doc.kind === 'book') {
+                    if (onSaveBook(doc.item) !== false) added += 1;
+                } else {
+                    onSavePassage?.(doc.item);
+                    added += 1;
                 }
-                onSavePassage?.({ id: nextId('custom'), title: res.title, text: res.text, questions: [] });
-                added += 1;
             } catch (error) {
                 addNotification(`${file.name}: ${error.message || 'Could not read file.'}`);
             }
