@@ -3,6 +3,7 @@ import { Layers } from 'lucide-react';
 import {
     CHUNK_FLASH_MS, CHUNK_ROUNDS, CHUNK_START_WORDS, chunkThreshold, nextChunkSize
 } from '../../lib/drillStats';
+import { pickPhrase } from '../../lib/drillPack';
 
 // Ordinary, high-frequency words: the drill is testing how much you can take in
 // at once, not whether you know the vocabulary.
@@ -37,12 +38,20 @@ const shuffle = (items) => {
  * recall or spelling — and the distractors are close enough that guessing from
  * a half-glimpse does not work.
  */
-const buildOptions = (chunk) => {
-    const spare = WORD_BANK.filter(w => !chunk.includes(w));
+const buildOptions = (chunk, bank = WORD_BANK) => {
+    // Decoy words come from the same source as the phrase (a pack's own vocabulary).
+    const lower = chunk.map(w => w.toLowerCase());
+    const notInChunk = (list) => list.filter(w => !lower.includes(w.toLowerCase()));
+    let spare = notInChunk(bank);
+    if (spare.length < 3) spare = notInChunk(WORD_BANK);
     const decoys = [];
     for (let i = 0; i < 3; i++) {
         const copy = [...chunk];
-        copy[Math.floor(Math.random() * copy.length)] = spare[Math.floor(Math.random() * spare.length)];
+        const at = Math.floor(Math.random() * copy.length);
+        let swap = spare[Math.floor(Math.random() * spare.length)];
+        // Match the capital of the word it replaces, or the real phrase stands out.
+        if (/^\p{Lu}/u.test(copy[at])) swap = swap.charAt(0).toUpperCase() + swap.slice(1);
+        copy[at] = swap;
         const text = copy.join(' ');
         if (!decoys.includes(text) && text !== chunk.join(' ')) decoys.push(text);
     }
@@ -56,7 +65,7 @@ const buildOptions = (chunk) => {
  * Words-per-fixation multiplies straight into words-per-minute, so this is the
  * most direct lever on reading speed of any drill here.
  */
-export default function ChunkFlashDrill({ previousBest, startAt = CHUNK_START_WORDS, onExit, onFinish }) {
+export default function ChunkFlashDrill({ previousBest, startAt = CHUNK_START_WORDS, onExit, onFinish, pack = null }) {
     const [state, setState] = useState('idle');   // idle | focus | flash | choose | done | aborted
     const [size, setSize] = useState(startAt);
     const [round, setRound] = useState(0);
@@ -83,9 +92,10 @@ export default function ChunkFlashDrill({ previousBest, startAt = CHUNK_START_WO
         timersRef.current.forEach(clearTimeout);
         timersRef.current = [];
 
-        const next = pick(words);
+        // A pack supplies real phrases from your reading; otherwise random everyday words.
+        const next = (pack && pickPhrase(pack, words)) || pick(words);
         setChunk(next);
-        setOptions(buildOptions(next));
+        setOptions(buildOptions(next, pack?.wordBank ?? WORD_BANK));
         setState('focus');
 
         timersRef.current.push(setTimeout(() => {
@@ -103,11 +113,13 @@ export default function ChunkFlashDrill({ previousBest, startAt = CHUNK_START_WO
 
     const answer = (choice) => {
         const correct = choice === chunk.join(' ');
-        const recorded = [...rounds, { size, correct }];
+        // The length actually shown: a pack without phrases of this size offers the nearest one.
+        const shown = chunk.length || size;
+        const recorded = [...rounds, { size: shown, correct }];
         setRounds(recorded);
 
         if (round < CHUNK_ROUNDS) {
-            const nextSize = nextChunkSize(size, correct);
+            const nextSize = nextChunkSize(shown, correct);
             setSize(nextSize);
             setRound(round + 1);
             playRound(nextSize);
@@ -124,7 +136,7 @@ export default function ChunkFlashDrill({ previousBest, startAt = CHUNK_START_WO
 
             {['focus', 'flash', 'choose'].includes(state) && (
                 <div className="absolute top-6 right-6 text-xs font-mono text-slate-500">
-                    Round {round}/{CHUNK_ROUNDS} · {size} word{size === 1 ? '' : 's'}
+                    Round {round}/{CHUNK_ROUNDS} · {chunk.length || size} word{(chunk.length || size) === 1 ? '' : 's'}
                 </div>
             )}
 

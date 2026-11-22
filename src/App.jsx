@@ -12,6 +12,7 @@ import { CALIBRATION_PASSAGES } from './lib/calibration';
 import { intensityLabel, nextPushIntensity } from './lib/protocol';
 import { MAX_DRILL_HISTORY, migrateDrills } from './lib/drillStats';
 import { createBackup, downloadBackup, readBackup } from './lib/backup';
+import { normalizePack } from './lib/drillPack';
 import {
     autoBackupDue, chooseBackupFolder, folderPermission, forgetFolder, loadFolderHandle, supportsFolderBackup, writeBackupToFolder
 } from './lib/autoBackup';
@@ -176,6 +177,8 @@ export default function App() {
     }, [library, onSaveError]);
     const [plans, setPlans] = usePersistentState('speedReadPlans', (raw) => migratePlans(raw ?? []), [], onSaveError);
     const [drills, setDrills] = usePersistentState('speedReadDrills', (raw) => migrateDrills(raw ?? []), [], onSaveError);
+    // Drill packs: Neuro-Drill material made from your documents (lib/drillPack.js).
+    const [drillPacks, setDrillPacks] = usePersistentState('speedReadDrillPacks', (raw) => (Array.isArray(raw) ? raw.map(normalizePack).filter(Boolean) : []), [], onSaveError);
     const [vocab, setVocab] = usePersistentState('speedReadVocab', migrateVocab, [], onSaveError);
     const [customPresets, setCustomPresets] = usePersistentState('speedReadPresets', (raw) => (Array.isArray(raw) ? raw.map(normalizePreset).filter(Boolean) : []), [], onSaveError);
     const [popoutWin, setPopoutWin] = useState(null);
@@ -362,7 +365,7 @@ export default function App() {
             : `Found in ${result.metric}s.`, 'success');
     };
 
-    const currentBackup = () => createBackup({ settings, stats: userStats, history: sessionHistory, library, drills, plans, vocab, presets: customPresets });
+    const currentBackup = () => createBackup({ settings, stats: userStats, history: sessionHistory, library, drills, plans, vocab, presets: customPresets, drillPacks });
 
     // --- Automatic backups to a folder (see lib/autoBackup.js) ----------------
     useEffect(() => {
@@ -497,6 +500,7 @@ export default function App() {
             setPlans(restored.plans);
             setVocab(restored.vocab);
             setCustomPresets(restored.presets);
+            setDrillPacks(restored.drillPacks.map(normalizePack).filter(Boolean));
             setCurrentView('dashboard');
             addNotification(`Restored ${restored.history.length} sessions.`, 'success');
         } catch (error) {
@@ -792,7 +796,18 @@ export default function App() {
                         {currentView === 'recall' && <RecallCheck passage={activePassage} onDone={finishRecall} onExit={() => exitFocus('dashboard')} />}
                         {currentView === 'push' && <SpeedPush reading={reading} patchReading={patchReading} updateSettings={updateSettings} passage={activePassage} targetWpm={activeOpeningWpm} intensity={userStats.pushIntensity} settings={settings} onFinish={finishSession} onExit={() => exitFocus(returnView)} />}
                         {currentView === 'reader' && <Reader key={activePassage?.id + ':' + (activePassage?.chapterIndex ?? '')} passage={activePassage} book={activeBook} onSelectChapter={activeBook ? selectBookChapter : null} settings={settings} reading={reading} patchReading={patchReading} updateSettings={updateSettings} customPresets={customPresets} onSavePresets={setCustomPresets} popoutWin={popoutWin} onPopoutChange={setPopoutWin} initialWpm={readerOpeningWpm} resumeFrom={activePassage?.resumeFrom ?? (isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id)))} onFinish={finishSession} onLeave={handleReaderLeave} onBookmark={!activePassage?.isCalibration ? bookmarkHere : null} onGenerateQuiz={generateChapterQuiz} onExit={() => exitFocus(activePassage?.isCalibration ? 'dashboard' : returnView)} addNotification={addNotification} />}
-                        {currentView === 'tools' && <Tools drills={drills} adaptiveStart={settings.autoAdaptive} onDrillComplete={handleDrillComplete} addNotification={addNotification} />}
+                        {currentView === 'tools' && (
+                            <Tools
+                                drills={drills} adaptiveStart={settings.autoAdaptive} onDrillComplete={handleDrillComplete} addNotification={addNotification}
+                                packs={drillPacks} library={library}
+                                activePackId={settings.drillPackId ?? null} onSelectPack={(id) => updateSettings({ drillPackId: id })}
+                                onSavePack={(pack) => setDrillPacks(prev => [pack, ...prev.filter(p => p.id !== pack.id)].slice(0, 50))}
+                                onDeletePack={(id) => {
+                                    setDrillPacks(prev => prev.filter(p => p.id !== id));
+                                    if (settings.drillPackId === id) updateSettings({ drillPackId: null });
+                                }}
+                            />
+                        )}
                         {currentView === 'vocab' && <Vocabulary vocab={vocab} setVocab={setVocab} library={library} ai={ai} addNotification={addNotification} />}
                         {currentView === 'analytics' && <Analytics history={sessionHistory} drills={drills} stats={userStats} theme={theme} />}
                         {currentView === 'settings' && <SettingsPanel settings={settings} updateSettings={updateSettings} apiKeyPresent={apiKeyPresent} ai={ai} localAi={localAi} onRecheckLocalAi={recheckLocalAi} hasBaseline={userStats.baselineWpm !== null} baselineSamples={userStats.baselineSamples} lastBackupAt={userStats.lastBackupAt} folderBackup={folderBackupProps} adaptiveTargetWpm={userStats.targetWpm} pushIntensity={userStats.pushIntensity} onExport={exportBackup} onImport={importBackup} onRecalibrate={() => startBaseline(0, { fresh: true })} onAddBaseline={() => startBaseline(userStats.baselineSamples.length, { fresh: false })} />}

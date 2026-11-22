@@ -107,8 +107,8 @@ export function startingChunkSize(history) {
     return Math.min(CHUNK_MAX_WORDS, Math.max(CHUNK_MIN_WORDS, Math.round(recent) - 1));
 }
 
-export function createDrillResult({ kind, metric, detail = null }) {
-    return { kind, metric, detail, date: todayKey() };
+export function createDrillResult({ kind, metric, detail = null, packId = null }) {
+    return { kind, metric, detail, date: todayKey(), ...(packId ? { packId } : {}) };
 }
 
 export const drillsOfKind = (history, kind) => history.filter(d => d.kind === kind);
@@ -151,7 +151,9 @@ export function migrateDrills(raw) {
             kind: d.kind,
             metric: Number(d.metric),
             detail: d.detail ?? null,
-            date: typeof d.date === 'string' ? d.date : todayKey()
+            date: typeof d.date === 'string' ? d.date : todayKey(),
+            // Which drill pack the run used, when it used one.
+            ...(typeof d.packId === 'string' ? { packId: d.packId } : {})
         }))
         .slice(-MAX_DRILL_HISTORY);
 }

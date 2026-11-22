@@ -2,17 +2,25 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronRight, Grid3x3, Layers, Maximize, Target, TrendingUp } from 'lucide-react';
 import SchulteDrill from '../components/drills/SchulteDrill';
 import ChunkFlashDrill from '../components/drills/ChunkFlashDrill';
+import DrillPackPanel from '../components/drills/DrillPackPanel';
+import { pickScanRound } from '../lib/drillPack';
 import {
     PERIPHERAL_ROUNDS, PERIPHERAL_START_MS, bestMetric, createDrillResult,
     drillTrend, drillsOfKind, latestMetric, nextFlashMs, peripheralThreshold,
     startingChunkSize, startingFlashMs
 } from '../lib/drillStats';
 
-function Tools({ drills, adaptiveStart = true, onDrillComplete, addNotification }) {
+function Tools({
+    drills, adaptiveStart = true, onDrillComplete, addNotification,
+    packs = [], library = [], activePackId = null, onSelectPack, onSavePack, onDeletePack
+}) {
     const [activeDrill, setActiveDrill] = useState(null);
+    const activePack = packs.find(p => p.id === activePackId) ?? null;
 
-    const finish = (kind, metric, detail) => {
-        onDrillComplete(createDrillResult({ kind, metric, detail }));
+    // Runs of the two word drills remember the pack they used.
+    const finish = (kind, metric, detail, usedPack = true) => {
+        const usesPack = usedPack && activePack && (kind === 'chunk' || kind === 'scanning');
+        onDrillComplete(createDrillResult({ kind, metric, detail, packId: usesPack ? activePack.id : null }));
         setActiveDrill(null);
     };
 
@@ -29,8 +37,9 @@ function Tools({ drills, adaptiveStart = true, onDrillComplete, addNotification 
     if (activeDrill === 'scanning') {
         return (
             <ScanningDrill
+                pack={activePack}
                 onExit={() => setActiveDrill(null)}
-                onFinish={(metric) => finish('scanning', metric)}
+                onFinish={(metric, usedPack) => finish('scanning', metric, null, usedPack)}
                 addNotification={addNotification}
             />
         );
@@ -38,6 +47,7 @@ function Tools({ drills, adaptiveStart = true, onDrillComplete, addNotification 
     if (activeDrill === 'chunk') {
         return (
             <ChunkFlashDrill
+                pack={activePack}
                 previousBest={bestMetric(drills, 'chunk')}
                 startAt={adaptiveStart ? startingChunkSize(drills) : undefined}
                 onExit={() => setActiveDrill(null)}
@@ -64,8 +74,16 @@ function Tools({ drills, adaptiveStart = true, onDrillComplete, addNotification 
                 </p>
             </div>
 
+            {onSelectPack && (
+                <DrillPackPanel
+                    packs={packs} activePackId={activePack?.id ?? null} library={library}
+                    onSelect={onSelectPack} onSave={onSavePack} onDelete={onDeletePack} addNotification={addNotification}
+                />
+            )}
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <DrillCard
+                    source={activePack?.title}
                     title="Chunk Perception" icon={<Layers size={32} />} color="text-blue-400" bg="bg-blue-500/10"
                     desc="How many words you can take in from a single glance. Words per fixation multiply straight into words per minute, which makes this the most direct lever on your reading speed."
                     unit=" words"
@@ -90,6 +108,7 @@ function Tools({ drills, adaptiveStart = true, onDrillComplete, addNotification 
                     onClick={() => setActiveDrill('peripheral')}
                 />
                 <DrillCard
+                    source={activePack?.passages.length ? activePack.title : null}
                     title="Target Scanning" icon={<Target size={32} />} color="text-amber-400" bg="bg-amber-500/10"
                     desc="How fast you can locate a word in a block of text without reading it. Trains the visual search you need to skim rather than read."
                     unit="s"
@@ -106,11 +125,12 @@ function Tools({ drills, adaptiveStart = true, onDrillComplete, addNotification 
     );
 }
 
-function DrillCard({ title, desc, icon, color, bg, unit, best, latest, trend, runs, onClick }) {
+function DrillCard({ title, desc, icon, color, bg, unit, best, latest, trend, runs, onClick, source = null }) {
     return (
         <button type="button" onClick={onClick} className="bg-slate-900 border border-slate-800 p-8 rounded-3xl hover:border-purple-500/50 focus:outline-none focus:border-purple-500 transition-colors group cursor-pointer text-left w-full flex flex-col">
             <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 ${bg} ${color}`}>{icon}</div>
             <h3 className="text-xl font-bold text-white mb-2">{title}</h3>
+            {source && <div className="text-[11px] font-bold text-purple-300 -mt-1 mb-2 truncate">Using: {source}</div>}
             <p className="text-slate-400 text-sm leading-relaxed mb-6 flex-1">{desc}</p>
 
             {runs > 0 ? (
@@ -315,14 +335,27 @@ function PeripheralDrill({ previousBest, startAt = PERIPHERAL_START_MS, onExit, 
     );
 }
 
-function ScanningDrill({ onExit, onFinish, addNotification }) {
+function ScanningDrill({ onExit, onFinish, addNotification, pack = null }) {
     const [targetWord, setTargetWord] = useState('');
     const [misses, setMisses] = useState(0);
     const startedAtRef = useRef(null);
-    const textData = "Neuroplasticity refers to the brains ability to change and adapt as a result of experience. It is a fundamental concept in modern neuroscience, challenging the historically held belief that the adult brain is entirely rigid. By engaging in intense, novel learning tasks, such as speed reading or complex problem solving, individuals can stimulate the formation of new neural connections. This process of neuroplasticity is essential for recovery from injuries and for optimizing cognitive performance across the lifespan.";
+    const [packText, setPackText] = useState(null);
+    const builtInText = "Neuroplasticity refers to the brains ability to change and adapt as a result of experience. It is a fundamental concept in modern neuroscience, challenging the historically held belief that the adult brain is entirely rigid. By engaging in intense, novel learning tasks, such as speed reading or complex problem solving, individuals can stimulate the formation of new neural connections. This process of neuroplasticity is essential for recovery from injuries and for optimizing cognitive performance across the lifespan.";
+
+    const textData = packText ?? builtInText;
 
     const initDrill = () => {
-        const longWords = textData.split(/\s+/).filter(w => w.replace(/[^a-zA-Z]/g, '').length > 8);
+        // From a pack: one of its paragraphs, hunting a key term that appears in it.
+        const round = pack ? pickScanRound(pack) : null;
+        if (round) {
+            setPackText(round.text);
+            setTargetWord(round.target);
+            setMisses(0);
+            startedAtRef.current = window.performance.now() / 1000;
+            return;
+        }
+        setPackText(null);
+        const longWords = builtInText.split(/\s+/).filter(w => w.replace(/[^a-zA-Z]/g, '').length > 8);
         const randomTarget = longWords[Math.floor(Math.random() * longWords.length)].replace(/[^a-zA-Z]/g, '');
         setTargetWord(randomTarget.toLowerCase());
         setMisses(0);
@@ -330,7 +363,8 @@ function ScanningDrill({ onExit, onFinish, addNotification }) {
     };
 
     const handleWordClick = (word) => {
-        const clean = word.replace(/[^a-zA-Z]/g, '').toLowerCase();
+        // Letters of any language, so a pack's own words (accents, etc.) match.
+        const clean = word.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
         if (clean !== targetWord) {
             setMisses(m => m + 1);
             addNotification("Not that one. Keep scanning.");
@@ -339,7 +373,7 @@ function ScanningDrill({ onExit, onFinish, addNotification }) {
         // Wrong clicks are penalised rather than free, otherwise clicking
         // everything at random would beat scanning carefully.
         const seconds = (window.performance.now() / 1000) - startedAtRef.current + misses;
-        onFinish(Math.round(seconds * 10) / 10);
+        onFinish(Math.round(seconds * 10) / 10, packText !== null);
     };
 
     return (
