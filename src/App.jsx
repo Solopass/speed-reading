@@ -247,6 +247,15 @@ export default function App() {
     // reader's settings drawer) cannot overwrite one another.
     const patchReading = (patch) => setSettings(prev => ({ ...prev, reading: normalizeReading({ ...prev.reading, ...patch }) }));
 
+    // Bumped by Upload's "Browse free books" so Documents opens the shelf. Cleared whenever the
+    // view leaves Documents (the reader is opened without navigate()), so coming back from a
+    // book does not scroll to the shelf again.
+    const [freeBooksRequest, setFreeBooksRequest] = useState(0);
+    const [viewSeen, setViewSeen] = useState(currentView);
+    if (viewSeen !== currentView) {
+        setViewSeen(currentView);
+        if (currentView !== 'documents' && freeBooksRequest) setFreeBooksRequest(0);
+    }
     const navigate = (view) => {
         setCurrentView(view);
         document.getElementById('main-scroll')?.scrollTo({ top: 0 });
@@ -317,7 +326,13 @@ export default function App() {
 
     /** Books and documents live in IndexedDB so large EPUBs and PDFs are not capped by localStorage. */
     const saveBook = (book) => {
-        setLibrary(prev => upsertEntry(prev, book));
+        // One copy per free book: a download that finished after the shelf was reopened must not add a twin.
+        const sameFreeBook = (item) => Boolean(book.freeBookId) && item?.freeBookId === book.freeBookId;
+        if (library.some(sameFreeBook)) {
+            addNotification(`"${book.title}" is already in your books.`);
+            return false;
+        }
+        setLibrary(prev => (prev.some(sameFreeBook) ? prev : upsertEntry(prev, book)));
         addNotification(`Added "${book.title}" as a book: ${book.chapters.length} chapters.`, 'success');
         return true;
     };
@@ -823,8 +838,8 @@ export default function App() {
                             />
                         )}
                         {currentView === 'library' && <Library onPractiseChapter={practiseChapter} library={library} ai={ai} verifyQuestions={settings.verifyQuestions} readingWpm={activeOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onOpenSaved={openSaved} onDeleteSaved={deleteSaved} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} addNotification={addNotification} />}
-                        {currentView === 'documents' && <Documents onPractiseChapter={practiseChapter} ai={ai} verifyQuestions={settings.verifyQuestions} library={library} readingWpm={readerOpeningWpm} onOpenSaved={(id, opts) => openSaved(id, { ...opts, returnTo: 'documents' })} onDeleteSaved={deleteSaved} onUpdateDocumentText={updateDocumentText} onUpdateChapterText={updateChapterText} onUpdateDocumentQuestions={updateDocumentQuestions} onUpdateChapterQuestions={updateChapterQuestions} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} onRemovePassageBookmark={(id, bmId) => setLibrary(prev => removePassageBookmark(prev, id, bmId))} onOpenUpload={() => navigate('upload')} addNotification={addNotification} />}
-                        {currentView === 'upload' && <Upload ai={ai} library={library} readingWpm={readerOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onSaveBook={saveBook} onSavePassage={(p) => saveToLibrary(p, 'import')} onOpenSaved={(id) => openSaved(id, { returnTo: 'documents' })} onDeleteSaved={deleteSaved} onOpenDocuments={() => navigate('documents')} addNotification={addNotification} />}
+                        {currentView === 'documents' && <Documents onPractiseChapter={practiseChapter} onSaveBook={saveBook} freeBooksRequest={freeBooksRequest} ai={ai} verifyQuestions={settings.verifyQuestions} library={library} readingWpm={readerOpeningWpm} onOpenSaved={(id, opts) => openSaved(id, { ...opts, returnTo: 'documents' })} onDeleteSaved={deleteSaved} onUpdateDocumentText={updateDocumentText} onUpdateChapterText={updateChapterText} onUpdateDocumentQuestions={updateDocumentQuestions} onUpdateChapterQuestions={updateChapterQuestions} onOpenChapter={openBookChapter} onRemoveBookmark={(bookId, bookmarkId) => setLibrary(prev => removeBookmark(prev, bookId, bookmarkId))} onRemovePassageBookmark={(id, bmId) => setLibrary(prev => removePassageBookmark(prev, id, bmId))} onOpenUpload={() => navigate('upload')} addNotification={addNotification} />}
+                        {currentView === 'upload' && <Upload ai={ai} library={library} readingWpm={readerOpeningWpm} onStartPassage={startPassage} onStartPushDrill={startPushDrill} onSaveBook={saveBook} onSavePassage={(p) => saveToLibrary(p, 'import')} onOpenSaved={(id) => openSaved(id, { returnTo: 'documents' })} onDeleteSaved={deleteSaved} onOpenDocuments={() => navigate('documents')} onOpenFreeBooks={() => { setFreeBooksRequest(n => n + 1); navigate('documents'); }} addNotification={addNotification} />}
                         {currentView === 'recall' && <RecallCheck passage={activePassage} onDone={finishRecall} onExit={() => exitFocus('dashboard')} />}
                         {currentView === 'push' && <SpeedPush reading={reading} patchReading={patchReading} updateSettings={updateSettings} passage={activePassage} targetWpm={activeOpeningWpm} intensity={userStats.pushIntensity} settings={settings} onFinish={finishSession} onExit={() => exitFocus(returnView)} />}
                         {currentView === 'reader' && <Reader key={activePassage?.id + ':' + (activePassage?.chapterIndex ?? '')} passage={activePassage} book={activeBook} onSelectChapter={activeBook ? selectBookChapter : null} settings={settings} reading={reading} patchReading={patchReading} updateSettings={updateSettings} customPresets={customPresets} onSavePresets={setCustomPresets} popoutWin={popoutWin} onPopoutChange={setPopoutWin} initialWpm={readerOpeningWpm} resumeFrom={activePassage?.resumeFrom ?? (isRecall ? 0 : resumePoint(findEntry(library, activePassage?.id)))} onFinish={finishSession} onLeave={handleReaderLeave} onBookmark={!activePassage?.isCalibration ? bookmarkHere : null} onGenerateQuiz={generateChapterQuiz} onExit={() => exitFocus(activePassage?.isCalibration ? 'dashboard' : returnView)} addNotification={addNotification} />}

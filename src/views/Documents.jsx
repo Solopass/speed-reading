@@ -10,6 +10,7 @@ import { applyParagraphCuts, chunkBlocksForAiClean, restoreCutItem, selectBlocks
 import { isPartiallyRead, resumePoint } from '../lib/library';
 import { isBook } from '../lib/book';
 import BookShelf from '../components/BookShelf';
+import FreeBooks from '../components/FreeBooks';
 import CutReviewPanel from '../components/CutReviewPanel';
 import ManualAiPanel from '../components/ManualAiPanel';
 
@@ -449,7 +450,8 @@ function UploadedPassages({ passages, wpm, onOpenSaved, onDeleteSaved, onRemoveP
 export default function Documents({
     ai, verifyQuestions = true, library, readingWpm = 300, onOpenSaved, onDeleteSaved,
     onUpdateDocumentText, onUpdateChapterText, onUpdateDocumentQuestions, onUpdateChapterQuestions,
-    onOpenChapter, onRemoveBookmark, onRemovePassageBookmark, onOpenUpload, addNotification, onPractiseChapter = null
+    onOpenChapter, onRemoveBookmark, onRemovePassageBookmark, onOpenUpload, addNotification, onPractiseChapter = null,
+    onSaveBook = null, freeBooksRequest = 0
 }) {
     const [query, setQuery] = useState('');
     const [cleaningTarget, setCleaningTarget] = useState(null);
@@ -517,6 +519,7 @@ export default function Documents({
                     <h2 className="text-xl font-bold text-white">No documents yet</h2>
                     <p className="text-sm text-slate-400 mt-2 max-w-md mx-auto leading-relaxed">
                         Upload a PDF, EPUB, DOCX, HTML, Markdown, or text file — or paste text — in the Upload tab to start speed reading.
+                        {onSaveBook && ' Or add a free classic from the shelf below.'}
                     </p>
                     <button
                         type="button"
@@ -563,6 +566,20 @@ export default function Documents({
                         <p className="text-sm text-slate-500 text-center py-6">No documents match &ldquo;{query}&rdquo;.</p>
                     )}
                 </>
+            )}
+
+            {onSaveBook && (
+                <FreeBooks
+                    // A new request (from Upload's "Browse free books") opens the shelf and scrolls to it.
+                    key={freeBooksRequest}
+                    library={library}
+                    readingWpm={readingWpm}
+                    onSaveBook={onSaveBook}
+                    onOpenBook={(book) => onOpenChapter(book.id, book.currentChapter ?? 0, null, 'documents')}
+                    addNotification={addNotification}
+                    defaultOpen={totalItems === 0 || freeBooksRequest > 0}
+                    scrollIntoView={freeBooksRequest > 0}
+                />
             )}
 
             {cleaningTarget && (

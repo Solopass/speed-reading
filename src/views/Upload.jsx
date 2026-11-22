@@ -32,7 +32,7 @@ function formatCleanSummary(stats) {
 
 export default function Upload({
     ai, library = [], readingWpm = 300, onStartPassage, onStartPushDrill, onSaveBook, onSavePassage,
-    onOpenSaved, onDeleteSaved, onOpenDocuments, addNotification
+    onOpenSaved, onDeleteSaved, onOpenDocuments, onOpenFreeBooks = null, addNotification
 }) {
     const useApi = Boolean(ai?.generate);
     const [customText, setCustomText] = useState('');
@@ -450,6 +450,16 @@ export default function Upload({
                             onChange={(e) => { loadFiles(e.target.files); e.target.value = ''; }}
                         />
                     </div>
+
+                    {onOpenFreeBooks && (
+                        <p className="text-xs text-slate-500">
+                            No file to hand?{' '}
+                            <button type="button" onClick={onOpenFreeBooks} className="font-bold text-purple-300 hover:text-purple-200 underline underline-offset-2">
+                                Browse free classics
+                            </button>{' '}
+                            (Austen, Dickens, Thoreau and more, ready to read).
+                        </p>
+                    )}
 
                     <form onSubmit={handleFetchUrl} className="flex gap-2 flex-col sm:flex-row">
                         <div className="relative flex-1">
